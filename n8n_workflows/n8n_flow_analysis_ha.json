@@ -1,0 +1,193 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "qa-testgen-analysis",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-analysis",
+      "name": "Webhook Analysis",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=\nAnalyze the following functional requirement document for project '{{ $json.body.nome_projeto }}'.\nIdentify ambiguities, missing flows, or unclear business rules.\nReturn ONLY a valid JSON matching the schema provided.\n\nDocument text:\n{{ $json.body.document_text }}",
+        "hasOutputParser": true
+      },
+      "id": "chain-gemini",
+      "name": "Primary Chain (Gemini)",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [220, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-1.5-flash-latest",
+        "options": {}
+      },
+      "id": "model-gemini",
+      "name": "Google Gemini",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [220, 500]
+    },
+    {
+      "parameters": {
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"duvidas\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": {\n            \"type\": \"number\"\n          },\n          \"pergunta\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  }\n}"
+      },
+      "id": "parser-gemini",
+      "name": "Output Parser Gemini",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.1,
+      "position": [380, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "52210811-1a8c-44b2-a42e-13c54c34a269",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-fallback",
+      "name": "Check HTTP 503 Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 3.1,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=\nAnalyze the following functional requirement document for project '{{ $('Webhook Analysis').item.json.body.nome_projeto }}'.\nIdentify ambiguities, missing flows, or unclear business rules.\nReturn ONLY a valid JSON matching the schema provided.\n\nDocument text:\n{{ $('Webhook Analysis').item.json.body.document_text }}",
+        "hasOutputParser": true
+      },
+      "id": "chain-groq",
+      "name": "Fallback Chain (Groq)",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [850, 150]
+    },
+    {
+      "parameters": {
+        "model": "llama3-70b-8192",
+        "options": {}
+      },
+      "id": "model-groq",
+      "name": "Groq Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [850, 350]
+    },
+    {
+      "parameters": {
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"duvidas\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": {\n            \"type\": \"number\"\n          },\n          \"pergunta\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    }\n  }\n}"
+      },
+      "id": "parser-groq",
+      "name": "Output Parser Groq",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.1,
+      "position": [1000, 350]
+    }
+  ],
+  "connections": {
+    "Webhook Analysis": {
+      "main": [
+        [
+          {
+            "node": "Primary Chain (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Primary Chain (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Check HTTP 503 Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check HTTP 503 Error": {
+      "main": [
+        [
+          {
+            "node": "Fallback Chain (Groq)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Primary Chain (Gemini)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Parser Gemini": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Primary Chain (Gemini)",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Fallback Chain (Groq)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Parser Groq": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Fallback Chain (Groq)",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

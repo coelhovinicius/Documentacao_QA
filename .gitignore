@@ -1,0 +1,23 @@
+# Environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# Cache and compiled files
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Streamlit specific
+.streamlit/credentials.toml
+
+# Resouces
+resources/
+ignore/
+
+# Specific files
+*.log
+setup_env.ps1
