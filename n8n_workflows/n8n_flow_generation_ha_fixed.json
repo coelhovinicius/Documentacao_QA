@@ -1,16 +1,16 @@
 {
-  "name": "Doc_QA_Analysis_HA",
+  "name": "Doc_QA_Generation_HA",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "qa-testgen-analysis",
+        "path": "qa-testgen-generation",
         "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {}
       },
-      "id": "webhook-analysis",
-      "name": "Webhook Analysis",
+      "id": "webhook-generation",
+      "name": "Webhook Generation",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
       "position": [0, 300],
@@ -24,10 +24,10 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "=\nAnalyze the following functional requirement document for project '{{ $json.body.nome_projeto }}'.\nIdentify ambiguities, missing flows, or unclear business rules.\nReturn ONLY a valid JSON matching the schema provided.\n\nDocument text:\n{{ $json.body.document_text }}",
+        "text": "=\nAct as a Senior QA Analyst. Generate BDD/step-by-step test cases for project '{{ $json.body.nome_projeto }}'.\nUse the following functional document:\n{{ $json.body.document_text }}\n\nIncorporate these business resolutions/clarifications:\n{{ $json.body.respostas_duvidas }}\n\nReturn ONLY a valid JSON matching the schema provided. Generate realistic and exhaustive steps.",
         "hasOutputParser": true
       },
-      "id": "chain-gemini",
+      "id": "chain-gemini-gen",
       "name": "Primary Chain (Gemini)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
@@ -39,7 +39,7 @@
         "modelName": "models/gemini-1.5-flash-latest",
         "options": {}
       },
-      "id": "model-gemini",
+      "id": "model-gemini-gen",
       "name": "Google Gemini",
       "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
       "typeVersion": 1,
@@ -53,9 +53,9 @@
     },
     {
       "parameters": {
-        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"duvidas\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"number\" },\n          \"pergunta\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"casos_de_teste\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"titulo\": { \"type\": \"string\" },\n          \"pre_condicoes\": { \"type\": \"string\" },\n          \"passos\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"numero\": { \"type\": \"number\" },\n                \"acao\": { \"type\": \"string\" },\n                \"resultado_esperado\": { \"type\": \"string\" }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "parser-gemini",
+      "id": "parser-gemini-gen",
       "name": "Output Parser Gemini",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
@@ -64,10 +64,10 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "=\nAnalyze the following functional requirement document for project '{{ $('Webhook Analysis').item.json.body.nome_projeto }}'.\nIdentify ambiguities, missing flows, or unclear business rules.\nReturn ONLY a valid JSON matching the schema provided.\n\nDocument text:\n{{ $('Webhook Analysis').item.json.body.document_text }}",
+        "text": "=\nAct as a Senior QA Analyst. Generate BDD/step-by-step test cases for project '{{ $('Webhook Generation').item.json.body.nome_projeto }}'.\nUse the following functional document:\n{{ $('Webhook Generation').item.json.body.document_text }}\n\nIncorporate these business resolutions/clarifications:\n{{ $('Webhook Generation').item.json.body.respostas_duvidas }}\n\nReturn ONLY a valid JSON matching the schema provided. Generate realistic and exhaustive steps.",
         "hasOutputParser": true
       },
-      "id": "chain-groq",
+      "id": "chain-groq-gen",
       "name": "Fallback Chain (Groq)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
@@ -78,7 +78,7 @@
         "model": "llama3-70b-8192",
         "options": {}
       },
-      "id": "model-groq",
+      "id": "model-groq-gen",
       "name": "Groq Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
       "typeVersion": 1,
@@ -92,9 +92,9 @@
     },
     {
       "parameters": {
-        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"duvidas\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"number\" },\n          \"pergunta\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"casos_de_teste\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"titulo\": { \"type\": \"string\" },\n          \"pre_condicoes\": { \"type\": \"string\" },\n          \"passos\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"numero\": { \"type\": \"number\" },\n                \"acao\": { \"type\": \"string\" },\n                \"resultado_esperado\": { \"type\": \"string\" }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "parser-groq",
+      "id": "parser-groq-gen",
       "name": "Output Parser Groq",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
@@ -105,7 +105,7 @@
         "mode": "chooseBranch",
         "output": "first"
       },
-      "id": "merge-analysis",
+      "id": "merge-generation",
       "name": "Merge Results",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
@@ -117,7 +117,7 @@
         "responseBody": "={{ $json.output ?? $json }}",
         "options": {}
       },
-      "id": "respond-analysis",
+      "id": "respond-generation",
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
@@ -125,7 +125,7 @@
     }
   ],
   "connections": {
-    "Webhook Analysis": {
+    "Webhook Generation": {
       "main": [
         [
           { "node": "Primary Chain (Gemini)", "type": "main", "index": 0 }
