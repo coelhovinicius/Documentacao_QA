@@ -20,3 +20,4 @@ ignore/
 # Specific files
 *.log
 setup_env.ps1
+sua_chave.key
