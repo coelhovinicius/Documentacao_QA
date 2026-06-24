@@ -215,6 +215,8 @@ class UserInterface:
     # ─────────────────────────────────────────────
     def view_step_1_upload(self):
         st.subheader("Passo 1 – Setup de Contexto e Documentação")
+        st.write("URL Analysis:", self.config.webhook_analysis)
+        st.write("URL Generation:", self.config.webhook_generation)
 
         col1, col2 = st.columns(2)
         with col1:
