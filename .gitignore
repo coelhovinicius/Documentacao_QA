@@ -13,7 +13,6 @@ __pycache__/
 
 # Streamlit specific
 .streamlit/credentials.toml
-
 # Resouces
 resources/
 ignore/

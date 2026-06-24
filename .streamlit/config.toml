@@ -1,0 +1,19 @@
+[theme]
+# Cor primária (Botões e destaques - Laranja Refuturiza)
+primaryColor = "#F15A24"
+
+# Cor de fundo principal da tela
+backgroundColor = "#FAF6F0"
+
+# Cor de fundo secundária (Expansores, sidebars, inputs)
+secondaryBackgroundColor = "#FFFFFF"
+
+# Cor do texto principal
+textColor = "#1A1A1A"
+
+# Fonte (Aplica sans-serif moderna que se aproxima do padrão Poppins)
+font = "sans serif"
+
+[server]
+# Desativa o menu de "hamburger" padrão do Streamlit para um visual mais limpo de produção
+enableCORS = false
