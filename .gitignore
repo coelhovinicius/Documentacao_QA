@@ -21,3 +21,6 @@ ignore/
 *.log
 setup_env.ps1
 sua_chave.key
+
+# Specific directories
+images/
