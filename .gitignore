@@ -21,6 +21,8 @@ ignore/
 *.log
 setup_env.ps1
 sua_chave.key
+requirements1.txt
+app1.py
 
 # Specific directories
 images/

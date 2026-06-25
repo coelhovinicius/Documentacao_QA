@@ -1,6 +1,6 @@
 streamlit
 requests
-PyPDF2
+pymupdf
 python-docx
 python-dotenv
-# pandas
+reportlab
