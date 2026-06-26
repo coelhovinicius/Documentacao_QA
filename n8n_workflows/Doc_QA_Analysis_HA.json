@@ -1,23 +1,19 @@
 {
-  "name": "Doc_QA_Analysis_HA",
+  "name": "Doc_QA_Matrix_HA",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "qa-testgen-analysis",
+        "path": "qa-testgen-matrix",
         "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {}
       },
-      "id": "4f398c0b-e3bc-4b54-9c44-b3aacf3e9a5b",
-      "name": "Webhook Analysis",
+      "id": "0d876c75-adff-46f7-98fe-3d0a158ca637",
+      "name": "Webhook Matrix",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
-      "position": [
-        368,
-        240
-      ],
-      "webhookId": "72666897-6a4a-467c-a6c4-068d8f0a5c10",
+      "position": [-768, 80],
       "credentials": {
         "httpHeaderAuth": {
           "id": "VCDmXunueUpMXjJh",
@@ -28,31 +24,26 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "=IMPORTANT:\nAll output MUST be written exclusively in Brazilian Portuguese (pt-BR).\n\nDo not use English words, labels, field values, titles, descriptions, categories, objectives, reasons, test names, or explanations.\n\nAll generated content must be natural and professional Brazilian Portuguese.\n\nAct as a Senior QA Analyst specialized in requirement analysis.\n\nAnalyze the following functional specification for project '{{ $json.body.nome_projeto }}'.\n\nYour objective is to identify ONLY ambiguities that prevent or significantly reduce test coverage.\n\nPrioritize issues related to:\n\n- Business rules\n- Validation rules\n- Error handling\n- Alternative flows\n- Permissions and access profiles\n- Integration behavior\n- Data persistence\n- Mandatory vs optional fields\n- Status transitions\n- Exceptional scenarios\n\nRules:\n\n1. Return a maximum of 5 to 10 questions.\n2. Only raise questions that would materially impact test case creation.\n3. Ignore cosmetic, UI, wording or low-risk clarifications.\n4. If the requirement is sufficiently clear for creating test cases, return an empty array.\n5. Each question must include:\n   - category\n   - reason\n   - question\n\nDocument:\n{{ $json.body.document_text }}\n\nReturn ONLY valid JSON matching the schema.",
+        "text": "=\nAct as a Senior QA Analyst. Based on the functional document below for project '{{ $json.body.nome_projeto }}', generate a COVERAGE MATRIX.\n\nBusiness clarifications already provided:\n{{ $json.body.respostas_duvidas }}\n\nDocument:\n{{ $json.body.document_text }}\n\nRULES:\n- Be SELECTIVE and FOCUSED. Generate only the most critical and relevant test scenarios.\n- Maximum 15 items in the matrix.\n- Each item must be unique and add real value.\n- Prioritize: main flows, validations, critical business rules, integrations, and exception flows.\n- Do NOT generate trivial or redundant items.\n- Write everything in Brazilian Portuguese.\n\nReturn ONLY valid JSON matching the schema.",
         "hasOutputParser": true
       },
-      "id": "8cdf2a32-692c-45a5-823f-c1217b2d2dd8",
+      "id": "9d1698b2-b2bc-4fb1-b499-563acd9f272b",
       "name": "Primary Chain (Gemini)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
-      "position": [
-        592,
-        240
-      ],
+      "position": [-544, 80],
       "onError": "continueErrorOutput"
     },
     {
       "parameters": {
+        "modelName": "models/gemini-1.5-flash-latest",
         "options": {}
       },
-      "id": "75d41bb8-ac63-4323-8913-871cb0d66d74",
+      "id": "1c6682f2-32bd-442e-8bb6-f85dd39781c0",
       "name": "Google Gemini",
       "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
       "typeVersion": 1,
-      "position": [
-        592,
-        432
-      ],
+      "position": [-544, 272],
       "credentials": {
         "googlePalmApi": {
           "id": "AbTZUtCZlIUnulL4",
@@ -62,45 +53,36 @@
     },
     {
       "parameters": {
-        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"duvidas\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"number\" },\n          \"pergunta\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"matriz\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"funcionalidade\": { \"type\": \"string\" },\n          \"requisito\": { \"type\": \"string\" },\n          \"cenario\": { \"type\": \"string\" },\n          \"categoria\": { \"type\": \"string\" },\n          \"prioridade\": { \"type\": \"string\" },\n          \"criticidade\": { \"type\": \"string\" },\n          \"observacoes\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "94cee735-5c95-4eaa-a1e7-0df5999d0b82",
+      "id": "fb172ac2-2ac6-4125-9240-c8af90a63d8a",
       "name": "Output Parser Gemini",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
-      "position": [
-        752,
-        432
-      ]
+      "position": [-384, 272]
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=IMPORTANT:\nAll output MUST be written exclusively in Brazilian Portuguese (pt-BR).\n\nDo not use English words, labels, field values, titles, descriptions, categories, objectives, reasons, test names, or explanations.\n\nAll generated content must be natural and professional Brazilian Portuguese.\n\nAct as a Senior QA Analyst specialized in requirement analysis.\n\nAnalyze the following functional specification for project '{{ $json.body.nome_projeto }}'.\n\nYour objective is to identify ONLY ambiguities that prevent or significantly reduce test coverage.\n\nPrioritize issues related to:\n\n- Business rules\n- Validation rules\n- Error handling\n- Alternative flows\n- Permissions and access profiles\n- Integration behavior\n- Data persistence\n- Mandatory vs optional fields\n- Status transitions\n- Exceptional scenarios\n\nRules:\n\n1. Return a maximum of 5 to 10 questions.\n2. Only raise questions that would materially impact test case creation.\n3. Ignore cosmetic, UI, wording or low-risk clarifications.\n4. If the requirement is sufficiently clear for creating test cases, return an empty array.\n5. Each question must include:\n   - category\n   - reason\n   - question\n\nDocument:\n{{ $json.body.document_text }}\n\nReturn ONLY valid JSON matching the schema.",
+        "text": "=\nAct as a Senior QA Analyst. Based on the functional document below for project '{{ $('Webhook Matrix').item.json.body.nome_projeto }}', generate a COVERAGE MATRIX.\n\nBusiness clarifications already provided:\n{{ $('Webhook Matrix').item.json.body.respostas_duvidas }}\n\nDocument:\n{{ $('Webhook Matrix').item.json.body.document_text }}\n\nRULES:\n- Be SELECTIVE and FOCUSED. Generate only the most critical and relevant test scenarios.\n- Maximum 15 items in the matrix.\n- Each item must be unique and add real value.\n- Prioritize: main flows, validations, critical business rules, integrations, and exception flows.\n- Do NOT generate trivial or redundant items.\n- Write everything in Brazilian Portuguese.\n\nReturn ONLY valid JSON matching the schema.",
         "hasOutputParser": true
       },
-      "id": "94462349-6c2a-46b6-9cab-7fd7e815baba",
+      "id": "320c5f21-85ff-4b10-b017-402c45895410",
       "name": "Fallback Chain (Groq)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
-      "position": [
-        944,
-        304
-      ]
+      "position": [-176, 160]
     },
     {
       "parameters": {
-        "model": "llama-3.3-70b-versatile",
+        "model": "llama3-70b-8192",
         "options": {}
       },
-      "id": "4d85d797-fd78-4e82-8c3f-f345c407b96c",
+      "id": "ca388130-eead-4592-9d0a-12245e454d5f",
       "name": "Groq Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
       "typeVersion": 1,
-      "position": [
-        944,
-        512
-      ],
+      "position": [-176, 368],
       "credentials": {
         "groqApi": {
           "id": "zbYe35SnbFEOa8Ow",
@@ -110,27 +92,24 @@
     },
     {
       "parameters": {
-        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"duvidas\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"number\" },\n          \"pergunta\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"matriz\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"funcionalidade\": { \"type\": \"string\" },\n          \"requisito\": { \"type\": \"string\" },\n          \"cenario\": { \"type\": \"string\" },\n          \"categoria\": { \"type\": \"string\" },\n          \"prioridade\": { \"type\": \"string\" },\n          \"criticidade\": { \"type\": \"string\" },\n          \"observacoes\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "ae70e433-3866-4ca0-92d2-a320e149beb4",
+      "id": "f605faeb-5de0-45cb-a330-768dfca8a0f4",
       "name": "Output Parser Groq",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
-      "position": [
-        1104,
-        512
-      ]
+      "position": [-16, 368]
     },
     {
-      "parameters": {},
-      "id": "4acc8eb9-640f-48de-971a-87dd7635df0c",
+      "parameters": {
+        "mode": "chooseBranch",
+        "output": "first"
+      },
+      "id": "789ed28a-4bf3-4db8-ab23-177bda43d8a1",
       "name": "Merge Results",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [
-        1312,
-        240
-      ]
+      "position": [192, 80]
     },
     {
       "parameters": {
@@ -138,124 +117,58 @@
         "responseBody": "={{ $json.output ?? $json }}",
         "options": {}
       },
-      "id": "1def7573-7062-49c3-b987-e090867057f8",
+      "id": "06f89c19-d2ee-4812-91fb-873bfcfc8946",
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [
-        1520,
-        240
-      ]
+      "position": [400, 80]
     }
   ],
-  "pinData": {},
   "connections": {
-    "Webhook Analysis": {
+    "Webhook Matrix": {
       "main": [
-        [
-          {
-            "node": "Primary Chain (Gemini)",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [ { "node": "Primary Chain (Gemini)", "type": "main", "index": 0 } ]
       ]
     },
     "Primary Chain (Gemini)": {
       "main": [
-        [
-          {
-            "node": "Merge Results",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Fallback Chain (Groq)",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [ { "node": "Merge Results", "type": "main", "index": 0 } ],
+        [ { "node": "Fallback Chain (Groq)", "type": "main", "index": 0 } ]
       ]
     },
     "Fallback Chain (Groq)": {
       "main": [
-        [
-          {
-            "node": "Merge Results",
-            "type": "main",
-            "index": 1
-          }
-        ]
+        [ { "node": "Merge Results", "type": "main", "index": 1 } ]
       ]
     },
     "Google Gemini": {
       "ai_languageModel": [
-        [
-          {
-            "node": "Primary Chain (Gemini)",
-            "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
+        [ { "node": "Primary Chain (Gemini)", "type": "ai_languageModel", "index": 0 } ]
       ]
     },
     "Output Parser Gemini": {
       "ai_outputParser": [
-        [
-          {
-            "node": "Primary Chain (Gemini)",
-            "type": "ai_outputParser",
-            "index": 0
-          }
-        ]
+        [ { "node": "Primary Chain (Gemini)", "type": "ai_outputParser", "index": 0 } ]
       ]
     },
     "Groq Model": {
       "ai_languageModel": [
-        [
-          {
-            "node": "Fallback Chain (Groq)",
-            "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
+        [ { "node": "Fallback Chain (Groq)", "type": "ai_languageModel", "index": 0 } ]
       ]
     },
     "Output Parser Groq": {
       "ai_outputParser": [
-        [
-          {
-            "node": "Fallback Chain (Groq)",
-            "type": "ai_outputParser",
-            "index": 0
-          }
-        ]
+        [ { "node": "Fallback Chain (Groq)", "type": "ai_outputParser", "index": 0 } ]
       ]
     },
     "Merge Results": {
       "main": [
-        [
-          {
-            "node": "Respond to Webhook",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [ { "node": "Respond to Webhook", "type": "main", "index": 0 } ]
       ]
     }
   },
   "active": true,
   "settings": {
-    "executionOrder": "v1",
-    "binaryMode": "separate"
-  },
-  "versionId": "fad56d5b-351c-4e75-bbcf-b5152d68736f",
-  "meta": {
-    "templateCredsSetupCompleted": true,
-    "instanceId": "562c7355cd5a3106fec1249023da836a71cbf8a0d3aa8209a4d6e83ae9e3b852"
-  },
-  "id": "C4EC7gpjVNgKYyMo",
-  "tags": []
+    "executionOrder": "v1"
+  }
 }

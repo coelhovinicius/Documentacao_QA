@@ -24,6 +24,7 @@ sua_chave.key
 requirements1.txt
 app1.py
 app2.py
+app3.py
 
 # Specific directories
 images/

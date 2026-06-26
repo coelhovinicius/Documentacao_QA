@@ -37,18 +37,16 @@ LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo_refu_
 # ═══════════════════════════════════════════════════════════════════════════════
 class AppConfiguration:
     def __init__(self):
-        self.webhook_analysis = os.getenv(
-            "N8N_WEBHOOK_URL_ANALYSIS",
-            "http://localhost:5678/webhook/qa-testgen-analysis"
-        )
-        self.webhook_matrix = os.getenv(
-            "N8N_WEBHOOK_URL_MATRIX",
-            "http://localhost:5678/webhook/qa-testgen-matrix"
-        )
-        self.webhook_generation = os.getenv(
-            "N8N_WEBHOOK_URL_GENERATION",
-            "http://localhost:5678/webhook/qa-testgen-generation"
-        )
+        # Por que: Resolve o mapeamento de variáveis de ambiente priorizando Streamlit Cloud Secrets,
+        # evitando roteamento incorreto para localhost no container isolado de producao.
+        self.webhook_analysis = self._get_env_var("N8N_WEBHOOK_URL_ANALYSIS", "http://localhost:5678/webhook/qa-testgen-analysis")
+        self.webhook_matrix = self._get_env_var("N8N_WEBHOOK_URL_MATRIX", "http://localhost:5678/webhook/qa-testgen-matrix")
+        self.webhook_generation = self._get_env_var("N8N_WEBHOOK_URL_GENERATION", "http://localhost:5678/webhook/qa-testgen-generation")
+
+    def _get_env_var(self, key: str, default: str) -> str:
+        if key in st.secrets:
+            return st.secrets[key]
+        return os.getenv(key, default)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -261,7 +259,6 @@ class PdfReportGenerator:
 class WebhookClient:
     def __init__(self, config: AppConfiguration):
         self.config = config
-        # Higienização e failover para aquisição de chave de API
         api_key = os.getenv("N8N_API_KEY")
         if not api_key:
             try:
@@ -271,19 +268,26 @@ class WebhookClient:
         self.headers = {"x-api-key": api_key} if api_key else {}
 
     def _safe_json_parse(self, response: requests.Response) -> dict:
-        # Resolve o erro de JSONDecodeError limpando anomalias Markdown (```json ... ```) ou texto puro
+        # Por que: Mitiga deadlocks do n8n. Se o Merge Node falhar no fluxo,
+        # o n8n retorna corpo vazio (status 200). Lanca uma excecao customizada para debug visual na UI.
+        raw_text = response.text.strip()
+        
+        if not raw_text:
+            raise ValueError(
+                f"Payload vazio do orquestrador (Status {response.status_code}). "
+                "Causa raiz provável: Deadlock no Merge Node do n8n ou falha de roteamento de rede "
+                "(certifique-se que o endpoint listado no Streamlit Secrets não seja localhost)."
+            )
+            
+        if raw_text.startswith("```json"):
+            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+        elif raw_text.startswith("```"):
+            raw_text = raw_text.replace("```", "").strip()
+            
         try:
-            return response.json()
-        except json.JSONDecodeError:
-            raw_text = response.text.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-            elif raw_text.startswith("```"):
-                raw_text = raw_text.replace("```", "").strip()
-            try:
-                return json.loads(raw_text)
-            except json.JSONDecodeError as decode_error:
-                raise ValueError(f"Payload de resposta inválido (não é JSON). Resposta bruta: {response.text[:500]}") from decode_error
+            return json.loads(raw_text)
+        except json.JSONDecodeError as decode_error:
+            raise ValueError(f"Payload JSON malformado. Resposta bruta: {raw_text[:200]}...") from decode_error
 
     def _extract(self, raw, key: str) -> list:
         if isinstance(raw, list):
@@ -395,15 +399,15 @@ class UserInterface:
 
     def _err(self, exception):
         if isinstance(exception, ValueError):
-            st.error(f"❌ Erro de Formato de Resposta (JSONDecode): {exception}")
+            st.error(f"❌ Erro de Integridade Estrutural: {exception}")
         elif isinstance(exception, requests.exceptions.Timeout):
-            st.error("⏱️ Timeout: o n8n demorou demais para responder.")
+            st.error("⏱️ Timeout: o n8n demorou demais para responder. Aumente o TTL do request.")
         elif isinstance(exception, requests.exceptions.ConnectionError):
-            st.error("🔌 Não foi possível conectar ao n8n.")
+            st.error("🔌 Network Error: Não foi possível conectar ao nó orquestrador (n8n). Verifique URL ou túnel HTTPS.")
         elif isinstance(exception, requests.exceptions.HTTPError):
-            st.error(f"❌ Erro HTTP do n8n: {exception}")
+            st.error(f"❌ HTTP Exception: {exception}")
         else:
-            st.error(f"❌ Erro inesperado: {exception}")
+            st.error(f"❌ Fatal Error: {exception}")
 
     def step_1(self):
         st.subheader("Passo 1 – Setup e Documentação")
@@ -421,9 +425,9 @@ class UserInterface:
             with st.spinner("Extraindo texto..."):
                 text = DocumentProcessor.extract_plain_text(uploaded)
             if not text:
-                st.error("Não foi possível extrair texto. Verifique o arquivo.")
+                st.error("Não foi possível extrair texto. Verifique a integridade do artefato.")
                 return
-            with st.spinner("Analisando com IA…"):
+            with st.spinner("Compilando análise sintática via LLM…"):
                 try:
                     resp = self.client.trigger_analysis(text, project)
                     st.session_state.doc_text     = text
@@ -435,19 +439,19 @@ class UserInterface:
                     self._err(e)
 
     def step_2(self):
-        st.subheader("Passo 2 – Esclarecimentos")
+        st.subheader("Passo 2 – Resolução de Conflitos e Ambiguidade")
         questions = st.session_state.questions
         answers   = {}
 
         if not questions:
-            st.success("✅ A IA não identificou ambiguidades. Prossiga para gerar a Matriz.")
+            st.success("✅ A IA não identificou ambiguidades. Bypass validado. Prossiga para gerar a Matriz.")
         else:
-            st.info(f"A IA identificou **{len(questions)} ponto(s) crítico(s)**.")
+            st.info(f"A engine de validação identificou **{len(questions)} ponto(s) crítico(s)**.")
             for q in questions:
                 qid = str(q.get('id', '0'))
                 st.markdown(f"**❓ #{qid}:** {q.get('pergunta', '')}")
                 answers[qid] = st.text_area(f"Resposta #{qid}", key=f"q_{qid}",
-                                            placeholder="Descreva a regra de negócio ou decisão…")
+                                            placeholder="Descreva a regra de negócio consolidada…")
 
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -456,7 +460,7 @@ class UserInterface:
                 st.rerun()
         with col2:
             if st.button("📊 Gerar Matriz de Cobertura", use_container_width=True, type="primary"):
-                with st.spinner("Gerando Matriz com IA…"):
+                with st.spinner("Estruturando Matriz de Rastreabilidade…"):
                     try:
                         resp = self.client.trigger_matrix(
                             st.session_state.doc_text, answers,
@@ -464,7 +468,7 @@ class UserInterface:
                         )
                         matriz = resp.get("matriz") or []
                         if not matriz:
-                            st.error("❌ Matriz vazia. Verifique a saída estruturada do n8n.")
+                            st.error("❌ Matriz vazia. Verifique a saída estruturada do pipeline de Cobertura (n8n).")
                             return
                         st.session_state.user_answers = answers
                         st.session_state.matriz       = matriz
@@ -474,9 +478,9 @@ class UserInterface:
                         self._err(e)
 
     def step_3(self):
-        st.subheader("Passo 3 – Matriz de Cobertura")
+        st.subheader("Passo 3 – Refinamento da Matriz de Cobertura")
         matriz = st.session_state.matriz
-        st.info(f"**{len(matriz)} cenário(s)**. Edite os campos abaixo se necessário.")
+        st.info(f"**{len(matriz)} cenário(s) mapeado(s)**. Edite os campos abaixo se necessário.")
 
         headers_cols = ["id","funcionalidade","requisito","cenario",
                         "categoria","prioridade","criticidade","observacoes"]
@@ -523,9 +527,9 @@ class UserInterface:
                 st.session_state.step = 2
                 st.rerun()
         with col2:
-            if st.button("🚀 Gerar Casos de Teste", use_container_width=True, type="primary"):
+            if st.button("🚀 Transpilar Casos de Teste (BDD)", use_container_width=True, type="primary"):
                 st.session_state.matriz = edited_matriz
-                with st.spinner("Gerando Casos de Teste com IA… pode levar alguns minutos."):
+                with st.spinner("Processando lógica de geração de steps. Essa rotina consome maior payload (TTL elevado)..."):
                     try:
                         resp = self.client.trigger_generation(
                             st.session_state.doc_text, edited_matriz,
@@ -533,7 +537,7 @@ class UserInterface:
                         )
                         casos = resp.get("casos_de_teste") or []
                         if not casos:
-                            st.error("❌ Lista de casos vazia. Verifique a saída estruturada do n8n.")
+                            st.error("❌ Lista de casos vazia. Valide a chave JSON de saída no n8n.")
                             return
                         st.session_state.test_cases = casos
                         st.session_state.step       = 4
@@ -542,9 +546,9 @@ class UserInterface:
                         self._err(e)
 
     def step_4(self):
-        st.subheader("Passo 4 – Revisão dos Casos de Teste")
+        st.subheader("Passo 4 – Console de Casos de Teste (BDD)")
         test_cases = st.session_state.test_cases
-        st.info(f"**{len(test_cases)} caso(s)** gerado(s). Edite se necessário.")
+        st.info(f"**{len(test_cases)} script(s)** consolidados. Edite ações e resultados antes da compilação.")
 
         edited = []
         for idx, tc in enumerate(test_cases):
@@ -554,7 +558,7 @@ class UserInterface:
                 passos = tc.get('passos', [])
                 novos  = []
                 if passos:
-                    st.markdown("**Passos:**")
+                    st.markdown("**Test Steps:**")
                     for s, step in enumerate(passos):
                         colA, colB = st.columns(2)
                         with colA:
@@ -574,7 +578,7 @@ class UserInterface:
                 st.session_state.step = 3
                 st.rerun()
         with col2:
-            if st.button("📥 Gerar Exportações", use_container_width=True, type="primary"):
+            if st.button("📥 Consolidar e Buildar Artefatos", use_container_width=True, type="primary"):
                 st.session_state.test_cases  = edited
                 st.session_state.csv_content = AzureCsvFormatter.generate_csv_content(
                     edited, st.session_state.project_name
@@ -583,34 +587,31 @@ class UserInterface:
                 st.rerun()
 
     def step_5(self):
-        st.subheader("Passo 5 – Download")
-        st.success("🎉 Exportações prontas!")
+        st.subheader("Passo 5 – Artefatos Finalizados")
+        st.success("🎉 Build concluída sem apontamentos.")
 
         project   = st.session_state.project_name
         safe_name = project.replace(' ', '_')
 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("### 📄 CSV – Azure DevOps")
+            st.markdown("### 📄 Pipeline Handoff – Azure DevOps (CSV)")
             csv_bytes = ('\ufeff' + st.session_state.csv_content).encode('utf-8')
-            st.download_button("⬇️ Baixar CSV", data=csv_bytes,
+            st.download_button("⬇️ Baixar Test Suite (CSV)", data=csv_bytes,
                                file_name=f"QA_Export_{safe_name}.csv",
                                mime="text/csv", use_container_width=True)
         with col2:
-            st.markdown("### 📑 PDF – Relatório Completo")
-            with st.spinner("Gerando PDF…"):
+            st.markdown("### 📑 Handoff Funcional – PDF Report")
+            with st.spinner("Gerando binários do PDF…"):
                 pdf_bytes = PdfReportGenerator.generate(
                     project, st.session_state.matriz, st.session_state.test_cases
                 )
-            st.download_button("⬇️ Baixar PDF", data=pdf_bytes,
+            st.download_button("⬇️ Baixar Documentação Técnica (PDF)", data=pdf_bytes,
                                file_name=f"QA_Report_{safe_name}.pdf",
                                mime="application/pdf", use_container_width=True)
 
         st.divider()
-        with st.expander("👀 Pré-visualização do CSV"):
-            st.code(st.session_state.csv_content[:3000], language="text")
-
-        if st.button("🔄 Iniciar Nova Análise", use_container_width=True):
+        if st.button("🔄 Flush Session (Nova Análise)", use_container_width=True):
             st.session_state.clear()
             st.rerun()
 
