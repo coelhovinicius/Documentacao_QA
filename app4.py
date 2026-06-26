@@ -33,26 +33,33 @@ LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo_refu_
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURAÇÃO
+# CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 class AppConfiguration:
     def __init__(self):
-        self.webhook_analysis = os.getenv(
-            "N8N_WEBHOOK_URL_ANALYSIS",
-            "http://localhost:5678/webhook/qa-testgen-analysis"
-        )
-        self.webhook_matrix = os.getenv(
-            "N8N_WEBHOOK_URL_MATRIX",
-            "http://localhost:5678/webhook/qa-testgen-matrix"
-        )
-        self.webhook_generation = os.getenv(
-            "N8N_WEBHOOK_URL_GENERATION",
-            "http://localhost:5678/webhook/qa-testgen-generation"
-        )
+        self.webhook_analysis = self._get_env_var("N8N_WEBHOOK_URL_ANALYSIS", "http://localhost:5678/webhook/qa-testgen-analysis")
+        self.webhook_matrix = self._get_env_var("N8N_WEBHOOK_URL_MATRIX", "http://localhost:5678/webhook/qa-testgen-matrix")
+        self.webhook_generation = self._get_env_var("N8N_WEBHOOK_URL_GENERATION", "http://localhost:5678/webhook/qa-testgen-generation")
+
+    def _get_env_var(self, key: str, default: str) -> str:
+        # Por que: Inversão de prioridade. Lê primeiro do SO (.env local). 
+        # A requisição ao st.secrets é isolada via try/except para ignorar o StreamlitSecretNotFoundError 
+        # quando o arquivo secrets.toml não existir no ambiente de desenvolvimento local.
+        val = os.getenv(key)
+        if val:
+            return val
+            
+        try:
+            if key in st.secrets:
+                return st.secrets[key]
+        except Exception:
+            pass
+            
+        return default
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PROCESSADOR DE DOCUMENTOS (pymupdf — lê texto E imagens em PDFs mistos)
+# DOCUMENT PROCESSOR
 # ═══════════════════════════════════════════════════════════════════════════════
 class DocumentProcessor:
     @staticmethod
@@ -73,13 +80,13 @@ class DocumentProcessor:
             elif ext == "txt":
                 text = uploaded_file.getvalue().decode("utf-8")
             return text.strip()
-        except Exception as e:
-            st.error(f"Erro ao extrair texto: {e}")
+        except Exception as exception:
+            st.error(f"Erro ao extrair texto: {exception}")
             return ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FORMATADOR CSV AZURE DEVOPS
+# AZURE DEVOPS CSV FORMATTER
 # ═══════════════════════════════════════════════════════════════════════════════
 class AzureCsvFormatter:
     @staticmethod
@@ -101,7 +108,7 @@ class AzureCsvFormatter:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GERADOR DE PDF COM IDENTIDADE REFUTURIZA
+# PDF REPORT GENERATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 class PdfReportGenerator:
 
@@ -131,21 +138,20 @@ class PdfReportGenerator:
     def _on_page(canvas, doc, project_name):
         canvas.saveState()
         w, h = A4
-        # Faixa laranja no topo
         canvas.setFillColor(COR_LARANJA)
         canvas.rect(0, h - 52, w, 52, fill=True, stroke=False)
-        # Logo
+        
         if os.path.exists(LOGO_PATH):
             canvas.drawImage(LOGO_PATH, 18, h - 46,
                              width=120, height=36,
                              preserveAspectRatio=True, mask='auto')
-        # Texto no header
+                             
         canvas.setFont('Helvetica-Bold', 11)
         canvas.setFillColor(COR_BRANCO)
         canvas.drawRightString(w - 18, h - 28, f"QA TestGen  |  {project_name}")
         canvas.setFont('Helvetica', 8)
         canvas.drawRightString(w - 18, h - 42, datetime.now().strftime('%d/%m/%Y %H:%M'))
-        # Rodapé
+        
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(COR_CINZA_MED)
         canvas.drawString(18, 20, "Refuturiza – Gerado automaticamente pelo QA TestGen")
@@ -167,10 +173,9 @@ class PdfReportGenerator:
             topMargin=3.2*cm, bottomMargin=2.0*cm,
             title=f"QA Report – {project_name}", author="Refuturiza QA TestGen"
         )
-        W = doc.width
+        page_width = doc.width
         story = []
 
-        # Título
         story.append(Spacer(1, 0.4*cm))
         story.append(Paragraph("Relatório de QA", styles['title']))
         story.append(Paragraph(
@@ -180,21 +185,20 @@ class PdfReportGenerator:
         ))
         story.append(HRFlowable(width="100%", thickness=2, color=COR_LARANJA, spaceAfter=14))
 
-        # ── Seção 1: Matriz ───────────────────────────────────────────────────
         story.append(Paragraph("1. Matriz de Cobertura", styles['section']))
         if matriz:
-            COLS   = ["id","funcionalidade","requisito","cenario",
-                      "categoria","prioridade","criticidade","observacoes"]
-            LABELS = ["ID","Funcionalidade","Requisito","Cenário",
+            headers_cols = ["id","funcionalidade","requisito","cenario",
+                            "categoria","prioridade","criticidade","observacoes"]
+            labels = ["ID","Funcionalidade","Requisito","Cenário",
                       "Categoria","Prioridade","Criticidade","Observações"]
-            WIDTHS = [1.4*cm, 3*cm, 2*cm, 4.5*cm, 2.8*cm, 2*cm, 2.2*cm, 3*cm]
+            widths = [1.4*cm, 3*cm, 2*cm, 4.5*cm, 2.8*cm, 2*cm, 2.2*cm, 3*cm]
 
-            data = [[Paragraph(l, styles['cell_head']) for l in LABELS]]
+            data = [[Paragraph(label, styles['cell_head']) for label in labels]]
             for row in matriz:
-                data.append([Paragraph(str(row.get(c, '') or ''), styles['cell']) for c in COLS])
+                data.append([Paragraph(str(row.get(col, '') or ''), styles['cell']) for col in headers_cols])
 
-            t = Table(data, colWidths=WIDTHS, repeatRows=1)
-            t.setStyle(TableStyle([
+            table = Table(data, colWidths=widths, repeatRows=1)
+            table.setStyle(TableStyle([
                 ('BACKGROUND',   (0,0), (-1,0),  COR_LARANJA),
                 ('ROWBACKGROUNDS',(0,1),(-1,-1),  [COR_BRANCO, COR_CINZA_LIN]),
                 ('GRID',         (0,0), (-1,-1),  0.4, colors.HexColor('#DDDDDD')),
@@ -203,21 +207,19 @@ class PdfReportGenerator:
                 ('LEFTPADDING',  (0,0), (-1,-1),  4),
                 ('VALIGN',       (0,0), (-1,-1),  'TOP'),
             ]))
-            story.append(t)
+            story.append(table)
         else:
             story.append(Paragraph("Nenhuma entrada na Matriz.", styles['body']))
 
         story.append(PageBreak())
 
-        # ── Seção 2: Casos de Teste ───────────────────────────────────────────
         story.append(Paragraph("2. Casos de Teste", styles['section']))
         for idx, tc in enumerate(test_cases, start=1):
             titulo = tc.get('titulo', f'Caso #{idx}')
             pre    = tc.get('pre_condicoes', '—')
             passos = tc.get('passos', [])
 
-            hdr = Table([[Paragraph(f"TC-{idx:02d} – {titulo}", styles['tc_title'])]],
-                        colWidths=[W])
+            hdr = Table([[Paragraph(f"TC-{idx:02d} – {titulo}", styles['tc_title'])]], colWidths=[page_width])
             hdr.setStyle(TableStyle([
                 ('BACKGROUND',   (0,0),(-1,-1), COR_LARANJA),
                 ('TOPPADDING',   (0,0),(-1,-1), 5),
@@ -225,9 +227,7 @@ class PdfReportGenerator:
                 ('LEFTPADDING',  (0,0),(-1,-1), 8),
             ]))
 
-            pre_t = Table([[Paragraph("<b>Pré-condições:</b>", styles['cell']),
-                            Paragraph(pre, styles['cell'])]],
-                          colWidths=[3*cm, W - 3*cm])
+            pre_t = Table([[Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(pre, styles['cell'])]], colWidths=[3*cm, page_width - 3*cm])
             pre_t.setStyle(TableStyle([
                 ('BACKGROUND',   (0,0),(-1,-1), COR_LARANJA_CLARO),
                 ('TOPPADDING',   (0,0),(-1,-1), 4),
@@ -236,16 +236,14 @@ class PdfReportGenerator:
                 ('VALIGN',       (0,0),(-1,-1), 'TOP'),
             ]))
 
-            sd = [[Paragraph("#", styles['cell_head']),
-                   Paragraph("Ação", styles['cell_head']),
-                   Paragraph("Resultado Esperado", styles['cell_head'])]]
+            step_data = [[Paragraph("#", styles['cell_head']), Paragraph("Ação", styles['cell_head']), Paragraph("Resultado Esperado", styles['cell_head'])]]
             for step in passos:
-                sd.append([
+                step_data.append([
                     Paragraph(str(step.get('numero','')), styles['cell']),
                     Paragraph(str(step.get('acao','')), styles['cell']),
                     Paragraph(str(step.get('resultado_esperado','')), styles['cell']),
                 ])
-            st_t = Table(sd, colWidths=[1*cm, (W-1*cm)*0.45, (W-1*cm)*0.55], repeatRows=1)
+            st_t = Table(step_data, colWidths=[1*cm, (page_width-1*cm)*0.45, (page_width-1*cm)*0.55], repeatRows=1)
             st_t.setStyle(TableStyle([
                 ('BACKGROUND',    (0,0),(-1,0),  COR_CINZA_ESC),
                 ('ROWBACKGROUNDS',(0,1),(-1,-1),  [COR_BRANCO, COR_CINZA_LIN]),
@@ -265,12 +263,43 @@ class PdfReportGenerator:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CLIENTE WEBHOOK
+# WEBHOOK CLIENT
 # ═══════════════════════════════════════════════════════════════════════════════
 class WebhookClient:
     def __init__(self, config: AppConfiguration):
-        self.config  = config
-        self.headers = {"x-api-key": st.secrets["N8N_API_KEY"]}
+        self.config = config
+        
+        # Por que: Replicação do encapsulamento defensivo para a extração do token de API,
+        # evitando falha de runtime no load inicial da classe caso st.secrets esteja ausente.
+        api_key = os.getenv("N8N_API_KEY")
+        if not api_key:
+            try:
+                if "N8N_API_KEY" in st.secrets:
+                    api_key = st.secrets["N8N_API_KEY"]
+            except Exception:
+                api_key = ""
+                
+        self.headers = {"x-api-key": api_key} if api_key else {}
+
+    def _safe_json_parse(self, response: requests.Response) -> dict:
+        raw_text = response.text.strip()
+        
+        if not raw_text:
+            raise ValueError(
+                f"Payload vazio do orquestrador (Status {response.status_code}). "
+                "Causa raiz provável: Deadlock no Merge Node do n8n ou falha de roteamento de rede "
+                "(certifique-se que o endpoint listado no Streamlit Secrets não seja localhost)."
+            )
+            
+        if raw_text.startswith("```json"):
+            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+        elif raw_text.startswith("```"):
+            raw_text = raw_text.replace("```", "").strip()
+            
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError as decode_error:
+            raise ValueError(f"Payload JSON malformado. Resposta bruta: {raw_text[:200]}...") from decode_error
 
     def _extract(self, raw, key: str) -> list:
         if isinstance(raw, list):
@@ -299,35 +328,43 @@ class WebhookClient:
         return []
 
     def trigger_analysis(self, doc_text: str, project: str) -> dict:
-        r = requests.post(self.config.webhook_analysis,
-                          json={"document_text": doc_text, "nome_projeto": project},
-                          headers=self.headers, timeout=120)
-        r.raise_for_status()
-        return {"duvidas": self._extract(r.json(), "duvidas")}
+        response = requests.post(
+            self.config.webhook_analysis,
+            json={"document_text": doc_text, "nome_projeto": project},
+            headers=self.headers, timeout=120
+        )
+        response.raise_for_status()
+        data = self._safe_json_parse(response)
+        return {"duvidas": self._extract(data, "duvidas")}
 
     def trigger_matrix(self, doc_text: str, answers: dict, project: str) -> dict:
-        r = requests.post(self.config.webhook_matrix,
-                          json={"document_text": doc_text,
-                                "respostas_duvidas": json.dumps(answers, ensure_ascii=False),
-                                "nome_projeto": project},
-                          headers=self.headers, timeout=300)
-        r.raise_for_status()
-        return {"matriz": self._extract(r.json(), "matriz")}
+        response = requests.post(
+            self.config.webhook_matrix,
+            json={"document_text": doc_text,
+                  "respostas_duvidas": json.dumps(answers, ensure_ascii=False),
+                  "nome_projeto": project},
+            headers=self.headers, timeout=300
+        )
+        response.raise_for_status()
+        data = self._safe_json_parse(response)
+        return {"matriz": self._extract(data, "matriz")}
 
-    def trigger_generation(self, doc_text: str, matriz: list,
-                           answers: dict, project: str) -> dict:
-        r = requests.post(self.config.webhook_generation,
-                          json={"document_text": doc_text,
-                                "matriz_cobertura": json.dumps(matriz, ensure_ascii=False),
-                                "respostas_duvidas": json.dumps(answers, ensure_ascii=False),
-                                "nome_projeto": project},
-                          headers=self.headers, timeout=300)
-        r.raise_for_status()
-        return {"casos_de_teste": self._extract(r.json(), "casos_de_teste")}
+    def trigger_generation(self, doc_text: str, matriz: list, answers: dict, project: str) -> dict:
+        response = requests.post(
+            self.config.webhook_generation,
+            json={"document_text": doc_text,
+                  "matriz_cobertura": json.dumps(matriz, ensure_ascii=False),
+                  "respostas_duvidas": json.dumps(answers, ensure_ascii=False),
+                  "nome_projeto": project},
+            headers=self.headers, timeout=300
+        )
+        response.raise_for_status()
+        data = self._safe_json_parse(response)
+        return {"casos_de_teste": self._extract(data, "casos_de_teste")}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# INTERFACE
+# UI PAGE OBJECT
 # ═══════════════════════════════════════════════════════════════════════════════
 class UserInterface:
     def __init__(self):
@@ -372,23 +409,24 @@ class UserInterface:
                         unsafe_allow_html=True)
         st.divider()
 
-    def _err(self, e):
-        if isinstance(e, requests.exceptions.Timeout):
-            st.error("⏱️ Timeout: o n8n demorou demais para responder.")
-        elif isinstance(e, requests.exceptions.ConnectionError):
-            st.error("🔌 Não foi possível conectar ao n8n.")
-        elif isinstance(e, requests.exceptions.HTTPError):
-            st.error(f"❌ Erro HTTP do n8n: {e}")
+    def _err(self, exception):
+        if isinstance(exception, ValueError):
+            st.error(f"❌ Erro de Integridade Estrutural: {exception}")
+        elif isinstance(exception, requests.exceptions.Timeout):
+            st.error("⏱️ Timeout: o n8n demorou demais para responder. Aumente o TTL do request.")
+        elif isinstance(exception, requests.exceptions.ConnectionError):
+            st.error("🔌 Network Error: Não foi possível conectar ao nó orquestrador (n8n). Verifique URL ou túnel HTTPS.")
+        elif isinstance(exception, requests.exceptions.HTTPError):
+            st.error(f"❌ HTTP Exception: {exception}")
         else:
-            st.error(f"❌ Erro inesperado: {e}")
+            st.error(f"❌ Fatal Error: {exception}")
 
-    # ── Passo 1: Upload ───────────────────────────────────────────────────────
     def step_1(self):
         st.subheader("Passo 1 – Setup e Documentação")
-        c1, c2 = st.columns(2)
-        with c1:
+        col1, col2 = st.columns(2)
+        with col1:
             project = st.text_input("Nome do Projeto *", placeholder="Ex: Passaporte Refuturiza")
-        with c2:
+        with col2:
             uploaded = st.file_uploader("Documento de Requisitos *", type=["pdf","txt","docx"])
 
         if not project or not uploaded:
@@ -399,9 +437,9 @@ class UserInterface:
             with st.spinner("Extraindo texto..."):
                 text = DocumentProcessor.extract_plain_text(uploaded)
             if not text:
-                st.error("Não foi possível extrair texto. Verifique o arquivo.")
+                st.error("Não foi possível extrair texto. Verifique a integridade do artefato.")
                 return
-            with st.spinner("Analisando com IA…"):
+            with st.spinner("Compilando análise sintática via LLM…"):
                 try:
                     resp = self.client.trigger_analysis(text, project)
                     st.session_state.doc_text     = text
@@ -412,36 +450,37 @@ class UserInterface:
                 except Exception as e:
                     self._err(e)
 
-    # ── Passo 2: Dúvidas ─────────────────────────────────────────────────────
     def step_2(self):
-        st.subheader("Passo 2 – Esclarecimentos")
+        st.subheader("Passo 2 – Resolução de Conflitos e Ambiguidade")
         questions = st.session_state.questions
         answers   = {}
 
         if not questions:
-            st.success("✅ A IA não identificou ambiguidades. Prossiga para gerar a Matriz.")
+            st.success("✅ A IA não identificou ambiguidades. Bypass validado. Prossiga para gerar a Matriz.")
         else:
-            st.info(f"A IA identificou **{len(questions)} ponto(s) crítico(s)**.")
+            st.info(f"A engine de validação identificou **{len(questions)} ponto(s) crítico(s)**.")
             for q in questions:
                 qid = str(q.get('id', '0'))
                 st.markdown(f"**❓ #{qid}:** {q.get('pergunta', '')}")
                 answers[qid] = st.text_area(f"Resposta #{qid}", key=f"q_{qid}",
-                                            placeholder="Descreva a regra de negócio ou decisão…")
+                                            placeholder="Descreva a regra de negócio consolidada…")
 
-        c1, c2 = st.columns([1, 3])
-        with c1:
+        col1, col2 = st.columns([1, 3])
+        with col1:
             if st.button("← Voltar", use_container_width=True):
-                st.session_state.step = 1; st.rerun()
-        with c2:
+                st.session_state.step = 1
+                st.rerun()
+        with col2:
             if st.button("📊 Gerar Matriz de Cobertura", use_container_width=True, type="primary"):
-                with st.spinner("Gerando Matriz com IA…"):
+                with st.spinner("Estruturando Matriz de Rastreabilidade…"):
                     try:
                         resp = self.client.trigger_matrix(
                             st.session_state.doc_text, answers,
-                            st.session_state.project_name)
+                            st.session_state.project_name
+                        )
                         matriz = resp.get("matriz") or []
                         if not matriz:
-                            st.error("❌ Matriz vazia. Verifique os logs do n8n.")
+                            st.error("❌ Matriz vazia. Verifique a saída estruturada do pipeline de Cobertura (n8n).")
                             return
                         st.session_state.user_answers = answers
                         st.session_state.matriz       = matriz
@@ -450,14 +489,13 @@ class UserInterface:
                     except Exception as e:
                         self._err(e)
 
-    # ── Passo 3: Matriz de Cobertura (editável) ───────────────────────────────
     def step_3(self):
-        st.subheader("Passo 3 – Matriz de Cobertura")
+        st.subheader("Passo 3 – Refinamento da Matriz de Cobertura")
         matriz = st.session_state.matriz
-        st.info(f"**{len(matriz)} cenário(s)**. Edite os campos abaixo se necessário.")
+        st.info(f"**{len(matriz)} cenário(s) mapeado(s)**. Edite os campos abaixo se necessário.")
 
-        COLS   = ["id","funcionalidade","requisito","cenario",
-                  "categoria","prioridade","criticidade","observacoes"]
+        headers_cols = ["id","funcionalidade","requisito","cenario",
+                        "categoria","prioridade","criticidade","observacoes"]
 
         def norm(row):
             aliases = {"scenario":"cenario","feature":"funcionalidade",
@@ -465,51 +503,53 @@ class UserInterface:
                        "priority":"prioridade","criticality":"criticidade",
                        "notes":"observacoes","observations":"observacoes"}
             out = {aliases.get(k.lower(), k.lower()): v for k,v in row.items()}
-            return {c: out.get(c,'') for c in COLS}
+            return {col: out.get(col,'') for col in headers_cols}
 
-        normalized   = [norm(r) for r in matriz]
+        normalized   = [norm(row) for row in matriz]
         edited_matriz = []
         opts_pri  = ["Alta","Média","Baixa"]
         opts_crit = ["Alta","Média","Baixa"]
 
         def idx_of(opts, val):
-            try: return [o.lower() for o in opts].index((val or '').lower())
-            except: return 0
+            try: return [opt.lower() for opt in opts].index((val or '').lower())
+            except Exception: return 0
 
         for i, row in enumerate(normalized):
             with st.expander(f"**{row['id'] or f'MC-{i+1:03d}'}** – {row['cenario']}", expanded=(i==0)):
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    nid   = st.text_input("ID",             value=row['id'],            key=f"mid_{i}")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    nid   = st.text_input("ID",             value=row['id'],             key=f"mid_{i}")
                     nfunc = st.text_input("Funcionalidade", value=row['funcionalidade'], key=f"mfunc_{i}")
                     nreq  = st.text_input("Requisito",      value=row['requisito'],      key=f"mreq_{i}")
-                with c2:
-                    ncen  = st.text_area("Cenário",  value=row['cenario'],   key=f"mcen_{i}", height=100)
-                    ncat  = st.text_input("Categoria",value=row['categoria'],key=f"mcat_{i}")
-                with c3:
-                    npri  = st.selectbox("Prioridade",  opts_pri,  index=idx_of(opts_pri, row['prioridade']),  key=f"mpri_{i}")
-                    ncrit = st.selectbox("Criticidade", opts_crit, index=idx_of(opts_crit,row['criticidade']), key=f"mcrit_{i}")
-                    nobs  = st.text_input("Observações", value=row['observacoes'], key=f"mobs_{i}")
+                with col2:
+                    ncen  = st.text_area("Cenário",         value=row['cenario'],        key=f"mcen_{i}", height=100)
+                    ncat  = st.text_input("Categoria",      value=row['categoria'],      key=f"mcat_{i}")
+                with col3:
+                    npri  = st.selectbox("Prioridade",      opts_pri,  index=idx_of(opts_pri, row['prioridade']),  key=f"mpri_{i}")
+                    ncrit = st.selectbox("Criticidade",     opts_crit, index=idx_of(opts_crit,row['criticidade']), key=f"mcrit_{i}")
+                    nobs  = st.text_input("Observações",    value=row['observacoes'],    key=f"mobs_{i}")
 
                 edited_matriz.append({"id":nid,"funcionalidade":nfunc,"requisito":nreq,
                                       "cenario":ncen,"categoria":ncat,"prioridade":npri,
                                       "criticidade":ncrit,"observacoes":nobs})
 
-        c1, c2 = st.columns([1, 3])
-        with c1:
+        col1, col2 = st.columns([1, 3])
+        with col1:
             if st.button("← Voltar", use_container_width=True):
-                st.session_state.step = 2; st.rerun()
-        with c2:
-            if st.button("🚀 Gerar Casos de Teste", use_container_width=True, type="primary"):
+                st.session_state.step = 2
+                st.rerun()
+        with col2:
+            if st.button("🚀 Transpilar Casos de Teste (BDD)", use_container_width=True, type="primary"):
                 st.session_state.matriz = edited_matriz
-                with st.spinner("Gerando Casos de Teste com IA… pode levar alguns minutos."):
+                with st.spinner("Processando lógica de geração de steps. Essa rotina consome maior payload (TTL elevado)..."):
                     try:
                         resp = self.client.trigger_generation(
                             st.session_state.doc_text, edited_matriz,
-                            st.session_state.user_answers, st.session_state.project_name)
+                            st.session_state.user_answers, st.session_state.project_name
+                        )
                         casos = resp.get("casos_de_teste") or []
                         if not casos:
-                            st.error("❌ Lista de casos vazia. Verifique os logs do n8n.")
+                            st.error("❌ Lista de casos vazia. Valide a chave JSON de saída no n8n.")
                             return
                         st.session_state.test_cases = casos
                         st.session_state.step       = 4
@@ -517,78 +557,76 @@ class UserInterface:
                     except Exception as e:
                         self._err(e)
 
-    # ── Passo 4: Casos de Teste (editáveis) ──────────────────────────────────
     def step_4(self):
-        st.subheader("Passo 4 – Revisão dos Casos de Teste")
+        st.subheader("Passo 4 – Console de Casos de Teste (BDD)")
         test_cases = st.session_state.test_cases
-        st.info(f"**{len(test_cases)} caso(s)** gerado(s). Edite se necessário.")
+        st.info(f"**{len(test_cases)} script(s)** consolidados. Edite ações e resultados antes da compilação.")
 
         edited = []
         for idx, tc in enumerate(test_cases):
             with st.expander(f"**TC-{idx+1:02d}** – {tc.get('titulo','')}", expanded=(idx==0)):
-                titulo = st.text_input("Título",        value=tc.get('titulo',''),       key=f"tt_{idx}")
-                pre    = st.text_area("Pré-condições",  value=tc.get('pre_condicoes',''),key=f"tp_{idx}", height=70)
+                titulo = st.text_input("Título",       value=tc.get('titulo',''),        key=f"tt_{idx}")
+                pre    = st.text_area("Pré-condições", value=tc.get('pre_condicoes',''), key=f"tp_{idx}", height=70)
                 passos = tc.get('passos', [])
                 novos  = []
                 if passos:
-                    st.markdown("**Passos:**")
+                    st.markdown("**Test Steps:**")
                     for s, step in enumerate(passos):
-                        ca, cb = st.columns(2)
-                        with ca:
+                        colA, colB = st.columns(2)
+                        with colA:
                             acao = st.text_area(f"Ação {step.get('numero',s+1)}",
                                                 value=step.get('acao',''),
                                                 key=f"ta_{idx}_{s}", height=80)
-                        with cb:
+                        with colB:
                             esp = st.text_area(f"Esperado {step.get('numero',s+1)}",
                                                value=step.get('resultado_esperado',''),
                                                key=f"te_{idx}_{s}", height=80)
                         novos.append({"numero":step.get('numero',s+1),"acao":acao,"resultado_esperado":esp})
                 edited.append({"titulo":titulo,"pre_condicoes":pre,"passos":novos})
 
-        c1, c2 = st.columns([1, 3])
-        with c1:
+        col1, col2 = st.columns([1, 3])
+        with col1:
             if st.button("← Voltar", use_container_width=True):
-                st.session_state.step = 3; st.rerun()
-        with c2:
-            if st.button("📥 Gerar Exportações", use_container_width=True, type="primary"):
+                st.session_state.step = 3
+                st.rerun()
+        with col2:
+            if st.button("📥 Consolidar e Buildar Artefatos", use_container_width=True, type="primary"):
                 st.session_state.test_cases  = edited
                 st.session_state.csv_content = AzureCsvFormatter.generate_csv_content(
-                    edited, st.session_state.project_name)
+                    edited, st.session_state.project_name
+                )
                 st.session_state.step = 5
                 st.rerun()
 
-    # ── Passo 5: Download ────────────────────────────────────────────────────
     def step_5(self):
-        st.subheader("Passo 5 – Download")
-        st.success("🎉 Exportações prontas!")
+        st.subheader("Passo 5 – Artefatos Finalizados")
+        st.success("🎉 Build concluída sem apontamentos.")
 
         project   = st.session_state.project_name
         safe_name = project.replace(' ', '_')
 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("### 📄 CSV – Azure DevOps")
+            st.markdown("### 📄 Pipeline Handoff – Azure DevOps (CSV)")
             csv_bytes = ('\ufeff' + st.session_state.csv_content).encode('utf-8')
-            st.download_button("⬇️ Baixar CSV", data=csv_bytes,
+            st.download_button("⬇️ Baixar Test Suite (CSV)", data=csv_bytes,
                                file_name=f"QA_Export_{safe_name}.csv",
                                mime="text/csv", use_container_width=True)
         with col2:
-            st.markdown("### 📑 PDF – Relatório Completo")
-            with st.spinner("Gerando PDF…"):
+            st.markdown("### 📑 Handoff Funcional – PDF Report")
+            with st.spinner("Gerando binários do PDF…"):
                 pdf_bytes = PdfReportGenerator.generate(
-                    project, st.session_state.matriz, st.session_state.test_cases)
-            st.download_button("⬇️ Baixar PDF", data=pdf_bytes,
+                    project, st.session_state.matriz, st.session_state.test_cases
+                )
+            st.download_button("⬇️ Baixar Documentação Técnica (PDF)", data=pdf_bytes,
                                file_name=f"QA_Report_{safe_name}.pdf",
                                mime="application/pdf", use_container_width=True)
 
         st.divider()
-        with st.expander("👀 Pré-visualização do CSV"):
-            st.code(st.session_state.csv_content[:3000], language="text")
+        if st.button("🔄 Flush Session (Nova Análise)", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
 
-        if st.button("🔄 Iniciar Nova Análise", use_container_width=True):
-            st.session_state.clear(); st.rerun()
-
-    # ── Runner ────────────────────────────────────────────────────────────────
     def run(self):
         self._header()
         self._progress()
