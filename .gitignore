@@ -23,6 +23,7 @@ setup_env.ps1
 sua_chave.key
 requirements1.txt
 app1.py
+app2.py
 
 # Specific directories
 images/
