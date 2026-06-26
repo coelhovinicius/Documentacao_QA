@@ -37,16 +37,25 @@ LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo_refu_
 # ═══════════════════════════════════════════════════════════════════════════════
 class AppConfiguration:
     def __init__(self):
-        # Por que: Resolve o mapeamento de variáveis de ambiente priorizando Streamlit Cloud Secrets,
-        # evitando roteamento incorreto para localhost no container isolado de producao.
         self.webhook_analysis = self._get_env_var("N8N_WEBHOOK_URL_ANALYSIS", "http://localhost:5678/webhook/qa-testgen-analysis")
         self.webhook_matrix = self._get_env_var("N8N_WEBHOOK_URL_MATRIX", "http://localhost:5678/webhook/qa-testgen-matrix")
         self.webhook_generation = self._get_env_var("N8N_WEBHOOK_URL_GENERATION", "http://localhost:5678/webhook/qa-testgen-generation")
 
     def _get_env_var(self, key: str, default: str) -> str:
-        if key in st.secrets:
-            return st.secrets[key]
-        return os.getenv(key, default)
+        # Por que: Inversão de prioridade. Lê primeiro do SO (.env local). 
+        # A requisição ao st.secrets é isolada via try/except para ignorar o StreamlitSecretNotFoundError 
+        # quando o arquivo secrets.toml não existir no ambiente de desenvolvimento local.
+        val = os.getenv(key)
+        if val:
+            return val
+            
+        try:
+            if key in st.secrets:
+                return st.secrets[key]
+        except Exception:
+            pass
+            
+        return default
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -259,17 +268,20 @@ class PdfReportGenerator:
 class WebhookClient:
     def __init__(self, config: AppConfiguration):
         self.config = config
+        
+        # Por que: Replicação do encapsulamento defensivo para a extração do token de API,
+        # evitando falha de runtime no load inicial da classe caso st.secrets esteja ausente.
         api_key = os.getenv("N8N_API_KEY")
         if not api_key:
             try:
-                api_key = st.secrets.get("N8N_API_KEY", "")
+                if "N8N_API_KEY" in st.secrets:
+                    api_key = st.secrets["N8N_API_KEY"]
             except Exception:
                 api_key = ""
+                
         self.headers = {"x-api-key": api_key} if api_key else {}
 
     def _safe_json_parse(self, response: requests.Response) -> dict:
-        # Por que: Mitiga deadlocks do n8n. Se o Merge Node falhar no fluxo,
-        # o n8n retorna corpo vazio (status 200). Lanca uma excecao customizada para debug visual na UI.
         raw_text = response.text.strip()
         
         if not raw_text:
