@@ -234,7 +234,7 @@ class UserInterface:
             st.info("Preencha o nome do projeto e faça o upload do documento para continuar.")
             return
 
-        if st.button("🔍 Executar Análise de Cobertura (IA)", use_container_width=True):
+        if st.button("🔍 Executar Análise de Cobertura (IA)", use_container_width=True, type="primary"):
             with st.spinner("Extraindo texto do documento..."):
                 text = DocumentProcessor.extract_plain_text(uploaded_file)
 
