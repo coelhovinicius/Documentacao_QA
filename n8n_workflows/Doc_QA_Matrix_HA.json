@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "Doc_QA_Matrix_HA",
   "nodes": [
     {
@@ -13,10 +13,7 @@
       "name": "Webhook Matrix",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
-      "position": [
-        -768,
-        80
-      ],
+      "position": [-768, 80],
       "webhookId": "9aebe7b4-ced2-492d-9407-8cc0db3a895c",
       "credentials": {
         "httpHeaderAuth": {
@@ -35,10 +32,7 @@
       "name": "Primary Chain (Gemini)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
-      "position": [
-        -544,
-        80
-      ],
+      "position": [-544, 80],
       "onError": "continueErrorOutput"
     },
     {
@@ -50,10 +44,7 @@
       "name": "Google Gemini",
       "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
       "typeVersion": 1,
-      "position": [
-        -544,
-        272
-      ],
+      "position": [-544, 272],
       "credentials": {
         "googlePalmApi": {
           "id": "AbTZUtCZlIUnulL4",
@@ -69,10 +60,7 @@
       "name": "Output Parser Gemini",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
-      "position": [
-        -384,
-        272
-      ]
+      "position": [-384, 272]
     },
     {
       "parameters": {
@@ -84,10 +72,7 @@
       "name": "Fallback Chain (Groq)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
-      "position": [
-        -176,
-        160
-      ]
+      "position": [-176, 160]
     },
     {
       "parameters": {
@@ -98,10 +83,7 @@
       "name": "Groq Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
       "typeVersion": 1,
-      "position": [
-        -176,
-        368
-      ],
+      "position": [-176, 368],
       "credentials": {
         "groqApi": {
           "id": "zbYe35SnbFEOa8Ow",
@@ -117,21 +99,7 @@
       "name": "Output Parser Groq",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
-      "position": [
-        -16,
-        368
-      ]
-    },
-    {
-      "parameters": {},
-      "id": "789ed28a-4bf3-4db8-ab23-177bda43d8a1",
-      "name": "Merge Results",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3.2,
-      "position": [
-        192,
-        80
-      ]
+      "position": [-16, 368]
     },
     {
       "parameters": {
@@ -143,10 +111,7 @@
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [
-        400,
-        80
-      ]
+      "position": [400, 80]
     }
   ],
   "pinData": {},
@@ -166,7 +131,7 @@
       "main": [
         [
           {
-            "node": "Merge Results",
+            "node": "Respond to Webhook",
             "type": "main",
             "index": 0
           }
@@ -184,9 +149,9 @@
       "main": [
         [
           {
-            "node": "Merge Results",
+            "node": "Respond to Webhook",
             "type": "main",
-            "index": 1
+            "index": 0
           }
         ]
       ]
@@ -234,17 +199,6 @@
           }
         ]
       ]
-    },
-    "Merge Results": {
-      "main": [
-        [
-          {
-            "node": "Respond to Webhook",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
     }
   },
   "active": true,
@@ -253,9 +207,6 @@
     "binaryMode": "separate"
   },
   "versionId": "a18685fd-f5f9-4c63-8147-7a36697e5a8a",
-  "meta": {
-    "instanceId": "562c7355cd5a3106fec1249023da836a71cbf8a0d3aa8209a4d6e83ae9e3b852"
-  },
   "id": "6R6CPSpbI8Hs1gg9",
   "tags": []
 }

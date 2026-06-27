@@ -14,7 +14,8 @@ __pycache__/
 # Streamlit specific
 .streamlit/credentials.toml
 .streamlit/secrets.toml
-# Resouces
+
+# Resoruces
 resources/
 ignore/
 
@@ -27,6 +28,9 @@ app1.py
 app2.py
 app3.py
 app4.py
+app_V1_estavel.py
+app_v4_estavel.py
+app_v4_0.py
 
 # Specific directories
 images/
