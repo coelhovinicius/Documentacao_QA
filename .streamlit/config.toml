@@ -18,7 +18,5 @@ font = "sans serif"
 # Desativa o menu de "hamburger" padrão do Streamlit para um visual mais limpo de produção
 enableCORS = false
 
-### PERIGO!!! ### enableXsrfProtection = false ###
-
 # Define o limite máximo de upload de arquivos para 20MB
 maxUploadSize = 20

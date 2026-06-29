@@ -7,6 +7,7 @@ import fitz  # pymupdf
 import base64
 from PIL import Image
 from datetime import datetime
+import pytz
 from docx import Document
 from dotenv import load_dotenv
 
@@ -22,6 +23,9 @@ from reportlab.platypus import (
 )
 
 load_dotenv()
+
+# ─── Configuração Global de Timezone (Brasil/Brasília) ────────────────────────
+TZ_BR = pytz.timezone('America/Sao_Paulo')
 
 # ─── Cores e Assets Refuturiza ───────────────────────────────────────────────
 COR_LARANJA       = colors.HexColor('#F15A24')
@@ -151,7 +155,9 @@ class PdfReportGenerator:
         canvas.setFillColor(COR_BRANCO)
         canvas.drawRightString(w - 18, h - 28, f"QA TestGen  |  {project_name}")
         canvas.setFont('Helvetica', 8)
-        canvas.drawRightString(w - 18, h - 42, datetime.now().strftime('%d/%m/%Y %H:%M'))
+        
+        # Injeção correta de Fuso Horário de Brasília
+        canvas.drawRightString(w - 18, h - 42, datetime.now(TZ_BR).strftime('%d/%m/%Y %H:%M'))
         
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(COR_CINZA_MED)
@@ -178,10 +184,10 @@ class PdfReportGenerator:
         story = []
 
         story.append(Spacer(1, 0.4*cm))
-        story.append(Paragraph("Relatório de QA", styles['title']))
+        story.append(Paragraph("Documentação QA", styles['title']))
         story.append(Paragraph(
             f"Projeto: <b>{project_name}</b> &nbsp;|&nbsp; "
-            f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}",
+            f"Gerado em {datetime.now(TZ_BR).strftime('%d/%m/%Y às %H:%M')}",
             styles['subtitle']
         ))
         story.append(HRFlowable(width="100%", thickness=2, color=COR_LARANJA, spaceAfter=14))
@@ -397,10 +403,29 @@ class UserInterface:
         st.session_state.current_action = None
         st.session_state.is_processing = False
 
+    def _clear_widget_states(self):
+        """
+        Por que: O Streamlit cacheia os Inputs vinculados a Chaves (keys).
+        Se removermos um item do Array (matriz), o index muda, mas o estado do
+        input fantasma permanece injetando dados na próxima linha visível.
+        A limpeza previne State Drift ao deletar linhas.
+        """
+        prefixes = ("mid_", "mfunc_", "mreq_", "mcen_", "mcat_", "mpri_", "mcrit_", "mobs_", "edit_m_", 
+                    "tt_", "tp_", "ta_", "te_", "edit_tc_")
+        for k in list(st.session_state.keys()):
+            if k.startswith(prefixes):
+                del st.session_state[k]
+
+    def _render_emergency_reset(self):
+        with st.sidebar:
+            st.warning("⚠️ Controles de Emergência")
+            if st.button("🔄 Resetar Aplicação", use_container_width=True):
+                st.session_state.clear()
+                st.rerun()
+
     def _header(self):
-        # Por que: Substituição das colunas nativas do Streamlit por Flexbox injetado.
-        # Assegura alinhamento no eixo Y idêntico, controle estrito da altura do logo 
-        # (evitando overflow_hidden e border-radius) e insere o ícone iconográfico solicitado.
+        self._render_emergency_reset()
+
         img_b64 = ""
         if os.path.exists(LOGO_PATH):
             try:
@@ -541,46 +566,66 @@ class UserInterface:
     def step_3(self):
         st.subheader("Passo 3 – Refinamento da Matriz de Cobertura")
         matriz = st.session_state.matriz
-        st.info(f"**{len(matriz)} cenário(s) mapeado(s)**. Edite os campos abaixo se necessário.")
+        
+        if not matriz:
+            st.info("A Matriz de Cobertura está vazia.")
+        else:
+            st.info(f"**{len(matriz)} cenário(s) mapeado(s)**. Utilize os botões ✏️ para editar ou 🗑️ para excluir uma linha.")
 
-        headers_cols = ["id","funcionalidade","requisito","cenario",
-                        "categoria","prioridade","criticidade","observacoes"]
+        editing_any = False
+        
+        for i, row in enumerate(matriz):
+            is_editing = st.session_state.get(f"edit_m_{i}", False)
+            if is_editing: 
+                editing_any = True
 
-        def norm(row):
-            aliases = {"scenario":"cenario","feature":"funcionalidade",
-                       "requirement":"requisito","category":"categoria",
-                       "priority":"prioridade","criticality":"criticidade",
-                       "notes":"observacoes","observations":"observacoes"}
-            out = {aliases.get(k.lower(), k.lower()): v for k,v in row.items()}
-            return {col: out.get(col,'') for col in headers_cols}
+            with st.container():
+                col_title, col_edit, col_del = st.columns([10, 1, 1])
+                with col_title:
+                    st.markdown(f"**{row.get('id', f'MC-{i+1:03d}')}** – {row.get('cenario', '')}")
+                with col_edit:
+                    if st.button("✏️", key=f"btn_edit_m_{i}", help="Editar esta linha"):
+                        st.session_state[f"edit_m_{i}"] = not is_editing
+                        st.rerun()
+                with col_del:
+                    if st.button("🗑️", key=f"btn_del_m_{i}", type="primary", help="Excluir esta linha permanentemente"):
+                        st.session_state.matriz.pop(i)
+                        self._clear_widget_states()
+                        st.rerun()
 
-        normalized   = [norm(row) for row in matriz]
-        edited_matriz = []
-        opts_pri  = ["Alta","Média","Baixa"]
-        opts_crit = ["Alta","Média","Baixa"]
+                if is_editing:
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            nid   = st.text_input("ID", value=row.get('id',''), key=f"mid_{i}")
+                            nfunc = st.text_input("Funcionalidade", value=row.get('funcionalidade',''), key=f"mfunc_{i}")
+                            nreq  = st.text_input("Requisito", value=row.get('requisito',''), key=f"mreq_{i}")
+                        with c2:
+                            ncen  = st.text_area("Cenário", value=row.get('cenario',''), key=f"mcen_{i}", height=100)
+                            ncat  = st.text_input("Categoria", value=row.get('categoria',''), key=f"mcat_{i}")
+                        with c3:
+                            opts_pri  = ["Alta","Média","Baixa"]
+                            opts_crit = ["Alta","Média","Baixa"]
+                            
+                            def idx_of(opts, val):
+                                try: return [opt.lower() for opt in opts].index((val or '').lower())
+                                except ValueError: return 0
+                                
+                            npri  = st.selectbox("Prioridade", opts_pri, index=idx_of(opts_pri, row.get('prioridade')), key=f"mpri_{i}")
+                            ncrit = st.selectbox("Criticidade", opts_crit, index=idx_of(opts_crit, row.get('criticidade')), key=f"mcrit_{i}")
+                            nobs  = st.text_input("Observações", value=row.get('observacoes',''), key=f"mobs_{i}")
 
-        def idx_of(opts, val):
-            try: return [opt.lower() for opt in opts].index((val or '').lower())
-            except Exception: return 0
-
-        for i, row in enumerate(normalized):
-            with st.expander(f"**{row['id'] or f'MC-{i+1:03d}'}** – {row['cenario']}", expanded=(i==0)):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    nid   = st.text_input("ID",             value=row['id'],             key=f"mid_{i}")
-                    nfunc = st.text_input("Funcionalidade", value=row['funcionalidade'], key=f"mfunc_{i}")
-                    nreq  = st.text_input("Requisito",      value=row['requisito'],      key=f"mreq_{i}")
-                with col2:
-                    ncen  = st.text_area("Cenário",         value=row['cenario'],        key=f"mcen_{i}", height=100)
-                    ncat  = st.text_input("Categoria",      value=row['categoria'],      key=f"mcat_{i}")
-                with col3:
-                    npri  = st.selectbox("Prioridade",      opts_pri,  index=idx_of(opts_pri, row['prioridade']),  key=f"mpri_{i}")
-                    ncrit = st.selectbox("Criticidade",     opts_crit, index=idx_of(opts_crit,row['criticidade']), key=f"mcrit_{i}")
-                    nobs  = st.text_input("Observações",    value=row['observacoes'],    key=f"mobs_{i}")
-
-                edited_matriz.append({"id":nid,"funcionalidade":nfunc,"requisito":nreq,
-                                      "cenario":ncen,"categoria":ncat,"prioridade":npri,
-                                      "criticidade":ncrit,"observacoes":nobs})
+                        if st.button("💾 Salvar Alterações desta Linha", key=f"save_m_{i}", type="primary"):
+                            st.session_state.matriz[i] = {
+                                "id": nid, "funcionalidade": nfunc, "requisito": nreq,
+                                "cenario": ncen, "categoria": ncat, "prioridade": npri,
+                                "criticidade": ncrit, "observacoes": nobs
+                            }
+                            st.session_state[f"edit_m_{i}"] = False
+                            st.rerun()
+                    st.markdown("<br>", unsafe_allow_html=True)
+                else:
+                    st.divider()
 
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -588,16 +633,18 @@ class UserInterface:
                 st.session_state.step = 2
                 st.rerun()
         with col2:
-            st.button("🚀 Gerar Casos de Teste", use_container_width=True, type="primary",
-                      on_click=self.trigger_action, args=("generate_cases",),
-                      disabled=st.session_state.is_processing)
+            if editing_any:
+                st.warning("⚠️ Salve a edição da linha em aberto clicando no botão '💾 Salvar Alterações desta Linha' para prosseguir.")
+            else:
+                st.button("🚀 Gerar Casos de Teste", use_container_width=True, type="primary",
+                          on_click=self.trigger_action, args=("generate_cases",),
+                          disabled=st.session_state.is_processing)
 
         if st.session_state.current_action == "generate_cases":
-            st.session_state.matriz = edited_matriz
             with st.spinner("Processando a geração de steps de casos de teste. Isso poderá levar alguns minutos..."):
                 try:
                     resp = self.client.trigger_generation(
-                        st.session_state.doc_text, edited_matriz,
+                        st.session_state.doc_text, st.session_state.matriz,
                         st.session_state.user_answers, st.session_state.project_name
                     )
                     casos = resp.get("casos_de_teste") or []
@@ -614,31 +661,61 @@ class UserInterface:
                     self.clear_action()
 
     def step_4(self):
-        st.subheader("Passo 4 – Console de Casos de Teste (BDD)")
+        st.subheader("Passo 4 – Console de Casos de Teste")
         test_cases = st.session_state.test_cases
-        st.info(f"**{len(test_cases)} script(s)** consolidados. Edite ações e resultados antes da compilação.")
+        
+        if not test_cases:
+            st.info("Nenhum caso de teste compilado.")
+        else:
+            st.info(f"**{len(test_cases)} script(s)** consolidados. Utilize ✏️ para editar ou 🗑️ para excluir.")
 
-        edited = []
+        editing_any = False
+        
         for idx, tc in enumerate(test_cases):
-            with st.expander(f"**TC-{idx+1:02d}** – {tc.get('titulo','')}", expanded=(idx==0)):
-                titulo = st.text_input("Título",       value=tc.get('titulo',''),        key=f"tt_{idx}")
-                pre    = st.text_area("Pré-condições", value=tc.get('pre_condicoes',''), key=f"tp_{idx}", height=70)
-                passos = tc.get('passos', [])
-                novos  = []
-                if passos:
-                    st.markdown("**Test Steps:**")
-                    for s, step in enumerate(passos):
-                        colA, colB = st.columns(2)
-                        with colA:
-                            acao = st.text_area(f"Ação {step.get('numero',s+1)}",
-                                                value=step.get('acao',''),
-                                                key=f"ta_{idx}_{s}", height=80)
-                        with colB:
-                            esp = st.text_area(f"Esperado {step.get('numero',s+1)}",
-                                               value=step.get('resultado_esperado',''),
-                                               key=f"te_{idx}_{s}", height=80)
-                        novos.append({"numero":step.get('numero',s+1),"acao":acao,"resultado_esperado":esp})
-                edited.append({"titulo":titulo,"pre_condicoes":pre,"passos":novos})
+            is_editing = st.session_state.get(f"edit_tc_{idx}", False)
+            if is_editing: 
+                editing_any = True
+                
+            with st.container():
+                col_title, col_edit, col_del = st.columns([10, 1, 1])
+                with col_title:
+                    st.markdown(f"**TC-{idx+1:02d}** – {tc.get('titulo','')}")
+                with col_edit:
+                    if st.button("✏️", key=f"btn_edit_tc_{idx}", help="Editar Script"):
+                        st.session_state[f"edit_tc_{idx}"] = not is_editing
+                        st.rerun()
+                with col_del:
+                    if st.button("🗑️", key=f"btn_del_tc_{idx}", type="primary", help="Excluir Script"):
+                        st.session_state.test_cases.pop(idx)
+                        self._clear_widget_states()
+                        st.rerun()
+
+                if is_editing:
+                    with st.container(border=True):
+                        titulo = st.text_input("Título", value=tc.get('titulo',''), key=f"tt_{idx}")
+                        pre    = st.text_area("Pré-condições", value=tc.get('pre_condicoes',''), key=f"tp_{idx}", height=70)
+                        passos = tc.get('passos', [])
+                        novos_passos = []
+                        
+                        if passos:
+                            st.markdown("**Test Steps:**")
+                            for s, step in enumerate(passos):
+                                cA, cB = st.columns(2)
+                                with cA:
+                                    acao = st.text_area(f"Ação {step.get('numero',s+1)}", value=step.get('acao',''), key=f"ta_{idx}_{s}", height=80)
+                                with cB:
+                                    esp = st.text_area(f"Esperado {step.get('numero',s+1)}", value=step.get('resultado_esperado',''), key=f"te_{idx}_{s}", height=80)
+                                novos_passos.append({"numero": step.get('numero',s+1), "acao": acao, "resultado_esperado": esp})
+                        
+                        if st.button("💾 Salvar Caso de Teste", key=f"save_tc_{idx}", type="primary"):
+                            st.session_state.test_cases[idx] = {
+                                "titulo": titulo, "pre_condicoes": pre, "passos": novos_passos
+                            }
+                            st.session_state[f"edit_tc_{idx}"] = False
+                            st.rerun()
+                    st.markdown("<br>", unsafe_allow_html=True)
+                else:
+                    st.divider()
 
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -646,14 +723,16 @@ class UserInterface:
                 st.session_state.step = 3
                 st.rerun()
         with col2:
-            st.button("📥 Consolidar e Buildar Artefatos", use_container_width=True, type="primary",
-                      on_click=self.trigger_action, args=("build_artifacts",),
-                      disabled=st.session_state.is_processing)
+            if editing_any:
+                st.warning("⚠️ Salve a edição do Script aberto (botão '💾 Salvar Caso de Teste') para prosseguir com o Build.")
+            else:
+                st.button("📥 Consolidar e Construir Artefatos", use_container_width=True, type="primary",
+                          on_click=self.trigger_action, args=("build_artifacts",),
+                          disabled=st.session_state.is_processing)
 
         if st.session_state.current_action == "build_artifacts":
-            st.session_state.test_cases  = edited
             st.session_state.csv_content = AzureCsvFormatter.generate_csv_content(
-                edited, st.session_state.project_name
+                st.session_state.test_cases, st.session_state.project_name
             )
             st.session_state.step = 5
             self.clear_action()
@@ -668,13 +747,13 @@ class UserInterface:
 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("### 📄 Pipeline Handoff – Azure DevOps (CSV)")
+            st.markdown("### 📄 Test Suite – Azure DevOps (CSV)")
             csv_bytes = ('\ufeff' + st.session_state.csv_content).encode('utf-8')
             st.download_button("⬇️ Baixar Test Suite (CSV)", data=csv_bytes,
                                file_name=f"QA_Export_{safe_name}.csv",
                                mime="text/csv", use_container_width=True)
         with col2:
-            st.markdown("### 📑 Handoff Funcional – PDF Report")
+            st.markdown("### 📑 Documentação Técnica – PDF Report")
             with st.spinner("Gerando binários do PDF…"):
                 pdf_bytes = PdfReportGenerator.generate(
                     project, st.session_state.matriz, st.session_state.test_cases
@@ -701,4 +780,3 @@ class UserInterface:
 
 if __name__ == "__main__":
     UserInterface().run()
-
