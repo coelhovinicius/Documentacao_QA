@@ -41,6 +41,27 @@ SIMBOLO_PATH = os.path.join(BASE_DIR, 'simbolo_refu_1.png')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MODALS & GLOBAL UI COMPONENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.dialog("⚠️ Confirmação de Exclusão")
+def confirm_deletion_modal(list_key: str, index: int):
+    """
+    True Modal for strict deletion confirmation.
+    Blocks background UI and forces explicit user intent.
+    """
+    st.markdown("A exclusão deste item é **irreversível**. Tem certeza que deseja remover esta linha?")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary"):
+            st.session_state[list_key].pop(index)
+            UserInterface._clear_widget_states()
+            st.rerun()
+    with c2:
+        if st.button("❌ Cancelar", use_container_width=True):
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 class AppConfiguration:
@@ -53,13 +74,11 @@ class AppConfiguration:
         val = os.getenv(key)
         if val:
             return val
-            
         try:
             if key in st.secrets:
                 return st.secrets[key]
         except Exception:
             pass
-            
         return default
 
 
@@ -145,20 +164,15 @@ class PdfReportGenerator:
         w, h = A4
         canvas.setFillColor(COR_LARANJA)
         canvas.rect(0, h - 52, w, 52, fill=True, stroke=False)
-        
         if os.path.exists(LOGO_PATH):
             canvas.drawImage(LOGO_PATH, 18, h - 46,
                              width=120, height=36,
                              preserveAspectRatio=True, mask='auto')
-                             
         canvas.setFont('Helvetica-Bold', 11)
         canvas.setFillColor(COR_BRANCO)
         canvas.drawRightString(w - 18, h - 28, f"QA TestGen  |  {project_name}")
         canvas.setFont('Helvetica', 8)
-        
-        # Injeção correta de Fuso Horário de Brasília
         canvas.drawRightString(w - 18, h - 42, datetime.now(TZ_BR).strftime('%d/%m/%Y %H:%M'))
-        
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(COR_CINZA_MED)
         canvas.drawString(18, 20, "Refuturiza – Gerado automaticamente pelo QA TestGen")
@@ -206,8 +220,8 @@ class PdfReportGenerator:
 
             table = Table(data, colWidths=widths, repeatRows=1)
             table.setStyle(TableStyle([
-                ('BACKGROUND',   (0,0), (-1,0),  COR_LARANJA),
-                ('ROWBACKGROUNDS',(0,1),(-1,-1),  [COR_BRANCO, COR_CINZA_LIN]),
+                ('BACKGROUND',    (0,0), (-1,0),  COR_LARANJA),
+                ('ROWBACKGROUNDS',(0,1), (-1,-1), [COR_BRANCO, COR_CINZA_LIN]),
                 ('GRID',         (0,0), (-1,-1),  0.4, colors.HexColor('#DDDDDD')),
                 ('TOPPADDING',   (0,0), (-1,-1),  4),
                 ('BOTTOMPADDING',(0,0), (-1,-1),  4),
@@ -253,7 +267,7 @@ class PdfReportGenerator:
             st_t = Table(step_data, colWidths=[1*cm, (page_width-1*cm)*0.45, (page_width-1*cm)*0.55], repeatRows=1)
             st_t.setStyle(TableStyle([
                 ('BACKGROUND',    (0,0),(-1,0),  COR_CINZA_ESC),
-                ('ROWBACKGROUNDS',(0,1),(-1,-1),  [COR_BRANCO, COR_CINZA_LIN]),
+                ('ROWBACKGROUNDS',(0,1),(-1,-1), [COR_BRANCO, COR_CINZA_LIN]),
                 ('GRID',         (0,0),(-1,-1),  0.3, colors.HexColor('#CCCCCC')),
                 ('TOPPADDING',   (0,0),(-1,-1),  4),
                 ('BOTTOMPADDING',(0,0),(-1,-1),  4),
@@ -275,7 +289,6 @@ class PdfReportGenerator:
 class WebhookClient:
     def __init__(self, config: AppConfiguration):
         self.config = config
-        
         api_key = os.getenv("N8N_API_KEY")
         if not api_key:
             try:
@@ -283,23 +296,19 @@ class WebhookClient:
                     api_key = st.secrets["N8N_API_KEY"]
             except Exception:
                 api_key = ""
-                
         self.headers = {"x-api-key": api_key} if api_key else {}
 
     def _safe_json_parse(self, response: requests.Response) -> dict:
         raw_text = response.text.strip()
-        
         if not raw_text:
             raise ValueError(
                 f"Payload vazio do orquestrador (Status {response.status_code}). "
                 "Causa raiz provável: Deadlock no Merge Node do n8n ou falha de roteamento de rede."
             )
-            
         if raw_text.startswith("```json"):
             raw_text = raw_text.replace("```json", "").replace("```", "").strip()
         elif raw_text.startswith("```"):
             raw_text = raw_text.replace("```", "").strip()
-            
         try:
             return json.loads(raw_text)
         except json.JSONDecodeError as decode_error:
@@ -403,14 +412,13 @@ class UserInterface:
         st.session_state.current_action = None
         st.session_state.is_processing = False
 
-    def _clear_widget_states(self):
+    @staticmethod
+    def _clear_widget_states():
         """
-        Por que: O Streamlit cacheia os Inputs vinculados a Chaves (keys).
-        Se removermos um item do Array (matriz), o index muda, mas o estado do
-        input fantasma permanece injetando dados na próxima linha visível.
-        A limpeza previne State Drift ao deletar linhas.
+        Garante a remoção de State Drift. Desvincula os inputs cacheados
+        para que eles não reapareçam em novos índices da tabela.
         """
-        prefixes = ("mid_", "mfunc_", "mreq_", "mcen_", "mcat_", "mpri_", "mcrit_", "mobs_", "edit_m_", 
+        prefixes = ("mid_", "mfunc_", "mreq_", "mcen_", "mcat_", "mpri_", "mcrit_", "mobs_", "edit_m_",
                     "tt_", "tp_", "ta_", "te_", "edit_tc_")
         for k in list(st.session_state.keys()):
             if k.startswith(prefixes):
@@ -476,6 +484,44 @@ class UserInterface:
             st.error(f"❌ HTTP Exception: {exception}")
         else:
             st.error(f"❌ Fatal Error: {exception}")
+
+    @staticmethod
+    def _priority_badge(value: str) -> str:
+        """Retorna HTML de badge colorido para Prioridade/Criticidade."""
+        colors_map = {
+            "alta":  ("#c0392b", "#fdecea"),
+            "média": ("#d68910", "#fef9e7"),
+            "media": ("#d68910", "#fef9e7"),
+            "baixa": ("#1e8449", "#eafaf1"),
+        }
+        key = (value or "").lower()
+        fg, bg = colors_map.get(key, ("#555", "#f0f0f0"))
+        return (
+            f'<span style="background:{bg};color:{fg};padding:2px 10px;'
+            f'border-radius:12px;font-size:0.78rem;font-weight:600;'
+            f'border:1px solid {fg}33">{value or "—"}</span>'
+        )
+
+    @staticmethod
+    def _read_only_table(rows: list) -> None:
+        """
+        Renderiza uma mini tabela HTML (Opção B) com rótulo | valor.
+        rows: lista de tuplas (label, value_html)
+        """
+        html = (
+            '<table style="width:100%;border-collapse:collapse;'
+            'font-size:0.85rem;margin-top:0.5rem">'
+        )
+        for label, value in rows:
+            html += (
+                f'<tr style="border-bottom:1px solid #ececec">'
+                f'<td style="padding:6px 10px;color:#888;font-weight:600;'
+                f'white-space:nowrap;width:140px">{label}</td>'
+                f'<td style="padding:6px 10px;color:#2d2d2d">{value}</td>'
+                f'</tr>'
+            )
+        html += "</table>"
+        st.markdown(html, unsafe_allow_html=True)
 
     def step_1(self):
         st.subheader("Passo 1 – Setup e Documentação")
@@ -563,37 +609,34 @@ class UserInterface:
                     self._err(e)
                     self.clear_action()
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # STEP 3 – Matriz de Cobertura (accordion + Opção B read-only table)
+    # ──────────────────────────────────────────────────────────────────────────
     def step_3(self):
         st.subheader("Passo 3 – Refinamento da Matriz de Cobertura")
         matriz = st.session_state.matriz
-        
+
         if not matriz:
             st.info("A Matriz de Cobertura está vazia.")
         else:
-            st.info(f"**{len(matriz)} cenário(s) mapeado(s)**. Utilize os botões ✏️ para editar ou 🗑️ para excluir uma linha.")
+            st.info(
+                f"**{len(matriz)} cenário(s) mapeado(s)**. "
+                "Clique em uma linha para ver os detalhes e acessar as opções de edição ou exclusão."
+            )
 
         editing_any = False
-        
+
         for i, row in enumerate(matriz):
             is_editing = st.session_state.get(f"edit_m_{i}", False)
-            if is_editing: 
+            if is_editing:
                 editing_any = True
 
-            with st.container():
-                col_title, col_edit, col_del = st.columns([10, 1, 1])
-                with col_title:
-                    st.markdown(f"**{row.get('id', f'MC-{i+1:03d}')}** – {row.get('cenario', '')}")
-                with col_edit:
-                    if st.button("✏️", key=f"btn_edit_m_{i}", help="Editar esta linha"):
-                        st.session_state[f"edit_m_{i}"] = not is_editing
-                        st.rerun()
-                with col_del:
-                    if st.button("🗑️", key=f"btn_del_m_{i}", type="primary", help="Excluir esta linha permanentemente"):
-                        st.session_state.matriz.pop(i)
-                        self._clear_widget_states()
-                        st.rerun()
+            expander_label = f"**{row.get('id', f'MC-{i+1:03d}')}** – {row.get('cenario', '')}"
+
+            with st.expander(expander_label, expanded=is_editing):
 
                 if is_editing:
+                    # ── Modo Edição ──────────────────────────────────────────
                     with st.container(border=True):
                         c1, c2, c3 = st.columns(3)
                         with c1:
@@ -606,26 +649,55 @@ class UserInterface:
                         with c3:
                             opts_pri  = ["Alta","Média","Baixa"]
                             opts_crit = ["Alta","Média","Baixa"]
-                            
+
                             def idx_of(opts, val):
                                 try: return [opt.lower() for opt in opts].index((val or '').lower())
                                 except ValueError: return 0
-                                
-                            npri  = st.selectbox("Prioridade", opts_pri, index=idx_of(opts_pri, row.get('prioridade')), key=f"mpri_{i}")
+
+                            npri  = st.selectbox("Prioridade",  opts_pri,  index=idx_of(opts_pri,  row.get('prioridade')),  key=f"mpri_{i}")
                             ncrit = st.selectbox("Criticidade", opts_crit, index=idx_of(opts_crit, row.get('criticidade')), key=f"mcrit_{i}")
                             nobs  = st.text_input("Observações", value=row.get('observacoes',''), key=f"mobs_{i}")
 
-                        if st.button("💾 Salvar Alterações desta Linha", key=f"save_m_{i}", type="primary"):
-                            st.session_state.matriz[i] = {
-                                "id": nid, "funcionalidade": nfunc, "requisito": nreq,
-                                "cenario": ncen, "categoria": ncat, "prioridade": npri,
-                                "criticidade": ncrit, "observacoes": nobs
-                            }
-                            st.session_state[f"edit_m_{i}"] = False
-                            st.rerun()
-                    st.markdown("<br>", unsafe_allow_html=True)
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            if st.button("💾 Salvar Alterações", key=f"save_m_{i}", type="primary", use_container_width=True):
+                                st.session_state.matriz[i] = {
+                                    "id": nid, "funcionalidade": nfunc, "requisito": nreq,
+                                    "cenario": ncen, "categoria": ncat, "prioridade": npri,
+                                    "criticidade": ncrit, "observacoes": nobs
+                                }
+                                st.session_state[f"edit_m_{i}"] = False
+                                st.rerun()
+                        with col_cancel:
+                            if st.button("✖ Cancelar", key=f"cancel_m_{i}", use_container_width=True):
+                                st.session_state[f"edit_m_{i}"] = False
+                                st.rerun()
+
                 else:
-                    st.divider()
+                    # ── Modo Leitura: mini tabela Opção B ───────────────────
+                    pri_badge  = self._priority_badge(row.get('prioridade', ''))
+                    crit_badge = self._priority_badge(row.get('criticidade', ''))
+
+                    self._read_only_table([
+                        ("ID",             row.get('id', '—')),
+                        ("Funcionalidade", row.get('funcionalidade', '—')),
+                        ("Requisito",      row.get('requisito', '—')),
+                        ("Cenário",        row.get('cenario', '—')),
+                        ("Categoria",      row.get('categoria', '—')),
+                        ("Prioridade",     pri_badge),
+                        ("Criticidade",    crit_badge),
+                        ("Observações",    row.get('observacoes') or '—'),
+                    ])
+
+                    st.markdown("<div style='margin-top:0.75rem'></div>", unsafe_allow_html=True)
+                    col_edit, col_del, _ = st.columns([1, 1, 6])
+                    with col_edit:
+                        if st.button("✏️ Editar", key=f"btn_edit_m_{i}", use_container_width=True):
+                            st.session_state[f"edit_m_{i}"] = True
+                            st.rerun()
+                    with col_del:
+                        if st.button("🗑️ Excluir", key=f"btn_del_m_{i}", type="primary", use_container_width=True):
+                            confirm_deletion_modal('matriz', i)
 
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -634,7 +706,7 @@ class UserInterface:
                 st.rerun()
         with col2:
             if editing_any:
-                st.warning("⚠️ Salve a edição da linha em aberto clicando no botão '💾 Salvar Alterações desta Linha' para prosseguir.")
+                st.warning("⚠️ Salve ou cancele a edição da linha em aberto para prosseguir.")
             else:
                 st.button("🚀 Gerar Casos de Teste", use_container_width=True, type="primary",
                           on_click=self.trigger_action, args=("generate_cases",),
@@ -660,62 +732,103 @@ class UserInterface:
                     self._err(e)
                     self.clear_action()
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # STEP 4 – Casos de Teste (accordion + Opção B read-only table)
+    # ──────────────────────────────────────────────────────────────────────────
     def step_4(self):
         st.subheader("Passo 4 – Console de Casos de Teste")
         test_cases = st.session_state.test_cases
-        
+
         if not test_cases:
             st.info("Nenhum caso de teste compilado.")
         else:
-            st.info(f"**{len(test_cases)} script(s)** consolidados. Utilize ✏️ para editar ou 🗑️ para excluir.")
+            st.info(
+                f"**{len(test_cases)} script(s)** consolidados. "
+                "Clique em um caso para ver os detalhes e acessar as opções de edição ou exclusão."
+            )
 
         editing_any = False
-        
+
         for idx, tc in enumerate(test_cases):
             is_editing = st.session_state.get(f"edit_tc_{idx}", False)
-            if is_editing: 
+            if is_editing:
                 editing_any = True
-                
-            with st.container():
-                col_title, col_edit, col_del = st.columns([10, 1, 1])
-                with col_title:
-                    st.markdown(f"**TC-{idx+1:02d}** – {tc.get('titulo','')}")
-                with col_edit:
-                    if st.button("✏️", key=f"btn_edit_tc_{idx}", help="Editar Script"):
-                        st.session_state[f"edit_tc_{idx}"] = not is_editing
-                        st.rerun()
-                with col_del:
-                    if st.button("🗑️", key=f"btn_del_tc_{idx}", type="primary", help="Excluir Script"):
-                        st.session_state.test_cases.pop(idx)
-                        self._clear_widget_states()
-                        st.rerun()
+
+            expander_label = f"**TC-{idx+1:02d}** – {tc.get('titulo', '')}"
+
+            with st.expander(expander_label, expanded=is_editing):
 
                 if is_editing:
+                    # ── Modo Edição ──────────────────────────────────────────
                     with st.container(border=True):
                         titulo = st.text_input("Título", value=tc.get('titulo',''), key=f"tt_{idx}")
                         pre    = st.text_area("Pré-condições", value=tc.get('pre_condicoes',''), key=f"tp_{idx}", height=70)
                         passos = tc.get('passos', [])
                         novos_passos = []
-                        
+
                         if passos:
                             st.markdown("**Test Steps:**")
                             for s, step in enumerate(passos):
                                 cA, cB = st.columns(2)
                                 with cA:
-                                    acao = st.text_area(f"Ação {step.get('numero',s+1)}", value=step.get('acao',''), key=f"ta_{idx}_{s}", height=80)
+                                    acao = st.text_area(f"Ação {step.get('numero', s+1)}", value=step.get('acao',''), key=f"ta_{idx}_{s}", height=80)
                                 with cB:
-                                    esp = st.text_area(f"Esperado {step.get('numero',s+1)}", value=step.get('resultado_esperado',''), key=f"te_{idx}_{s}", height=80)
-                                novos_passos.append({"numero": step.get('numero',s+1), "acao": acao, "resultado_esperado": esp})
-                        
-                        if st.button("💾 Salvar Caso de Teste", key=f"save_tc_{idx}", type="primary"):
-                            st.session_state.test_cases[idx] = {
-                                "titulo": titulo, "pre_condicoes": pre, "passos": novos_passos
-                            }
-                            st.session_state[f"edit_tc_{idx}"] = False
-                            st.rerun()
-                    st.markdown("<br>", unsafe_allow_html=True)
+                                    esp = st.text_area(f"Esperado {step.get('numero', s+1)}", value=step.get('resultado_esperado',''), key=f"te_{idx}_{s}", height=80)
+                                novos_passos.append({"numero": step.get('numero', s+1), "acao": acao, "resultado_esperado": esp})
+
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            if st.button("💾 Salvar Caso de Teste", key=f"save_tc_{idx}", type="primary", use_container_width=True):
+                                st.session_state.test_cases[idx] = {
+                                    "titulo": titulo, "pre_condicoes": pre, "passos": novos_passos
+                                }
+                                st.session_state[f"edit_tc_{idx}"] = False
+                                st.rerun()
+                        with col_cancel:
+                            if st.button("✖ Cancelar", key=f"cancel_tc_{idx}", use_container_width=True):
+                                st.session_state[f"edit_tc_{idx}"] = False
+                                st.rerun()
+
                 else:
-                    st.divider()
+                    # ── Modo Leitura: pré-condições + tabela de steps ────────
+                    self._read_only_table([
+                        ("Pré-condições", tc.get('pre_condicoes') or '—'),
+                    ])
+
+                    passos = tc.get('passos', [])
+                    if passos:
+                        st.markdown("<div style='margin-top:0.6rem'></div>", unsafe_allow_html=True)
+
+                        # Tabela de steps HTML (Opção B)
+                        html = (
+                            '<table style="width:100%;border-collapse:collapse;font-size:0.83rem;margin-top:0.3rem">'
+                            '<thead><tr style="background:#3A3A3A;color:#fff">'
+                            '<th style="padding:6px 10px;text-align:left;width:40px">#</th>'
+                            '<th style="padding:6px 10px;text-align:left;width:48%">Ação</th>'
+                            '<th style="padding:6px 10px;text-align:left">Resultado Esperado</th>'
+                            '</tr></thead><tbody>'
+                        )
+                        for s_idx, step in enumerate(passos):
+                            bg = "#ffffff" if s_idx % 2 == 0 else "#f5f5f5"
+                            html += (
+                                f'<tr style="background:{bg};border-bottom:1px solid #e0e0e0">'
+                                f'<td style="padding:6px 10px;color:#888;font-weight:600">{step.get("numero","")}</td>'
+                                f'<td style="padding:6px 10px;color:#2d2d2d">{step.get("acao","")}</td>'
+                                f'<td style="padding:6px 10px;color:#2d2d2d">{step.get("resultado_esperado","")}</td>'
+                                f'</tr>'
+                            )
+                        html += "</tbody></table>"
+                        st.markdown(html, unsafe_allow_html=True)
+
+                    st.markdown("<div style='margin-top:0.75rem'></div>", unsafe_allow_html=True)
+                    col_edit, col_del, _ = st.columns([1, 1, 6])
+                    with col_edit:
+                        if st.button("✏️ Editar", key=f"btn_edit_tc_{idx}", use_container_width=True):
+                            st.session_state[f"edit_tc_{idx}"] = True
+                            st.rerun()
+                    with col_del:
+                        if st.button("🗑️ Excluir", key=f"btn_del_tc_{idx}", type="primary", use_container_width=True):
+                            confirm_deletion_modal('test_cases', idx)
 
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -724,7 +837,7 @@ class UserInterface:
                 st.rerun()
         with col2:
             if editing_any:
-                st.warning("⚠️ Salve a edição do Script aberto (botão '💾 Salvar Caso de Teste') para prosseguir com o Build.")
+                st.warning("⚠️ Salve ou cancele a edição do Script aberto para prosseguir com o Build.")
             else:
                 st.button("📥 Consolidar e Construir Artefatos", use_container_width=True, type="primary",
                           on_click=self.trigger_action, args=("build_artifacts",),
