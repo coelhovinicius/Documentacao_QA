@@ -3,6 +3,7 @@ import requests
 import json
 import os
 import io
+import uuid
 import fitz  # pymupdf
 import base64
 from PIL import Image
@@ -47,6 +48,7 @@ SIMBOLO_PATH = os.path.join(BASE_DIR, 'simbolo_refu_1.png')
 def confirm_deletion_modal(list_key: str, index: int):
     """
     True Modal for strict deletion confirmation.
+    Used for deleting an entire Matriz row or an entire Test Case.
     Blocks background UI and forces explicit user intent.
     """
     st.markdown("A exclusão deste item é **irreversível**. Tem certeza que deseja remover esta linha?")
@@ -58,6 +60,46 @@ def confirm_deletion_modal(list_key: str, index: int):
             st.rerun()
     with c2:
         if st.button("❌ Cancelar", use_container_width=True):
+            st.rerun()
+
+
+@st.dialog("⚠️ Confirmação de Exclusão")
+def confirm_step_deletion_modal(steps_state_key: str, step_uid: str):
+    """
+    True Modal for strict deletion confirmation of an individual test step
+    inside an open edit/creation form.
+    """
+    st.markdown("A exclusão deste step é **irreversível**. Tem certeza que deseja remover este step?")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary", key="confirm_del_step"):
+            steps_list = st.session_state[steps_state_key]
+            st.session_state[steps_state_key] = [s for s in steps_list if s["uid"] != step_uid]
+            st.rerun()
+    with c2:
+        if st.button("❌ Cancelar", use_container_width=True, key="cancel_del_step"):
+            st.rerun()
+
+
+@st.dialog("⚠️ Descartar Novo Registro")
+def confirm_discard_new_modal(discard_flag_key: str):
+    """
+    True Modal for confirming discard of an in-progress, never-saved new row
+    (Matriz row or Test Case) when the user clicks Cancel.
+    """
+    st.markdown(
+        "Os dados preenchidos neste novo registro ainda **não foram salvos**. "
+        "Ao cancelar, essas informações serão **perdidas permanentemente**. "
+        "Tem certeza que deseja descartar?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🗑️ Sim, Descartar", use_container_width=True, type="primary", key="confirm_discard"):
+            st.session_state[discard_flag_key] = False
+            UserInterface._clear_widget_states()
+            st.rerun()
+    with c2:
+        if st.button("❌ Voltar a Editar", use_container_width=True, key="cancel_discard"):
             st.rerun()
 
 
@@ -398,7 +440,8 @@ class UserInterface:
             'step': 1, 'doc_text': '', 'project_name': '',
             'questions': [], 'user_answers': {},
             'matriz': [], 'test_cases': [], 'csv_content': '',
-            'is_processing': False, 'current_action': None
+            'is_processing': False, 'current_action': None,
+            'adding_matriz_row': False, 'adding_test_case': False,
         }
         for k, v in defaults.items():
             if k not in st.session_state:
@@ -419,7 +462,8 @@ class UserInterface:
         para que eles não reapareçam em novos índices da tabela.
         """
         prefixes = ("mid_", "mfunc_", "mreq_", "mcen_", "mcat_", "mpri_", "mcrit_", "mobs_", "edit_m_",
-                    "tt_", "tp_", "ta_", "te_", "edit_tc_")
+                    "tt_", "tp_", "ta_", "te_", "edit_tc_",
+                    "newm_", "newtc_", "new_steps_")
         for k in list(st.session_state.keys()):
             if k.startswith(prefixes):
                 del st.session_state[k]
@@ -523,6 +567,20 @@ class UserInterface:
         html += "</table>"
         st.markdown(html, unsafe_allow_html=True)
 
+    @staticmethod
+    def _next_matriz_id(matriz: list) -> str:
+        """Gera o próximo ID sequencial MC-0XX com base na maior numeração existente."""
+        max_n = 0
+        for row in matriz:
+            rid = str(row.get('id', ''))
+            digits = ''.join(ch for ch in rid if ch.isdigit())
+            if digits:
+                try:
+                    max_n = max(max_n, int(digits))
+                except ValueError:
+                    pass
+        return f"MC-{max_n + 1:03d}"
+
     def step_1(self):
         st.subheader("Passo 1 – Setup e Documentação")
         col1, col2 = st.columns(2)
@@ -610,8 +668,54 @@ class UserInterface:
                     self.clear_action()
 
     # ──────────────────────────────────────────────────────────────────────────
-    # STEP 3 – Matriz de Cobertura (accordion + Opção B read-only table)
+    # STEP 3 – Matriz de Cobertura (accordion + Opção B + add row + validation)
     # ──────────────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _validate_matriz_fields(nid, nfunc, nreq, ncen, ncat, npri, ncrit) -> list:
+        """Retorna lista de nomes de campos obrigatórios que estão vazios."""
+        missing = []
+        if not nid or not nid.strip():     missing.append("ID")
+        if not nfunc or not nfunc.strip(): missing.append("Funcionalidade")
+        if not nreq or not nreq.strip():   missing.append("Requisito")
+        if not ncen or not ncen.strip():   missing.append("Cenário")
+        if not ncat or not ncat.strip():   missing.append("Categoria")
+        if not npri or not npri.strip():   missing.append("Prioridade")
+        if not ncrit or not ncrit.strip(): missing.append("Criticidade")
+        return missing
+
+    def _render_matriz_form(self, prefix: str, row: dict):
+        """
+        Renderiza o formulário (criação OU edição) de uma linha da Matriz.
+        prefix: prefixo único de widget key (ex: 'mid_3' ou 'newm')
+        row: dict com valores atuais (vazio para criação)
+        Retorna o dict com os novos valores (apenas para leitura dos widgets).
+        """
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            nid   = st.text_input("ID *", value=row.get('id',''), key=f"{prefix}_id")
+            nfunc = st.text_input("Funcionalidade *", value=row.get('funcionalidade',''), key=f"{prefix}_func")
+            nreq  = st.text_input("Requisito *", value=row.get('requisito',''), key=f"{prefix}_req")
+        with c2:
+            ncen  = st.text_area("Cenário *", value=row.get('cenario',''), key=f"{prefix}_cen", height=100)
+            ncat  = st.text_input("Categoria *", value=row.get('categoria',''), key=f"{prefix}_cat")
+        with c3:
+            opts_pri  = ["Alta","Média","Baixa"]
+            opts_crit = ["Alta","Média","Baixa"]
+
+            def idx_of(opts, val):
+                try: return [opt.lower() for opt in opts].index((val or '').lower())
+                except ValueError: return 0
+
+            npri  = st.selectbox("Prioridade *",  opts_pri,  index=idx_of(opts_pri,  row.get('prioridade')),  key=f"{prefix}_pri")
+            ncrit = st.selectbox("Criticidade *", opts_crit, index=idx_of(opts_crit, row.get('criticidade')), key=f"{prefix}_crit")
+            nobs  = st.text_input("Observações", value=row.get('observacoes',''), key=f"{prefix}_obs")
+
+        return {
+            "id": nid, "funcionalidade": nfunc, "requisito": nreq,
+            "cenario": ncen, "categoria": ncat, "prioridade": npri,
+            "criticidade": ncrit, "observacoes": nobs
+        }
+
     def step_3(self):
         st.subheader("Passo 3 – Refinamento da Matriz de Cobertura")
         matriz = st.session_state.matriz
@@ -636,45 +740,32 @@ class UserInterface:
             with st.expander(expander_label, expanded=is_editing):
 
                 if is_editing:
-                    # ── Modo Edição ──────────────────────────────────────────
                     with st.container(border=True):
-                        c1, c2, c3 = st.columns(3)
-                        with c1:
-                            nid   = st.text_input("ID", value=row.get('id',''), key=f"mid_{i}")
-                            nfunc = st.text_input("Funcionalidade", value=row.get('funcionalidade',''), key=f"mfunc_{i}")
-                            nreq  = st.text_input("Requisito", value=row.get('requisito',''), key=f"mreq_{i}")
-                        with c2:
-                            ncen  = st.text_area("Cenário", value=row.get('cenario',''), key=f"mcen_{i}", height=100)
-                            ncat  = st.text_input("Categoria", value=row.get('categoria',''), key=f"mcat_{i}")
-                        with c3:
-                            opts_pri  = ["Alta","Média","Baixa"]
-                            opts_crit = ["Alta","Média","Baixa"]
-
-                            def idx_of(opts, val):
-                                try: return [opt.lower() for opt in opts].index((val or '').lower())
-                                except ValueError: return 0
-
-                            npri  = st.selectbox("Prioridade",  opts_pri,  index=idx_of(opts_pri,  row.get('prioridade')),  key=f"mpri_{i}")
-                            ncrit = st.selectbox("Criticidade", opts_crit, index=idx_of(opts_crit, row.get('criticidade')), key=f"mcrit_{i}")
-                            nobs  = st.text_input("Observações", value=row.get('observacoes',''), key=f"mobs_{i}")
+                        new_vals = self._render_matriz_form(f"m{i}", row)
 
                         col_save, col_cancel = st.columns(2)
                         with col_save:
                             if st.button("💾 Salvar Alterações", key=f"save_m_{i}", type="primary", use_container_width=True):
-                                st.session_state.matriz[i] = {
-                                    "id": nid, "funcionalidade": nfunc, "requisito": nreq,
-                                    "cenario": ncen, "categoria": ncat, "prioridade": npri,
-                                    "criticidade": ncrit, "observacoes": nobs
-                                }
-                                st.session_state[f"edit_m_{i}"] = False
-                                st.rerun()
+                                missing = self._validate_matriz_fields(
+                                    new_vals["id"], new_vals["funcionalidade"], new_vals["requisito"],
+                                    new_vals["cenario"], new_vals["categoria"],
+                                    new_vals["prioridade"], new_vals["criticidade"]
+                                )
+                                if missing:
+                                    st.error(
+                                        "❌ Não foi possível salvar. Preencha os campos obrigatórios: "
+                                        + ", ".join(missing) + "."
+                                    )
+                                else:
+                                    st.session_state.matriz[i] = new_vals
+                                    st.session_state[f"edit_m_{i}"] = False
+                                    st.rerun()
                         with col_cancel:
                             if st.button("✖ Cancelar", key=f"cancel_m_{i}", use_container_width=True):
                                 st.session_state[f"edit_m_{i}"] = False
                                 st.rerun()
 
                 else:
-                    # ── Modo Leitura: mini tabela Opção B ───────────────────
                     pri_badge  = self._priority_badge(row.get('prioridade', ''))
                     crit_badge = self._priority_badge(row.get('criticidade', ''))
 
@@ -699,14 +790,54 @@ class UserInterface:
                         if st.button("🗑️ Excluir", key=f"btn_del_m_{i}", type="primary", use_container_width=True):
                             confirm_deletion_modal('matriz', i)
 
+        # ── Adicionar nova linha ────────────────────────────────────────────
+        st.markdown("<div style='margin-top:0.5rem'></div>", unsafe_allow_html=True)
+
+        if st.session_state.adding_matriz_row:
+            with st.expander("**➕ Novo Cenário**", expanded=True):
+                with st.container(border=True):
+                    blank_row = {"prioridade": "", "criticidade": ""}
+                    if "newm_id" not in st.session_state:
+                        st.session_state["newm_id"] = self._next_matriz_id(matriz)
+                    new_vals = self._render_matriz_form("newm", blank_row)
+
+                    col_save, col_cancel = st.columns(2)
+                    with col_save:
+                        if st.button("💾 Salvar Novo Cenário", key="save_newm", type="primary", use_container_width=True):
+                            missing = self._validate_matriz_fields(
+                                new_vals["id"], new_vals["funcionalidade"], new_vals["requisito"],
+                                new_vals["cenario"], new_vals["categoria"],
+                                new_vals["prioridade"], new_vals["criticidade"]
+                            )
+                            if missing:
+                                st.error(
+                                    "❌ Não foi possível salvar. Preencha os campos obrigatórios: "
+                                    + ", ".join(missing) + "."
+                                )
+                            else:
+                                st.session_state.matriz.append(new_vals)
+                                st.session_state.adding_matriz_row = False
+                                self._clear_widget_states()
+                                st.rerun()
+                    with col_cancel:
+                        if st.button("✖ Cancelar", key="cancel_newm", use_container_width=True):
+                            confirm_discard_new_modal("adding_matriz_row")
+        else:
+            if st.button("➕ Adicionar Novo Cenário à Matriz", use_container_width=True,
+                        disabled=editing_any or st.session_state.is_processing):
+                st.session_state.adding_matriz_row = True
+                st.rerun()
+
+        st.divider()
+
         col1, col2 = st.columns([1, 3])
         with col1:
             if st.button("← Voltar", use_container_width=True, disabled=st.session_state.is_processing):
                 st.session_state.step = 2
                 st.rerun()
         with col2:
-            if editing_any:
-                st.warning("⚠️ Salve ou cancele a edição da linha em aberto para prosseguir.")
+            if editing_any or st.session_state.adding_matriz_row:
+                st.warning("⚠️ Salve ou cancele a edição/criação em aberto para prosseguir.")
             else:
                 st.button("🚀 Gerar Casos de Teste", use_container_width=True, type="primary",
                           on_click=self.trigger_action, args=("generate_cases",),
@@ -733,8 +864,85 @@ class UserInterface:
                     self.clear_action()
 
     # ──────────────────────────────────────────────────────────────────────────
-    # STEP 4 – Casos de Teste (accordion + Opção B read-only table)
+    # STEP 4 – Casos de Teste (accordion + Opção B + add case + dynamic steps)
     # ──────────────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _validate_tc_fields(titulo, pre, steps_data) -> list:
+        """
+        Valida campos obrigatórios de um Caso de Teste.
+        steps_data: lista de dicts {"acao": str, "resultado_esperado": str}
+        """
+        missing = []
+        if not titulo or not titulo.strip():
+            missing.append("Título")
+        if not pre or not pre.strip():
+            missing.append("Pré-condições")
+        if not steps_data:
+            missing.append("ao menos 1 Step")
+        else:
+            for s_idx, step in enumerate(steps_data, start=1):
+                if not step.get("acao", "").strip():
+                    missing.append(f"Ação do Step {s_idx}")
+                if not step.get("resultado_esperado", "").strip():
+                    missing.append(f"Resultado Esperado do Step {s_idx}")
+        return missing
+
+    def _ensure_steps_state(self, steps_state_key: str, initial_steps: list):
+        """Garante que a lista de steps editável (com uid) exista no session_state."""
+        if steps_state_key not in st.session_state:
+            if initial_steps:
+                st.session_state[steps_state_key] = [
+                    {"uid": str(uuid.uuid4()), "acao": s.get("acao", ""),
+                     "resultado_esperado": s.get("resultado_esperado", "")}
+                    for s in initial_steps
+                ]
+            else:
+                st.session_state[steps_state_key] = [
+                    {"uid": str(uuid.uuid4()), "acao": "", "resultado_esperado": ""}
+                ]
+
+    def _render_steps_editor(self, steps_state_key: str, widget_prefix: str):
+        """
+        Renderiza os steps editáveis com campos Ação/Esperado e botão de
+        remover por step (com modal). Lê os valores atuais dos widgets de
+        volta para session_state[steps_state_key] para manter sincronizado.
+        Retorna a lista de steps (dicts com acao/resultado_esperado) lida dos widgets.
+        """
+        steps_list = st.session_state[steps_state_key]
+        st.markdown("**Test Steps:**")
+
+        result_steps = []
+        for s_idx, step in enumerate(steps_list):
+            uid = step["uid"]
+            cA, cB, cDel = st.columns([5, 5, 1])
+            with cA:
+                acao = st.text_area(f"Ação {s_idx+1} *", value=step.get("acao",""),
+                                    key=f"{widget_prefix}_acao_{uid}", height=80)
+            with cB:
+                esp = st.text_area(f"Esperado {s_idx+1} *", value=step.get("resultado_esperado",""),
+                                   key=f"{widget_prefix}_esp_{uid}", height=80)
+            with cDel:
+                st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+                if st.button("🗑️", key=f"{widget_prefix}_delstep_{uid}", help="Remover este step",
+                            disabled=len(steps_list) <= 1):
+                    confirm_step_deletion_modal(steps_state_key, uid)
+
+            result_steps.append({"uid": uid, "acao": acao, "resultado_esperado": esp})
+
+        if len(steps_list) <= 1:
+            st.caption("ℹ️ É necessário manter ao menos 1 step. O botão de remover é desativado no último step restante.")
+
+        # sincroniza valores digitados de volta no session_state
+        st.session_state[steps_state_key] = result_steps
+
+        if st.button("➕ Adicionar Step", key=f"{widget_prefix}_addstep"):
+            st.session_state[steps_state_key].append(
+                {"uid": str(uuid.uuid4()), "acao": "", "resultado_esperado": ""}
+            )
+            st.rerun()
+
+        return [{"acao": s["acao"], "resultado_esperado": s["resultado_esperado"]} for s in result_steps]
+
     def step_4(self):
         st.subheader("Passo 4 – Console de Casos de Teste")
         test_cases = st.session_state.test_cases
@@ -759,38 +967,42 @@ class UserInterface:
             with st.expander(expander_label, expanded=is_editing):
 
                 if is_editing:
-                    # ── Modo Edição ──────────────────────────────────────────
                     with st.container(border=True):
-                        titulo = st.text_input("Título", value=tc.get('titulo',''), key=f"tt_{idx}")
-                        pre    = st.text_area("Pré-condições", value=tc.get('pre_condicoes',''), key=f"tp_{idx}", height=70)
-                        passos = tc.get('passos', [])
-                        novos_passos = []
+                        titulo = st.text_input("Título *", value=tc.get('titulo',''), key=f"tt_{idx}")
+                        pre    = st.text_area("Pré-condições *", value=tc.get('pre_condicoes',''), key=f"tp_{idx}", height=70)
 
-                        if passos:
-                            st.markdown("**Test Steps:**")
-                            for s, step in enumerate(passos):
-                                cA, cB = st.columns(2)
-                                with cA:
-                                    acao = st.text_area(f"Ação {step.get('numero', s+1)}", value=step.get('acao',''), key=f"ta_{idx}_{s}", height=80)
-                                with cB:
-                                    esp = st.text_area(f"Esperado {step.get('numero', s+1)}", value=step.get('resultado_esperado',''), key=f"te_{idx}_{s}", height=80)
-                                novos_passos.append({"numero": step.get('numero', s+1), "acao": acao, "resultado_esperado": esp})
+                        steps_key = f"edit_steps_{idx}"
+                        self._ensure_steps_state(steps_key, tc.get('passos', []))
+                        current_steps = self._render_steps_editor(steps_key, f"etc{idx}")
 
                         col_save, col_cancel = st.columns(2)
                         with col_save:
                             if st.button("💾 Salvar Caso de Teste", key=f"save_tc_{idx}", type="primary", use_container_width=True):
-                                st.session_state.test_cases[idx] = {
-                                    "titulo": titulo, "pre_condicoes": pre, "passos": novos_passos
-                                }
-                                st.session_state[f"edit_tc_{idx}"] = False
-                                st.rerun()
+                                missing = self._validate_tc_fields(titulo, pre, current_steps)
+                                if missing:
+                                    st.error(
+                                        "❌ Não foi possível salvar. Preencha os campos obrigatórios: "
+                                        + ", ".join(missing) + "."
+                                    )
+                                else:
+                                    st.session_state.test_cases[idx] = {
+                                        "titulo": titulo, "pre_condicoes": pre,
+                                        "passos": [
+                                            {"numero": n+1, "acao": s["acao"], "resultado_esperado": s["resultado_esperado"]}
+                                            for n, s in enumerate(current_steps)
+                                        ]
+                                    }
+                                    st.session_state[f"edit_tc_{idx}"] = False
+                                    del st.session_state[steps_key]
+                                    st.rerun()
                         with col_cancel:
                             if st.button("✖ Cancelar", key=f"cancel_tc_{idx}", use_container_width=True):
                                 st.session_state[f"edit_tc_{idx}"] = False
+                                if steps_key in st.session_state:
+                                    del st.session_state[steps_key]
                                 st.rerun()
 
                 else:
-                    # ── Modo Leitura: pré-condições + tabela de steps ────────
                     self._read_only_table([
                         ("Pré-condições", tc.get('pre_condicoes') or '—'),
                     ])
@@ -798,8 +1010,6 @@ class UserInterface:
                     passos = tc.get('passos', [])
                     if passos:
                         st.markdown("<div style='margin-top:0.6rem'></div>", unsafe_allow_html=True)
-
-                        # Tabela de steps HTML (Opção B)
                         html = (
                             '<table style="width:100%;border-collapse:collapse;font-size:0.83rem;margin-top:0.3rem">'
                             '<thead><tr style="background:#3A3A3A;color:#fff">'
@@ -830,14 +1040,59 @@ class UserInterface:
                         if st.button("🗑️ Excluir", key=f"btn_del_tc_{idx}", type="primary", use_container_width=True):
                             confirm_deletion_modal('test_cases', idx)
 
+        # ── Adicionar novo Caso de Teste ────────────────────────────────────
+        st.markdown("<div style='margin-top:0.5rem'></div>", unsafe_allow_html=True)
+
+        if st.session_state.adding_test_case:
+            with st.expander("**➕ Novo Caso de Teste**", expanded=True):
+                with st.container(border=True):
+                    titulo = st.text_input("Título *", value="", key="newtc_titulo")
+                    pre    = st.text_area("Pré-condições *", value="", key="newtc_pre", height=70)
+
+                    new_steps_key = "new_steps_tc"
+                    self._ensure_steps_state(new_steps_key, [])
+                    current_steps = self._render_steps_editor(new_steps_key, "newtc")
+
+                    col_save, col_cancel = st.columns(2)
+                    with col_save:
+                        if st.button("💾 Salvar Novo Caso de Teste", key="save_newtc", type="primary", use_container_width=True):
+                            missing = self._validate_tc_fields(titulo, pre, current_steps)
+                            if missing:
+                                st.error(
+                                    "❌ Não foi possível salvar. Preencha os campos obrigatórios: "
+                                    + ", ".join(missing) + "."
+                                )
+                            else:
+                                st.session_state.test_cases.append({
+                                    "titulo": titulo, "pre_condicoes": pre,
+                                    "passos": [
+                                        {"numero": n+1, "acao": s["acao"], "resultado_esperado": s["resultado_esperado"]}
+                                        for n, s in enumerate(current_steps)
+                                    ]
+                                })
+                                st.session_state.adding_test_case = False
+                                del st.session_state[new_steps_key]
+                                self._clear_widget_states()
+                                st.rerun()
+                    with col_cancel:
+                        if st.button("✖ Cancelar", key="cancel_newtc", use_container_width=True):
+                            confirm_discard_new_modal("adding_test_case")
+        else:
+            if st.button("➕ Adicionar Novo Caso de Teste", use_container_width=True,
+                        disabled=editing_any or st.session_state.is_processing):
+                st.session_state.adding_test_case = True
+                st.rerun()
+
+        st.divider()
+
         col1, col2 = st.columns([1, 3])
         with col1:
             if st.button("← Voltar", use_container_width=True, disabled=st.session_state.is_processing):
                 st.session_state.step = 3
                 st.rerun()
         with col2:
-            if editing_any:
-                st.warning("⚠️ Salve ou cancele a edição do Script aberto para prosseguir com o Build.")
+            if editing_any or st.session_state.adding_test_case:
+                st.warning("⚠️ Salve ou cancele a edição/criação em aberto para prosseguir com o Build.")
             else:
                 st.button("📥 Consolidar e Construir Artefatos", use_container_width=True, type="primary",
                           on_click=self.trigger_action, args=("build_artifacts",),

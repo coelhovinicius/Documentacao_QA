@@ -24,15 +24,7 @@ ignore/
 setup_env.ps1
 sua_chave.key
 requirements1.txt
-app1.py
-app2.py
-app3.py
-app4.py
-app_V1_estavel.py
-app_v4_estavel.py
-app_v4_0.py
-app_v4_1.py
-app_v4_2.py
+app_v*.py
 
 # Specific directories
 images/
