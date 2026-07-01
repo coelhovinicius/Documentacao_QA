@@ -1,0 +1,328 @@
+{
+  "name": "Doc_QA_Plans_HA",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "qa-testgen-plans",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "23aea0b4-9c93-4726-8630-59e155520fb7",
+      "name": "Webhook Plans",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -2032,
+        496
+      ],
+      "webhookId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "VCDmXunueUpMXjJh",
+          "name": "Header Auth account 4"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "17bd947b-8b6d-44fd-8d72-cd4aae044d9a",
+      "name": "Google Gemini",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -1808,
+        688
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "AbTZUtCZlIUnulL4",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"planos_de_teste\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"nome\": { \"type\": \"string\" },\n          \"descricao\": { \"type\": \"string\" },\n          \"suites\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"nome\": { \"type\": \"string\" },\n                \"descricao\": { \"type\": \"string\" },\n                \"casos\": {\n                  \"type\": \"array\",\n                  \"items\": { \"type\": \"string\" }\n                }\n              },\n              \"required\": [\"nome\", \"casos\"]\n            }\n          }\n        },\n        \"required\": [\"nome\", \"suites\"]\n      }\n    }\n  }\n}"
+      },
+      "id": "b06b959a-a099-49d5-811f-a360013fc1f2",
+      "name": "Output Parser Gemini",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.1,
+      "position": [
+        -1648,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {}
+      },
+      "id": "ebf3b8e9-cefe-484a-a2a7-eee12cb238df",
+      "name": "Groq Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -1456,
+        768
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "zbYe35SnbFEOa8Ow",
+          "name": "Groq account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"planos_de_teste\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"nome\": { \"type\": \"string\" },\n          \"descricao\": { \"type\": \"string\" },\n          \"suites\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"nome\": { \"type\": \"string\" },\n                \"descricao\": { \"type\": \"string\" },\n                \"casos\": {\n                  \"type\": \"array\",\n                  \"items\": { \"type\": \"string\" }\n                }\n              },\n              \"required\": [\"nome\", \"casos\"]\n            }\n          }\n        },\n        \"required\": [\"nome\", \"suites\"]\n      }\n    }\n  }\n}"
+      },
+      "id": "bffc52a7-804b-4e16-95d3-bf0c072df43d",
+      "name": "Output Parser Groq",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.1,
+      "position": [
+        -1296,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.output ?? $json }}",
+        "options": {}
+      },
+      "id": "f9f6774f-7468-4b95-afa8-3aff645b9258",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -880,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {}
+      },
+      "id": "0a11b60e-3013-4029-8bc0-89862169ef57",
+      "name": "Groq Model1",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -1104,
+        832
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "zbYe35SnbFEOa8Ow",
+          "name": "Groq account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=IMPORTANT:\nAll output MUST be written exclusively in Brazilian Portuguese (pt-BR).\n\nDo not use English words, labels, field values, titles, descriptions, suite names, plan names, or explanations.\n\nAll generated content must be natural and professional Brazilian Portuguese.\n\nAct as a Senior QA Analyst specialized in test planning for Azure DevOps.\n\nProject:\n{{ $json.body.nome_projeto }}\n\nFunctional Specification:\n{{ $json.body.document_text }}\n\nCoverage Matrix:\n{{ $json.body.matriz_cobertura }}\n\nGenerated Test Cases (use the exact titles to populate the 'casos' field of each Suite):\n{{ $json.body.casos_de_teste }}\n\nBusiness Clarifications:\n{{ $json.body.respostas_duvidas }}\n\nYour task is to organize the Test Cases above into a hierarchy of Test Plans and Test Suites compatible with Azure DevOps.\n\nRULES:\n1. Create between 1 and 3 Test Plans. Each Plan must represent a distinct testing scope (e.g., Functional, Regression, Integration, Smoke).\n2. Each Plan must contain at least 1 Test Suite. Each Suite must group Test Cases by functional area, feature, or business flow.\n3. EVERY Test Case listed in the input MUST be assigned to exactly one Suite. Do not leave any Test Case unassigned.\n4. Use the EXACT title string from the 'titulo' field of each Test Case in the 'casos' array. Do not paraphrase or translate titles.\n5. Do not create empty Suites.\n6. Do not invent Test Cases that are not in the input list.\n7. Plan names and Suite names must be descriptive, clear, and written in Brazilian Portuguese.\n8. The 'descricao' field is optional but recommended for Plans and Suites.\n\nReturn ONLY valid JSON matching the schema.",
+        "hasOutputParser": true
+      },
+      "id": "25c525df-2ecd-463e-9cc4-cf4f9aa8117d",
+      "name": "Gemini Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        -1808,
+        496
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=IMPORTANT:\nAll output MUST be written exclusively in Brazilian Portuguese (pt-BR).\n\nDo not use English words, labels, field values, titles, descriptions, suite names, plan names, or explanations.\n\nAll generated content must be natural and professional Brazilian Portuguese.\n\nAct as a Senior QA Analyst specialized in test planning for Azure DevOps.\n\nProject:\n{{ $('Webhook Plans').item.json.body.nome_projeto }}\n\nFunctional Specification:\n{{ $('Webhook Plans').item.json.body.document_text }}\n\nCoverage Matrix:\n{{ $('Webhook Plans').item.json.body.matriz_cobertura }}\n\nGenerated Test Cases (use the exact titles to populate the 'casos' field of each Suite):\n{{ $('Webhook Plans').item.json.body.casos_de_teste }}\n\nBusiness Clarifications:\n{{ $('Webhook Plans').item.json.body.respostas_duvidas }}\n\nYour task is to organize the Test Cases above into a hierarchy of Test Plans and Test Suites compatible with Azure DevOps.\n\nRULES:\n1. Create between 1 and 3 Test Plans. Each Plan must represent a distinct testing scope (e.g., Functional, Regression, Integration, Smoke).\n2. Each Plan must contain at least 1 Test Suite. Each Suite must group Test Cases by functional area, feature, or business flow.\n3. EVERY Test Case listed in the input MUST be assigned to exactly one Suite. Do not leave any Test Case unassigned.\n4. Use the EXACT title string from the 'titulo' field of each Test Case in the 'casos' array. Do not paraphrase or translate titles.\n5. Do not create empty Suites.\n6. Do not invent Test Cases that are not in the input list.\n7. Plan names and Suite names must be descriptive, clear, and written in Brazilian Portuguese.\n8. The 'descricao' field is optional but recommended for Plans and Suites.\n\nReturn ONLY valid JSON matching the schema.",
+        "hasOutputParser": true
+      },
+      "id": "737f3090-0d6e-4d0a-a169-2205a4e0e37f",
+      "name": "Groq Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        -1456,
+        560
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=IMPORTANT:\nAll output MUST be written exclusively in Brazilian Portuguese (pt-BR).\n\nDo not use English words, labels, field values, titles, descriptions, suite names, plan names, or explanations.\n\nAll generated content must be natural and professional Brazilian Portuguese.\n\nAct as a Senior QA Analyst specialized in test planning for Azure DevOps.\n\nProject:\n{{ $('Webhook Plans').item.json.body.nome_projeto }}\n\nFunctional Specification:\n{{ $('Webhook Plans').item.json.body.document_text }}\n\nCoverage Matrix:\n{{ $('Webhook Plans').item.json.body.matriz_cobertura }}\n\nGenerated Test Cases (use the exact titles to populate the 'casos' field of each Suite):\n{{ $('Webhook Plans').item.json.body.casos_de_teste }}\n\nBusiness Clarifications:\n{{ $('Webhook Plans').item.json.body.respostas_duvidas }}\n\nYour task is to organize the Test Cases above into a hierarchy of Test Plans and Test Suites compatible with Azure DevOps.\n\nRULES:\n1. Create between 1 and 3 Test Plans. Each Plan must represent a distinct testing scope (e.g., Functional, Regression, Integration, Smoke).\n2. Each Plan must contain at least 1 Test Suite. Each Suite must group Test Cases by functional area, feature, or business flow.\n3. EVERY Test Case listed in the input MUST be assigned to exactly one Suite. Do not leave any Test Case unassigned.\n4. Use the EXACT title string from the 'titulo' field of each Test Case in the 'casos' array. Do not paraphrase or translate titles.\n5. Do not create empty Suites.\n6. Do not invent Test Cases that are not in the input list.\n7. Plan names and Suite names must be descriptive, clear, and written in Brazilian Portuguese.\n8. The 'descricao' field is optional but recommended for Plans and Suites.\n\nReturn ONLY valid JSON matching the schema.",
+        "hasOutputParser": true
+      },
+      "id": "587731f5-93e9-4ca2-bb6c-1071b5c3f876",
+      "name": "Groq Chain 1",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        -1104,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"planos_de_teste\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"nome\": { \"type\": \"string\" },\n          \"descricao\": { \"type\": \"string\" },\n          \"suites\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"nome\": { \"type\": \"string\" },\n                \"descricao\": { \"type\": \"string\" },\n                \"casos\": {\n                  \"type\": \"array\",\n                  \"items\": { \"type\": \"string\" }\n                }\n              },\n              \"required\": [\"nome\", \"casos\"]\n            }\n          }\n        },\n        \"required\": [\"nome\", \"suites\"]\n      }\n    }\n  }\n}"
+      },
+      "id": "8bf8f228-c18d-4a19-bd13-51dada770263",
+      "name": "Output Parser Groq 1",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.1,
+      "position": [
+        -944,
+        832
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Plans": {
+      "main": [
+        [
+          {
+            "node": "Gemini Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Gemini Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Parser Gemini": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Gemini Chain",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Groq Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Parser Groq": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Groq Chain",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Groq Chain 1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Chain": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Groq Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chain": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Groq Chain 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Parser Groq 1": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Groq Chain 1",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chain 1": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "4ff070d4-a95d-4a4c-94d7-238efee613f8",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "562c7355cd5a3106fec1249023da836a71cbf8a0d3aa8209a4d6e83ae9e3b852"
+  },
+  "id": "dywx1cpSito6zCl1",
+  "tags": []
+}
