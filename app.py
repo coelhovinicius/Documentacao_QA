@@ -150,7 +150,17 @@ class DocumentProcessor:
             if ext == "pdf":
                 data = uploaded_file.read()
                 doc = fitz.open(stream=data, filetype="pdf")
-                for page in doc: text += page.get_text() + "\n"
+                for page in doc:
+                    page_text = page.get_text("text")
+                    # page.get_text may return str, list or dict depending on pymupdf version
+                    if isinstance(page_text, (list, tuple)):
+                        page_text = "".join(map(str, page_text))
+                    elif isinstance(page_text, dict):
+                        # try common keys, fallback to string representation
+                        page_text = page_text.get("text") or page_text.get("blocks") or str(page_text)
+                    else:
+                        page_text = str(page_text)
+                    text += page_text + "\n"
                 doc.close()
             elif ext == "docx":
                 doc = Document(uploaded_file)
@@ -276,7 +286,7 @@ class PdfReportGenerator:
                              preserveAspectRatio=True, mask='auto')
         canvas.setFont('Helvetica-Bold', 11)
         canvas.setFillColor(COR_BRANCO)
-        canvas.drawRightString(w - 18, h - 28, f"QA TestGen V6 |  {project_name}")
+        canvas.drawRightString(w - 18, h - 28, f"QA TestGen |  {project_name}")
         canvas.setFont('Helvetica', 8)
         canvas.drawRightString(w - 18, h - 42, datetime.now(TZ_BR).strftime('%d/%m/%Y %H:%M'))
         canvas.setFont('Helvetica', 7)
@@ -606,7 +616,7 @@ class UserInterface:
             "newm_","newtc_","newtc_steps","new_steps_","newp_",
         )
         for k in list(st.session_state.keys()):
-            if any(k.startswith(p) for p in prefixes):
+            if isinstance(k, str) and any(k.startswith(p) for p in prefixes):
                 del st.session_state[k]
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -1347,14 +1357,14 @@ class UserInterface:
             csv_cases = ('\ufeff' + st.session_state.csv_cases).encode('utf-8')
             st.download_button("⬇️ Baixar Test Cases (CSV)", data=csv_cases,
                                file_name=f"QA_Cases_{safe_name}.csv",
-                               mime="text/csv", use_container_width=True)
+                               mime="text/csv", use_container_width=True, type="primary")
         with col2:
             st.markdown("**Test Plans + Suites + Cases (hierarquia completa)**")
             st.caption("Importa a hierarquia completa: Plan → Suite → Case.")
             csv_plans = ('\ufeff' + st.session_state.csv_plans).encode('utf-8')
             st.download_button("⬇️ Baixar Test Plans (CSV)", data=csv_plans,
                                file_name=f"QA_Plans_{safe_name}.csv",
-                               mime="text/csv", use_container_width=True)
+                               mime="text/csv", use_container_width=True, type="primary")
 
         st.divider()
 
@@ -1370,7 +1380,7 @@ class UserInterface:
             )
         st.download_button("⬇️ Baixar Documentação Técnica (PDF)", data=pdf_bytes,
                            file_name=f"QA_Report_{safe_name}.pdf",
-                           mime="application/pdf", use_container_width=True)
+                           mime="application/pdf", use_container_width=True, type="primary")
 
         st.divider()
         if st.button("🔄 Flush Session - Nova Análise", use_container_width=True,
