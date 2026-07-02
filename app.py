@@ -82,7 +82,7 @@ def confirm_step_deletion_modal(steps_state_key: str, step_uid: str):
 
 
 @st.dialog("⚠️ Confirmação de Exclusão")
-def confirm_suite_deletion_modal(plan_idx: int, suite_uid: str, suites_state_key: str = ""):
+def confirm_suite_deletion_modal(plan_idx: int, suite_uid: str):
     st.markdown(
         "A exclusão desta Suite é **irreversível** e não poderá ser recuperada. "
         "Tem certeza que deseja remover esta Suite?"
@@ -90,17 +90,10 @@ def confirm_suite_deletion_modal(plan_idx: int, suite_uid: str, suites_state_key
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary", key="confirm_del_suite"):
-            if plan_idx >= 0:
-                # Suite pertence a um plano já salvo em test_plans
-                plans = st.session_state.test_plans
-                plans[plan_idx]["suites"] = [
-                    s for s in plans[plan_idx]["suites"] if s.get("uid") != suite_uid
-                ]
-            elif suites_state_key and suites_state_key in st.session_state:
-                # Suite pertence ao formulário de novo plano (ainda não salvo)
-                st.session_state[suites_state_key] = [
-                    s for s in st.session_state[suites_state_key] if s.get("uid") != suite_uid
-                ]
+            plans = st.session_state.test_plans
+            plans[plan_idx]["suites"] = [
+                s for s in plans[plan_idx]["suites"] if s["uid"] != suite_uid
+            ]
             st.rerun()
     with c2:
         if st.button("❌ Cancelar", use_container_width=True, key="cancel_del_suite"):
@@ -764,7 +757,7 @@ class UserInterface:
                     {"uid": str(uuid.uuid4()), "nome":"", "descricao":"", "casos":[]}
                 ]
 
-    def _render_suites_editor(self, suites_key: str, prefix: str, available_cases: list, plan_idx: int = -1) -> list:
+    def _render_suites_editor(self, suites_key: str, prefix: str, available_cases: list) -> list:
         suites_list = st.session_state[suites_key]
         st.markdown("**Test Suites:**")
         result = []
@@ -778,7 +771,7 @@ class UserInterface:
                     if st.button("🗑️", key=f"{prefix}_delsuite_{uid}",
                                  help="Remover esta Suite",
                                  disabled=len(suites_list) <= 1):
-                        confirm_suite_deletion_modal(plan_idx, uid, suites_state_key=suites_key)
+                        confirm_suite_deletion_modal(-1, uid)  # handled inline below
 
                 nome = st.text_input(f"Nome da Suite {s_idx+1} *",
                                      value=suite.get("nome",""),
@@ -1189,11 +1182,6 @@ class UserInterface:
                         st.error("❌ Nenhum Plano de Teste retornado. Valide a chave JSON de saída no n8n.")
                         self.clear_action()
                     else:
-                        # Garante que toda suite tenha uid — a IA não os gera
-                        for plan in plans:
-                            for suite in plan.get("suites", []):
-                                if "uid" not in suite:
-                                    suite["uid"] = str(uuid.uuid4())
                         st.session_state.test_plans = plans
                         st.session_state.step       = 5
                         self.clear_action(); st.rerun()
@@ -1235,7 +1223,7 @@ class UserInterface:
 
                         sk = f"suites_edit_{i}"
                         self._ensure_suites_state(sk, plan.get('suites', []))
-                        suites_vals = self._render_suites_editor(sk, f"ep{i}", available_cases, plan_idx=i)
+                        suites_vals = self._render_suites_editor(sk, f"ep{i}", available_cases)
 
                         cs, cc = st.columns(2)
                         with cs:
@@ -1295,7 +1283,7 @@ class UserInterface:
                     desc = st.text_input("Descrição",       key="newp_desc")
                     sk   = "new_suites_plan"
                     self._ensure_suites_state(sk, [])
-                    suites_vals = self._render_suites_editor(sk, "newp", available_cases, plan_idx=-1)
+                    suites_vals = self._render_suites_editor(sk, "newp", available_cases)
                     cs, cc = st.columns(2)
                     with cs:
                         if st.button("💾 Salvar Novo Plano", key="save_newp", type="primary", use_container_width=True):
