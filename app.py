@@ -82,7 +82,7 @@ def confirm_step_deletion_modal(steps_state_key: str, step_uid: str):
 
 
 @st.dialog("⚠️ Confirmação de Exclusão")
-def confirm_suite_deletion_modal(plan_idx: int, suite_uid: str):
+def confirm_suite_deletion_modal(plan_idx: int, suite_uid: str, suites_state_key: str = ""):
     st.markdown(
         "A exclusão desta Suite é **irreversível** e não poderá ser recuperada. "
         "Tem certeza que deseja remover esta Suite?"
@@ -90,10 +90,17 @@ def confirm_suite_deletion_modal(plan_idx: int, suite_uid: str):
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary", key="confirm_del_suite"):
-            plans = st.session_state.test_plans
-            plans[plan_idx]["suites"] = [
-                s for s in plans[plan_idx]["suites"] if s["uid"] != suite_uid
-            ]
+            if plan_idx >= 0:
+                # Suite pertence a um plano já salvo em test_plans
+                plans = st.session_state.test_plans
+                plans[plan_idx]["suites"] = [
+                    s for s in plans[plan_idx]["suites"] if s.get("uid") != suite_uid
+                ]
+            elif suites_state_key and suites_state_key in st.session_state:
+                # Suite pertence ao formulário de novo plano (ainda não salvo)
+                st.session_state[suites_state_key] = [
+                    s for s in st.session_state[suites_state_key] if s.get("uid") != suite_uid
+                ]
             st.rerun()
     with c2:
         if st.button("❌ Cancelar", use_container_width=True, key="cancel_del_suite"):
@@ -150,17 +157,7 @@ class DocumentProcessor:
             if ext == "pdf":
                 data = uploaded_file.read()
                 doc = fitz.open(stream=data, filetype="pdf")
-                for page in doc:
-                    page_text = page.get_text("text")
-                    # page.get_text may return str, list or dict depending on pymupdf version
-                    if isinstance(page_text, (list, tuple)):
-                        page_text = "".join(map(str, page_text))
-                    elif isinstance(page_text, dict):
-                        # try common keys, fallback to string representation
-                        page_text = page_text.get("text") or page_text.get("blocks") or str(page_text)
-                    else:
-                        page_text = str(page_text)
-                    text += page_text + "\n"
+                for page in doc: text += page.get_text() + "\n"
                 doc.close()
             elif ext == "docx":
                 doc = Document(uploaded_file)
@@ -616,7 +613,7 @@ class UserInterface:
             "newm_","newtc_","newtc_steps","new_steps_","newp_",
         )
         for k in list(st.session_state.keys()):
-            if isinstance(k, str) and any(k.startswith(p) for p in prefixes):
+            if any(k.startswith(p) for p in prefixes):
                 del st.session_state[k]
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -767,7 +764,7 @@ class UserInterface:
                     {"uid": str(uuid.uuid4()), "nome":"", "descricao":"", "casos":[]}
                 ]
 
-    def _render_suites_editor(self, suites_key: str, prefix: str, available_cases: list) -> list:
+    def _render_suites_editor(self, suites_key: str, prefix: str, available_cases: list, plan_idx: int = -1) -> list:
         suites_list = st.session_state[suites_key]
         st.markdown("**Test Suites:**")
         result = []
@@ -781,7 +778,7 @@ class UserInterface:
                     if st.button("🗑️", key=f"{prefix}_delsuite_{uid}",
                                  help="Remover esta Suite",
                                  disabled=len(suites_list) <= 1):
-                        confirm_suite_deletion_modal(-1, uid)  # handled inline below
+                        confirm_suite_deletion_modal(plan_idx, uid, suites_state_key=suites_key)
 
                 nome = st.text_input(f"Nome da Suite {s_idx+1} *",
                                      value=suite.get("nome",""),
@@ -1192,6 +1189,11 @@ class UserInterface:
                         st.error("❌ Nenhum Plano de Teste retornado. Valide a chave JSON de saída no n8n.")
                         self.clear_action()
                     else:
+                        # Garante que toda suite tenha uid — a IA não os gera
+                        for plan in plans:
+                            for suite in plan.get("suites", []):
+                                if "uid" not in suite:
+                                    suite["uid"] = str(uuid.uuid4())
                         st.session_state.test_plans = plans
                         st.session_state.step       = 5
                         self.clear_action(); st.rerun()
@@ -1233,7 +1235,7 @@ class UserInterface:
 
                         sk = f"suites_edit_{i}"
                         self._ensure_suites_state(sk, plan.get('suites', []))
-                        suites_vals = self._render_suites_editor(sk, f"ep{i}", available_cases)
+                        suites_vals = self._render_suites_editor(sk, f"ep{i}", available_cases, plan_idx=i)
 
                         cs, cc = st.columns(2)
                         with cs:
@@ -1293,7 +1295,7 @@ class UserInterface:
                     desc = st.text_input("Descrição",       key="newp_desc")
                     sk   = "new_suites_plan"
                     self._ensure_suites_state(sk, [])
-                    suites_vals = self._render_suites_editor(sk, "newp", available_cases)
+                    suites_vals = self._render_suites_editor(sk, "newp", available_cases, plan_idx=-1)
                     cs, cc = st.columns(2)
                     with cs:
                         if st.button("💾 Salvar Novo Plano", key="save_newp", type="primary", use_container_width=True):
@@ -1357,14 +1359,16 @@ class UserInterface:
             csv_cases = ('\ufeff' + st.session_state.csv_cases).encode('utf-8')
             st.download_button("⬇️ Baixar Test Cases (CSV)", data=csv_cases,
                                file_name=f"QA_Cases_{safe_name}.csv",
-                               mime="text/csv", use_container_width=True, type="primary")
+                               mime="text/csv", use_container_width=True,
+                               type="primary")
         with col2:
             st.markdown("**Test Plans + Suites + Cases (hierarquia completa)**")
             st.caption("Importa a hierarquia completa: Plan → Suite → Case.")
             csv_plans = ('\ufeff' + st.session_state.csv_plans).encode('utf-8')
             st.download_button("⬇️ Baixar Test Plans (CSV)", data=csv_plans,
                                file_name=f"QA_Plans_{safe_name}.csv",
-                               mime="text/csv", use_container_width=True, type="primary")
+                               mime="text/csv", use_container_width=True,
+                               type="primary")
 
         st.divider()
 
@@ -1380,7 +1384,8 @@ class UserInterface:
             )
         st.download_button("⬇️ Baixar Documentação Técnica (PDF)", data=pdf_bytes,
                            file_name=f"QA_Report_{safe_name}.pdf",
-                           mime="application/pdf", use_container_width=True, type="primary")
+                           mime="application/pdf", use_container_width=True,
+                           type="primary")
 
         st.divider()
         if st.button("🔄 Flush Session - Nova Análise", use_container_width=True,
