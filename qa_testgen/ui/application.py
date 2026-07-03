@@ -20,6 +20,8 @@ from qa_testgen.ui.dialogs import (
     clear_widget_states,
     confirm_deletion_modal,
     confirm_discard_new_modal,
+    confirm_matriz_deletion_modal,
+    confirm_navigate_away_modal,
     confirm_suite_deletion_modal,
     confirm_step_deletion_modal,
 )
@@ -129,19 +131,64 @@ class UserInterface:
             unsafe_allow_html=True,
         )
 
+    def _has_editing_in_progress(self) -> bool:
+        """Retorna True se houver qualquer formulário de edição ou criação em aberto."""
+        state = self.state
+        # Criação em aberto
+        if state.get('adding_matriz_row') or state.get('adding_test_case') or state.get('adding_test_plan'):
+            return True
+        # Edição de linha da Matriz
+        matriz = state.get('matriz') or []
+        for i in range(len(matriz)):
+            if state.get(f'edit_m_{i}', False):
+                return True
+        # Edição de Caso de Teste
+        test_cases = state.get('test_cases') or []
+        for i in range(len(test_cases)):
+            if state.get(f'edit_tc_{i}', False):
+                return True
+        # Edição de Plano de Teste
+        test_plans = state.get('test_plans') or []
+        for i in range(len(test_plans)):
+            if state.get(f'edit_p_{i}', False):
+                return True
+        return False
+
     def _progress(self):
+        """
+        Barra de progresso clicável.
+        - Passos concluídos (< atual): clicáveis, voltam ao passo clicado.
+        - Passo atual: destacado, não clicável.
+        - Passos futuros não concluídos: desabilitados.
+        """
         labels = ["📄 Upload", "💬 Dúvidas", "📊 Matriz", "📋 Casos", "📁 Planos", "⬇️ Download"]
         cols = st.columns(6)
         current_step = self.state.get('step')
+
         for i, (col, label) in enumerate(zip(cols, labels), start=1):
             with col:
                 if i < current_step:
-                    st.success(label)
+                    # Passo concluído — botão clicável
+                    if st.button(label, key=f"nav_step_{i}", use_container_width=True):
+                        if self._has_editing_in_progress():
+                            confirm_navigate_away_modal(i)
+                        else:
+                            clear_widget_states()
+                            self.state.set('step', i)
+                            st.rerun()
                 elif i == current_step:
-                    st.info(f"**{label}**")
-                else:
+                    # Passo atual — destaque, não clicável
                     st.markdown(
-                        f"<div style='padding:.5rem;border-radius:4px;background:#f0f0f0;color:#aaa;text-align:center'>{label}</div>",
+                        f"<div style='padding:.45rem .5rem;border-radius:4px;background:#d0e8ff;"
+                        f"color:#0a4f8a;text-align:center;font-weight:700;border:1.5px solid #4A90D9'>"
+                        f"{label}</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    # Passo futuro — desabilitado
+                    st.markdown(
+                        f"<div style='padding:.45rem .5rem;border-radius:4px;"
+                        f"background:#f0f0f0;color:#bbb;text-align:center'>{label}</div>",
                         unsafe_allow_html=True,
                     )
         st.divider()
@@ -469,7 +516,7 @@ class UserInterface:
                             st.rerun()
                     with cd:
                         if st.button("🗑️ Excluir", key=f"btn_del_m_{i}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
-                            confirm_deletion_modal('matriz', i)
+                            confirm_matriz_deletion_modal(i)
 
         st.markdown("<div style='margin-top:.5rem'></div>", unsafe_allow_html=True)
         if self.state.get('adding_matriz_row'):

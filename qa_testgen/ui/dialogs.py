@@ -15,6 +15,29 @@ def clear_widget_states():
 
 
 @st.dialog("⚠️ Confirmação de Exclusão")
+def confirm_matriz_deletion_modal(index: int):
+    st.markdown(
+        "A exclusão deste cenário é **irreversível** e não poderá ser recuperada. "
+        "Os IDs da Matriz serão renumerados automaticamente. "
+        "Tem certeza que deseja prosseguir?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary"):
+            matriz = st.session_state['matriz']
+            matriz.pop(index)
+            # Renumera todos os IDs sequencialmente preservando o prefixo MC-
+            for idx, row in enumerate(matriz):
+                row['id'] = f"MC-{idx + 1:03d}"
+            st.session_state['matriz'] = matriz
+            clear_widget_states()
+            st.rerun()
+    with c2:
+        if st.button("❌ Cancelar", use_container_width=True):
+            st.rerun()
+
+
+@st.dialog("⚠️ Confirmação de Exclusão")
 def confirm_deletion_modal(list_key: str, index: int):
     st.markdown(
         "A exclusão deste item é **irreversível** e não poderá ser recuperada. "
@@ -64,6 +87,24 @@ def confirm_suite_deletion_modal(suites_state_key: str, suite_uid: str):
             st.rerun()
     with c2:
         if st.button("❌ Cancelar", use_container_width=True, key="cancel_del_suite"):
+            st.rerun()
+
+
+@st.dialog("⚠️ Edição em Aberto")
+def confirm_navigate_away_modal(target_step: int):
+    st.markdown(
+        "Há uma **edição em aberto** neste passo. "
+        "Se navegar agora, as alterações não salvas serão **descartadas permanentemente**. "
+        "Tem certeza que deseja sair sem salvar?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚪 Sim, Sair sem Salvar", use_container_width=True, type="primary", key="confirm_navigate"):
+            clear_widget_states()
+            st.session_state['step'] = target_step
+            st.rerun()
+    with c2:
+        if st.button("✖ Voltar a Editar", use_container_width=True, key="cancel_navigate"):
             st.rerun()
 
 
