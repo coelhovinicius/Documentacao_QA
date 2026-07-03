@@ -44,10 +44,42 @@ class UserInterface:
     def trigger_action(self, action_name: str):
         self.state.set('current_action', action_name)
         self.state.set('is_processing', True)
+        self.state.set('processing_interrupted', False)
 
     def clear_action(self):
         self.state.set('current_action', None)
         self.state.set('is_processing', False)
+        self.state.set('processing_interrupted', False)
+
+    def interrupt_processing(self):
+        self.state.set('current_action', None)
+        self.state.set('is_processing', False)
+        self.state.set('processing_interrupted', True)
+        st.rerun()
+
+    def _set_step(self, target_step: int, allow_during_processing: bool = False):
+        if self.state.get('is_processing') and not allow_during_processing:
+            return False
+
+        current_step = self.state.get('step', 1)
+        if target_step != current_step:
+            completed_steps = set(self.state.get('completed_steps') or [])
+            completed_steps.add(current_step)
+            self.state.set('completed_steps', sorted(completed_steps))
+
+        self.state.set('step', target_step)
+        self.state.set('max_step', max(self.state.get('max_step', 1), target_step))
+        return True
+
+    @staticmethod
+    def can_access_step(target_step, current_step, max_step, completed_steps, is_processing):
+        if is_processing:
+            return False
+        if target_step == current_step:
+            return False
+        if target_step <= max_step:
+            return True
+        return target_step in set(completed_steps or [])
 
     @staticmethod
     def _priority_badge(value: str) -> str:
@@ -103,6 +135,9 @@ class UserInterface:
     def _header(self):
         with st.sidebar:
             st.warning("⚠️ Controles de Emergência")
+            if self.state.get('is_processing'):
+                if st.button("⏹️ Interromper Processamento", use_container_width=True, type="primary"):
+                    self.interrupt_processing()
             if st.button("🔄 Resetar Aplicação", use_container_width=True):
                 self.state.clear()
                 st.rerun()
@@ -155,42 +190,36 @@ class UserInterface:
         return False
 
     def _progress(self):
-        """
-        Barra de progresso clicável.
-        - Passos concluídos (< atual): clicáveis, voltam ao passo clicado.
-        - Passo atual: destacado, não clicável.
-        - Passos futuros não concluídos: desabilitados.
-        """
+        """Barra de progresso com navegação restrita aos passos liberados."""
         labels = ["📄 Upload", "💬 Dúvidas", "📊 Matriz", "📋 Casos", "📁 Planos", "⬇️ Download"]
         cols = st.columns(6)
         current_step = self.state.get('step')
+        max_step = self.state.get('max_step', current_step)
+        completed_steps = set(self.state.get('completed_steps') or [])
+        is_processing = self.state.get('is_processing')
 
         for i, (col, label) in enumerate(zip(cols, labels), start=1):
             with col:
-                if i < current_step:
-                    # Passo concluído — botão clicável
-                    if st.button(label, key=f"nav_step_{i}", use_container_width=True):
-                        if self._has_editing_in_progress():
-                            confirm_navigate_away_modal(i)
-                        else:
-                            clear_widget_states()
-                            self.state.set('step', i)
-                            st.rerun()
-                elif i == current_step:
-                    # Passo atual — destaque, não clicável
+                is_current = i == current_step
+                is_accessible = self.can_access_step(i, current_step, max_step, completed_steps, is_processing)
+
+                if is_current:
                     st.markdown(
                         f"<div style='padding:.45rem .5rem;border-radius:4px;background:#d0e8ff;"
                         f"color:#0a4f8a;text-align:center;font-weight:700;border:1.5px solid #4A90D9'>"
                         f"{label}</div>",
                         unsafe_allow_html=True,
                     )
+                elif is_accessible:
+                    if st.button(label, key=f"nav_step_{i}", use_container_width=True, disabled=is_processing):
+                        if self._has_editing_in_progress():
+                            confirm_navigate_away_modal(i)
+                        else:
+                            clear_widget_states()
+                            self._set_step(i)
+                            st.rerun()
                 else:
-                    # Passo futuro — desabilitado
-                    st.markdown(
-                        f"<div style='padding:.45rem .5rem;border-radius:4px;"
-                        f"background:#f0f0f0;color:#bbb;text-align:center'>{label}</div>",
-                        unsafe_allow_html=True,
-                    )
+                    st.button(label, key=f"nav_step_{i}", use_container_width=True, disabled=True)
         st.divider()
 
     def _ensure_steps_state(self, key: str, initial: list):
@@ -363,11 +392,28 @@ class UserInterface:
 
     def step_1(self):
         st.subheader("Passo 1 – Setup e Documentação")
+        if self.state.get('processing_interrupted'):
+            st.info("⚠️ Processamento interrompido. Você pode continuar editando esta etapa.")
+
         col1, col2 = st.columns(2)
         with col1:
-            project = st.text_input("Nome do Projeto *", placeholder="Ex: Passaporte Refuturiza")
+            project = st.text_input(
+                "Nome do Projeto *",
+                value=self.state.get('project_name', ''),
+                key='project_name_input',
+                placeholder="Ex: Passaporte Refuturiza",
+            )
+            if project:
+                self.state.set('project_name', project)
         with col2:
-            uploaded = st.file_uploader("Documento de Requisitos (Máx 20MB) *", type=["pdf", "txt", "docx"])
+            uploaded = st.file_uploader(
+                "Documento de Requisitos (Máx 20MB) *",
+                type=["pdf", "txt", "docx"],
+                key='step1_uploaded_file',
+                disabled=self.state.get('is_processing'),
+            ) or self.state.get('uploaded_file')
+            if uploaded is not None:
+                self.state.set('uploaded_file', uploaded)
 
         if uploaded and uploaded.size > 20 * 1024 * 1024:
             st.error("❌ Arquivo excede o limite máximo de 20MB.")
@@ -399,7 +445,7 @@ class UserInterface:
                         self.state.set('doc_text', text)
                         self.state.set('project_name', project)
                         self.state.set('questions', resp.get('duvidas') or [])
-                        self.state.set('step', 2)
+                        self._set_step(2, allow_during_processing=True)
                         self.clear_action()
                         st.rerun()
                     except Exception as error:
@@ -410,6 +456,7 @@ class UserInterface:
         st.subheader("Passo 2 – Resolução de Conflitos e Ambiguidade")
         questions = self.state.get('questions')
         answers = {}
+        existing_answers = self.state.get('step_2_answers', {})
         if not questions:
             st.success("✅ A IA não identificou ambiguidades. Prossiga para gerar a Matriz.")
         else:
@@ -420,13 +467,15 @@ class UserInterface:
                 answers[qid] = st.text_area(
                     f"Resposta #{qid}",
                     key=f"q_{qid}",
+                    value=existing_answers.get(qid, ''),
                     placeholder="Descreva a regra de negócio consolidada…",
                 )
+        self.state.set('step_2_answers', answers)
 
         c1, c2 = st.columns([1, 3])
         with c1:
             if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing')):
-                self.state.set('step', 1)
+                self._set_step(1)
                 st.rerun()
         with c2:
             st.button(
@@ -453,7 +502,7 @@ class UserInterface:
                     else:
                         self.state.set('user_answers', answers)
                         self.state.set('matriz', matriz)
-                        self.state.set('step', 3)
+                        self._set_step(3, allow_during_processing=True)
                         self.clear_action()
                         st.rerun()
                 except Exception as error:
@@ -553,7 +602,7 @@ class UserInterface:
         c1, c2 = st.columns([1, 3])
         with c1:
             if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing')):
-                self.state.set('step', 2)
+                self._set_step(2)
                 st.rerun()
         with c2:
             if editing_any or self.state.get('adding_matriz_row'):
@@ -583,7 +632,7 @@ class UserInterface:
                         self.clear_action()
                     else:
                         self.state.set('test_cases', casos)
-                        self.state.set('step', 4)
+                        self._set_step(4, allow_during_processing=True)
                         self.clear_action()
                         st.rerun()
                 except Exception as error:
@@ -710,7 +759,7 @@ class UserInterface:
         c1, c2 = st.columns([1, 3])
         with c1:
             if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing')):
-                self.state.set('step', 3)
+                self._set_step(3)
                 st.rerun()
         with c2:
             if editing_any or self.state.get('adding_test_case'):
@@ -741,7 +790,7 @@ class UserInterface:
                         self.clear_action()
                     else:
                         self.state.set('test_plans', plans)
-                        self.state.set('step', 5)
+                        self._set_step(5, allow_during_processing=True)
                         self.clear_action()
                         st.rerun()
                 except Exception as error:
@@ -864,7 +913,7 @@ class UserInterface:
         c1, c2 = st.columns([1, 3])
         with c1:
             if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing')):
-                self.state.set('step', 4)
+                self._set_step(4)
                 st.rerun()
         with c2:
             if editing_any or self.state.get('adding_test_plan'):
@@ -884,7 +933,7 @@ class UserInterface:
             self.state.set('csv_plans', AzureCsvFormatter.plans_suites_cases(
                 self.state.get('test_plans'), self.state.get('test_cases'), self.state.get('project_name')
             ))
-            self.state.set('step', 6)
+            self._set_step(6, allow_during_processing=True)
             self.clear_action()
             st.rerun()
 
@@ -942,7 +991,7 @@ class UserInterface:
         )
 
         st.divider()
-        if st.button("🔄 Flush Session - Nova Análise", use_container_width=True, disabled=self.state.get('is_processing')):
+        if st.button("🔄 Flush Session - Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing')):
             self.state.clear()
             st.rerun()
 
