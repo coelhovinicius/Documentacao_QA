@@ -20,35 +20,106 @@ class WebhookClient:
             raw = raw.replace("```", "").strip()
         return json.loads(raw)
 
-    def _extract(self, raw, key: str) -> list:
+    def _find_key(self, raw, key: str):
         if isinstance(raw, list):
             for item in raw:
-                result = self._extract(item, key)
-                if result:
-                    return result
-            return []
-        if not isinstance(raw, dict):
-            return []
-        if key in raw and isinstance(raw[key], list):
-            return raw[key]
-        for value in raw.values():
-            if isinstance(value, dict):
-                result = self._extract(value, key)
-                if result:
-                    return result
-            elif isinstance(value, list):
-                for item in value:
-                    result = self._extract(item, key)
-                    if result:
-                        return result
-            elif isinstance(value, str):
-                try:
-                    result = self._extract(json.loads(value), key)
-                    if result:
-                        return result
-                except Exception:
-                    pass
-        return []
+                found, value = self._find_key(item, key)
+                if found:
+                    return True, value
+            return False, None
+        if isinstance(raw, dict):
+            if key in raw:
+                return True, raw[key]
+            for value in raw.values():
+                found, result = self._find_key(value, key)
+                if found:
+                    return True, result
+            return False, None
+        if isinstance(raw, str):
+            try:
+                return self._find_key(json.loads(raw), key)
+            except Exception:
+                return False, None
+        return False, None
+
+    def _preview(self, raw) -> str:
+        try:
+            text = json.dumps(raw, ensure_ascii=False)
+        except Exception:
+            text = str(raw)
+        return text[:800] + ("..." if len(text) > 800 else "")
+
+    def _try_parse_json(self, raw: str):
+        if not isinstance(raw, str):
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def _extract_json_object(self, raw: str):
+        if not isinstance(raw, str):
+            return None
+        start = raw.find('{')
+        end = raw.rfind('}')
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            return json.loads(raw[start:end + 1])
+        except Exception:
+            return None
+
+    def _looks_like_matrix_row(self, item) -> bool:
+        if not isinstance(item, dict):
+            return False
+        expected = {
+            'id',
+            'funcionalidade',
+            'requisito',
+            'cenario',
+            'categoria',
+            'prioridade',
+            'criticidade',
+            'observacoes',
+        }
+        return len(expected.intersection(item.keys())) >= 5
+
+    def _looks_like_matrix_list(self, value) -> bool:
+        if not isinstance(value, list) or not value:
+            return False
+        return all(self._looks_like_matrix_row(item) for item in value if isinstance(item, dict))
+
+    def _extract_required_list(self, raw, key: str) -> list:
+        found, value = self._find_key(raw, key)
+        if not found:
+            if self._looks_like_matrix_list(raw):
+                return raw
+            if self._looks_like_matrix_row(raw):
+                return [raw]
+            if isinstance(raw, dict):
+                for candidate in raw.values():
+                    if self._looks_like_matrix_list(candidate):
+                        return candidate
+            raise ValueError(
+                f"Resposta do orquestrador não contém a chave obrigatória '{key}'. "
+                f"Prévia do payload recebido: {self._preview(raw)}"
+            )
+
+        if isinstance(value, str):
+            parsed = self._try_parse_json(value)
+            if isinstance(parsed, list):
+                return parsed
+
+        if not isinstance(value, list):
+            raise ValueError(
+                f"A chave obrigatória '{key}' foi encontrada, mas não é uma lista. "
+                f"Prévia do valor recebido: {self._preview(value)}"
+            )
+        return value
+
+    def _extract(self, raw, key: str) -> list:
+        found, value = self._find_key(raw, key)
+        return value if found and isinstance(value, list) else []
 
     def trigger_analysis(self, doc_text: str, project: str) -> dict:
         response = requests.post(
@@ -59,7 +130,7 @@ class WebhookClient:
         )
         response.raise_for_status()
         data = self._parse(response)
-        return {"duvidas": self._extract(data, "duvidas")}
+        return {"duvidas": self._extract_required_list(data, "duvidas")}
 
     def trigger_matrix(self, doc_text: str, answers: dict, project: str) -> dict:
         response = requests.post(
@@ -74,7 +145,7 @@ class WebhookClient:
         )
         response.raise_for_status()
         data = self._parse(response)
-        return {"matriz": self._extract(data, "matriz")}
+        return {"matriz": self._extract_required_list(data, "matriz")}
 
     def trigger_generation(self, doc_text: str, matriz: list, answers: dict, project: str) -> dict:
         response = requests.post(
@@ -90,7 +161,7 @@ class WebhookClient:
         )
         response.raise_for_status()
         data = self._parse(response)
-        return {"casos_de_teste": self._extract(data, "casos_de_teste")}
+        return {"casos_de_teste": self._extract_required_list(data, "casos_de_teste")}
 
     def trigger_plans(
         self, doc_text: str, matriz: list, test_cases: list, answers: dict, project: str
@@ -109,4 +180,4 @@ class WebhookClient:
         )
         response.raise_for_status()
         data = self._parse(response)
-        return {"planos_de_teste": self._extract(data, "planos_de_teste")}
+        return {"planos_de_teste": self._extract_required_list(data, "planos_de_teste")}

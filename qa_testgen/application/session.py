@@ -22,6 +22,9 @@ class SessionState:
         'adding_matriz_row': False,
         'adding_test_case': False,
         'adding_test_plan': False,
+        'active_matriz_row': None,
+        'active_test_case_row': None,
+        'active_test_plan_row': None,
     }
 
     def __init__(self):

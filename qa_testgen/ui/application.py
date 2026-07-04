@@ -1,4 +1,4 @@
-﻿import os
+import os
 import base64
 import uuid
 from pathlib import Path
@@ -20,6 +20,7 @@ from qa_testgen.ui.dialogs import (
     clear_widget_states,
     confirm_deletion_modal,
     confirm_discard_new_modal,
+    confirm_interrupt_modal,
     confirm_matriz_deletion_modal,
     confirm_navigate_away_modal,
     confirm_suite_deletion_modal,
@@ -36,7 +37,7 @@ class UserInterface:
             except Exception:
                 pass
 
-        st.set_page_config(page_title="QA TestGen - Azure DevOps", page_icon=page_icon, layout="wide")
+        st.set_page_config(page_title="QA TestGen - Azure DevOps", page_icon=page_icon, layout="wide", initial_sidebar_state="collapsed")
         self.state = SessionState()
         self.config = AppConfiguration()
         self.client = WebhookClient(self.config)
@@ -132,13 +133,50 @@ class UserInterface:
         else:
             st.error(f"❌ Fatal Error: {error}")
 
+
+    def _inject_ui_styles(self):
+        st.markdown(
+            """
+            <style>
+                div[data-testid="stButton"] > button {
+                    justify-content: flex-start;
+                    text-align: left;
+                }
+                div[data-testid="stButton"] > button p {
+                    text-align: left;
+                }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
     def _header(self):
         with st.sidebar:
-            st.warning("⚠️ Controles de Emergência")
+            sidebar_logo_b64 = ""
+            if Path(LOGO_PATH).exists():
+                try:
+                    with open(LOGO_PATH, 'rb') as f:
+                        sidebar_logo_b64 = base64.b64encode(f.read()).decode('utf-8')
+                except Exception:
+                    pass
+            if sidebar_logo_b64:
+                st.markdown(
+                    f"""
+                    <div style="width:100%;padding:0 0 .75rem 0;">
+                        <img src="data:image/png;base64,{sidebar_logo_b64}"
+                             style="width:100%;height:auto;object-fit:contain;border-radius:0;display:block;">
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            st.divider()
+            st.warning("⚠️ Controles")
             if self.state.get('is_processing'):
+                st.info("Processamento em andamento. Aguarde a conclusão ou solicite a interrupção.")
                 if st.button("⏹️ Interromper Processamento", use_container_width=True, type="primary"):
-                    self.interrupt_processing()
-            if st.button("🔄 Resetar Aplicação", use_container_width=True):
+                    confirm_interrupt_modal()
+            if st.button("🔄 Nova Análise", use_container_width=True, type="primary"):
                 self.state.clear()
                 st.rerun()
 
@@ -188,6 +226,81 @@ class UserInterface:
             if state.get(f'edit_p_{i}', False):
                 return True
         return False
+
+
+
+    def _render_row_toggle(self, active_key: str, index: int, label: str, disabled: bool = False) -> bool:
+        is_active = self.state.get(active_key) == index
+        marker = "▼" if is_active else "▶"
+        if st.button(f"{marker} {label}", key=f"{active_key}_{index}", use_container_width=True, disabled=disabled):
+            self.state.set(active_key, None if is_active else index)
+            st.rerun()
+        return is_active
+
+    def _normalize_active_row(self, active_key: str, total: int):
+        active = self.state.get(active_key)
+        if not isinstance(active, int) or active < 0 or active >= total:
+            self.state.set(active_key, None)
+
+    def _processing_banner(self):
+        if not self.state.get('is_processing'):
+            return
+        labels = {
+            'analyze_docs': 'Analisando a documentação com IA',
+            'generate_matrix': 'Gerando a Matriz de Cobertura',
+            'generate_cases': 'Gerando os Casos de Teste',
+            'generate_plans': 'Gerando os Planos de Teste',
+            'build_artifacts': 'Construindo os artefatos finais',
+        }
+        action = labels.get(self.state.get('current_action'), 'Processando informações')
+        st.markdown(
+            """
+            <style>
+                .qa-processing-shade {
+                    position: fixed;
+                    inset: 0;
+                    background: rgba(20, 24, 31, 0.18);
+                    z-index: 999;
+                    pointer-events: none;
+                }
+                .qa-processing-card {
+                    position: fixed;
+                    right: 1.5rem;
+                    bottom: 1.5rem;
+                    z-index: 1000;
+                    background: #ffffff;
+                    border: 1px solid #f15a24;
+                    border-left: 5px solid #f15a24;
+                    border-radius: 6px;
+                    box-shadow: 0 12px 28px rgba(0,0,0,.18);
+                    padding: .9rem 1rem;
+                    max-width: 380px;
+                    pointer-events: none;
+                }
+                .qa-processing-title {font-weight: 700;color: #3A3A3A;margin-bottom: .2rem;}
+                .qa-processing-text {color: #5b5b5b;font-size: .9rem;}
+                .qa-processing-dot {
+                    display: inline-block;
+                    width: .6rem;
+                    height: .6rem;
+                    margin-right: .45rem;
+                    border-radius: 50%;
+                    background: #f15a24;
+                    animation: qaPulse 1s infinite ease-in-out;
+                }
+                @keyframes qaPulse {0%, 100% {opacity: .25; transform: scale(.85);} 50% {opacity: 1; transform: scale(1.1);}}
+            </style>
+            <div class="qa-processing-shade"></div>
+            <div class="qa-processing-card">
+                <div class="qa-processing-title"><span class="qa-processing-dot"></span>Processamento em andamento</div>
+                <div class="qa-processing-text">Aguarde a conclusão. Evite navegar ou atualizar a página durante esta etapa.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.warning(f"⏳ {action}. Aguarde a conclusão para continuar.")
+        if st.button("⏹️ Solicitar interrupção", key="request_interrupt_main", type="primary", use_container_width=True):
+            confirm_interrupt_modal()
 
     def _progress(self):
         """Barra de progresso com navegação restrita aos passos liberados."""
@@ -457,6 +570,7 @@ class UserInterface:
         questions = self.state.get('questions')
         answers = {}
         existing_answers = self.state.get('step_2_answers', {})
+        is_generating_matrix = self.state.get('current_action') == 'generate_matrix' or self.state.get('is_processing')
         if not questions:
             st.success("✅ A IA não identificou ambiguidades. Prossiga para gerar a Matriz.")
         else:
@@ -469,8 +583,12 @@ class UserInterface:
                     key=f"q_{qid}",
                     value=existing_answers.get(qid, ''),
                     placeholder="Descreva a regra de negócio consolidada…",
+                    disabled=is_generating_matrix,
                 )
-        self.state.set('step_2_answers', answers)
+        if is_generating_matrix:
+            answers = existing_answers
+        else:
+            self.state.set('step_2_answers', answers)
 
         c1, c2 = st.columns([1, 3])
         with c1:
@@ -492,7 +610,7 @@ class UserInterface:
                 try:
                     resp = self.client.trigger_matrix(
                         self.state.get('doc_text'),
-                        answers,
+                        self.state.get('step_2_answers', answers),
                         self.state.get('project_name'),
                     )
                     matriz = resp.get('matriz') or []
@@ -500,7 +618,7 @@ class UserInterface:
                         st.error("❌ Matriz vazia.")
                         self.clear_action()
                     else:
-                        self.state.set('user_answers', answers)
+                        self.state.set('user_answers', self.state.get('step_2_answers', answers))
                         self.state.set('matriz', matriz)
                         self._set_step(3, allow_during_processing=True)
                         self.clear_action()
@@ -518,13 +636,15 @@ class UserInterface:
         else:
             st.info(f"**{len(matriz)} cenário(s) mapeado(s)**. Clique em uma linha para ver os detalhes.")
 
-        editing_any = False
+        editing_any = any(self.state.get(f'edit_m_{j}', False) for j in range(len(matriz)))
+        self._normalize_active_row('active_matriz_row', len(matriz))
 
         for i, row in enumerate(matriz):
             is_editing = self.state.get(f"edit_m_{i}", False)
             if is_editing:
                 editing_any = True
-            with st.expander(f"**{row.get('id', f'MC-{i+1:03d}')}** – {row.get('cenario', '')}", expanded=is_editing):
+            label = f"{row.get('id', f'MC-{i+1:03d}')} - {row.get('cenario', '')}"
+            if self._render_row_toggle('active_matriz_row', i, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
                 if is_editing:
                     with st.container(border=True):
                         vals = self._render_matriz_form(f"m{i}", row)
@@ -562,6 +682,7 @@ class UserInterface:
                     with ce:
                         if st.button("✏️ Editar", key=f"btn_edit_m_{i}", use_container_width=True, disabled=self.state.get('is_processing')):
                             self.state.set(f"edit_m_{i}", True)
+                            self.state.set('active_matriz_row', i)
                             st.rerun()
                     with cd:
                         if st.button("🗑️ Excluir", key=f"btn_del_m_{i}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
@@ -595,6 +716,7 @@ class UserInterface:
                             confirm_discard_new_modal('adding_matriz_row')
         else:
             if st.button("➕ Adicionar Novo Cenário à Matriz", use_container_width=True, disabled=editing_any or self.state.get('is_processing')):
+                self.state.set('active_matriz_row', None)
                 self.state.set('adding_matriz_row', True)
                 st.rerun()
 
@@ -648,13 +770,15 @@ class UserInterface:
         else:
             st.info(f"**{len(test_cases)} script(s)** consolidados. Clique em um caso para ver os detalhes.")
 
-        editing_any = False
+        editing_any = any(self.state.get(f'edit_tc_{j}', False) for j in range(len(test_cases)))
+        self._normalize_active_row('active_test_case_row', len(test_cases))
 
         for idx, tc in enumerate(test_cases):
             is_editing = self.state.get(f"edit_tc_{idx}", False)
             if is_editing:
                 editing_any = True
-            with st.expander(f"**TC-{idx + 1:02d}** – {tc.get('titulo', '')}", expanded=is_editing):
+            label = f"TC-{idx + 1:02d} - {tc.get('titulo', '')}"
+            if self._render_row_toggle('active_test_case_row', idx, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
                 if is_editing:
                     with st.container(border=True):
                         titulo = st.text_input("Título *", value=tc.get('titulo', ''), key=f"tt_{idx}")
@@ -713,6 +837,7 @@ class UserInterface:
                     with ce:
                         if st.button("✏️ Editar", key=f"btn_edit_tc_{idx}", use_container_width=True, disabled=self.state.get('is_processing')):
                             self.state.set(f"edit_tc_{idx}", True)
+                            self.state.set('active_test_case_row', idx)
                             st.rerun()
                     with cd:
                         if st.button("🗑️ Excluir", key=f"btn_del_tc_{idx}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
@@ -752,6 +877,7 @@ class UserInterface:
                             confirm_discard_new_modal('adding_test_case')
         else:
             if st.button("➕ Adicionar Novo Caso de Teste", use_container_width=True, disabled=editing_any or self.state.get('is_processing')):
+                self.state.set('active_test_case_row', None)
                 self.state.set('adding_test_case', True)
                 st.rerun()
 
@@ -811,7 +937,8 @@ class UserInterface:
                 "Clique em um Plano para ver os detalhes."
             )
 
-        editing_any = False
+        editing_any = any(self.state.get(f'edit_p_{j}', False) for j in range(len(test_plans)))
+        self._normalize_active_row('active_test_plan_row', len(test_plans))
 
         for i, plan in enumerate(test_plans):
             is_editing = self.state.get(f"edit_p_{i}", False)
@@ -822,7 +949,7 @@ class UserInterface:
             suite_names = ", ".join(s.get('nome', '') for s in suites) if suites else "Sem suites"
             label = f"**Plano {i + 1:02d}** – {plan.get('nome', '')}  ·  Suites: {suite_names}"
 
-            with st.expander(label, expanded=is_editing):
+            if self._render_row_toggle('active_test_plan_row', i, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
                 if is_editing:
                     with st.container(border=True):
                         nome = st.text_input("Nome do Plano *", value=plan.get('nome', ''), key=f"pn_{i}")
@@ -874,6 +1001,7 @@ class UserInterface:
                     with ce:
                         if st.button("✏️ Editar", key=f"btn_edit_p_{i}", use_container_width=True):
                             self.state.set(f"edit_p_{i}", True)
+                            self.state.set('active_test_plan_row', i)
                             st.rerun()
                     with cd:
                         if st.button("🗑️ Excluir", key=f"btn_del_p_{i}", type="primary", use_container_width=True):
@@ -906,6 +1034,7 @@ class UserInterface:
                             confirm_discard_new_modal('adding_test_plan')
         else:
             if st.button("➕ Adicionar Novo Plano de Teste", use_container_width=True, disabled=editing_any or self.state.get('is_processing')):
+                self.state.set('active_test_plan_row', None)
                 self.state.set('adding_test_plan', True)
                 st.rerun()
 
@@ -947,8 +1076,8 @@ class UserInterface:
         st.markdown("### 📄 Exportações CSV – Azure DevOps")
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("**Test Cases (somente)**")
-            st.caption("Importa apenas os Test Cases, sem hierarquia de Plan/Suite.")
+            st.markdown("**Test Cases - Azure DevOps**")
+            st.caption("CSV no layout usado para importação manual de Test Cases no Azure DevOps.")
             csv_cases = ('\ufeff' + self.state.get('csv_cases')).encode('utf-8')
             st.download_button(
                 "⬇️ Baixar Test Cases (CSV)",
@@ -959,8 +1088,8 @@ class UserInterface:
                 type="primary",
             )
         with col2:
-            st.markdown("**Test Plans + Suites + Cases (hierarquia completa)**")
-            st.caption("Importa a hierarquia completa: Plan → Suite → Case.")
+            st.markdown("**Planos + Suites + Cases**")
+            st.caption("CSV com Plan/Suite/Case para apoiar a organização manual no Azure DevOps.")
             csv_plans = ('\ufeff' + self.state.get('csv_plans')).encode('utf-8')
             st.download_button(
                 "⬇️ Baixar Test Plans (CSV)",
@@ -991,13 +1120,15 @@ class UserInterface:
         )
 
         st.divider()
-        if st.button("🔄 Flush Session - Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing')):
+        if st.button("🔄 Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing')):
             self.state.clear()
             st.rerun()
 
     def run(self):
+        self._inject_ui_styles()
         self._header()
         self._progress()
+        self._processing_banner()
         step = self.state.get('step')
         if step == 1:
             self.step_1()
