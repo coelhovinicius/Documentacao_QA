@@ -98,16 +98,20 @@ class UserInterface:
         )
 
     @staticmethod
-    def _read_only_table(rows: list) -> None:
-        html = '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;margin-top:0.5rem">'
+    def _read_only_table_html(rows: list) -> str:
+        html = '<div class="qa-left-block"><table style="width:100%;border-collapse:collapse;font-size:0.85rem;margin-top:0.5rem;text-align:left">'
         for label, value in rows:
             html += (
-                f'<tr style="border-bottom:1px solid #ececec">'
-                f'<td style="padding:6px 10px;color:#888;font-weight:600;white-space:nowrap;width:160px">{label}</td>'
-                f'<td style="padding:6px 10px;color:#2d2d2d">{value}</td></tr>'
+                f'<tr style="border-bottom:1px solid #ececec;text-align:left">'
+                f'<td style="padding:6px 10px;color:#888;font-weight:600;white-space:nowrap;width:160px;text-align:left">{label}</td>'
+                f'<td style="padding:6px 10px;color:#2d2d2d;text-align:left">{value}</td></tr>'
             )
-        html += '</table>'
-        st.markdown(html, unsafe_allow_html=True)
+        html += '</table></div>'
+        return html
+
+    @staticmethod
+    def _read_only_table(rows: list) -> None:
+        st.markdown(UserInterface._read_only_table_html(rows), unsafe_allow_html=True)
 
     @staticmethod
     def _next_matriz_id(matriz: list) -> str:
@@ -138,12 +142,39 @@ class UserInterface:
         st.markdown(
             """
             <style>
-                div[data-testid="stButton"] > button {
-                    justify-content: flex-start;
-                    text-align: left;
+                /* Force left alignment for tables rendered via markdown/html */
+                .stMarkdown table, .stMarkdown table th, .stMarkdown table td,
+                div[role="main"] table, div[role="main"] table th, div[role="main"] table td {
+                    text-align: left !important;
+                    vertical-align: top !important;
                 }
-                div[data-testid="stButton"] > button p {
-                    text-align: left;
+                .qa-left-block,
+                .qa-left-block p,
+                .qa-left-block div,
+                .qa-left-block span,
+                .qa-left-block table,
+                .qa-left-block th,
+                .qa-left-block td {
+                    text-align: left !important;
+                }
+                /* Small adjustment for read-only tables created by the app */
+                .stMarkdown table, .stMarkdown table th, .stMarkdown table td,
+                div[role="main"] table, div[role="main"] table th, div[role="main"] table td {
+                    text-align: left !important;
+                    vertical-align: top !important;
+                }
+                .qa-left-block,
+                .qa-left-block p,
+                .qa-left-block div,
+                .qa-left-block span,
+                .qa-left-block table,
+                .qa-left-block th,
+                .qa-left-block td {
+                    text-align: left !important;
+                }
+                /* Small adjustment for read-only tables created by the app */
+                table[style] td, table[style] th {
+                    text-align: left !important;
                 }
             </style>
             """,
@@ -815,22 +846,22 @@ class UserInterface:
                     passos = tc.get('passos', [])
                     if passos:
                         html = (
-                            '<table style="width:100%;border-collapse:collapse;font-size:.83rem;margin-top:.6rem">'
-                            '<thead><tr style="background:#3A3A3A;color:#fff">'
-                            '<th style="padding:6px 10px;width:40px">#</th>'
-                            '<th style="padding:6px 10px;width:48%">Ação</th>'
-                            '<th style="padding:6px 10px">Resultado Esperado</th>'
+                            '<div class="qa-left-block"><table style="width:100%;border-collapse:collapse;font-size:.83rem;margin-top:.6rem;text-align:left">'
+                            '<thead><tr style="background:#3A3A3A;color:#fff;text-align:left">'
+                            '<th style="padding:6px 10px;width:40px;text-align:left">#</th>'
+                            '<th style="padding:6px 10px;width:48%;text-align:left">Ação</th>'
+                            '<th style="padding:6px 10px;text-align:left">Resultado Esperado</th>'
                             '</tr></thead><tbody>'
                         )
                         for si, step in enumerate(passos):
                             bg = '#fff' if si % 2 == 0 else '#f5f5f5'
                             html += (
-                                f'<tr style="background:{bg};border-bottom:1px solid #e0e0e0">'
-                                f'<td style="padding:6px 10px;color:#888;font-weight:600">{step.get("numero", "")}</td>'
-                                f'<td style="padding:6px 10px;color:#2d2d2d">{step.get("acao", "")}</td>'
-                                f'<td style="padding:6px 10px;color:#2d2d2d">{step.get("resultado_esperado", "")}</td></tr>'
+                                f'<tr style="background:{bg};border-bottom:1px solid #e0e0e0;text-align:left">'
+                                f'<td style="padding:6px 10px;color:#888;font-weight:600;text-align:left">{step.get("numero", "")}</td>'
+                                f'<td style="padding:6px 10px;color:#2d2d2d;text-align:left">{step.get("acao", "")}</td>'
+                                f'<td style="padding:6px 10px;color:#2d2d2d;text-align:left">{step.get("resultado_esperado", "")}</td></tr>'
                             )
-                        html += '</tbody></table>'
+                        html += '</tbody></table></div>'
                         st.markdown(html, unsafe_allow_html=True)
                     st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
                     ce, cd, _ = st.columns([1, 1, 6])
@@ -986,11 +1017,11 @@ class UserInterface:
                         for s_idx, suite in enumerate(suites, start=1):
                             casos = suite.get('casos', [])
                             st.markdown(
-                                f"<div style='background:#f0f4ff;border-left:3px solid #4A90D9;"
-                                f"padding:6px 12px;margin:4px 0;border-radius:3px;font-size:.85rem'>"
+                                f"<div class='qa-left-block' style='background:#f0f4ff;border-left:3px solid #4A90D9;"
+                                f"padding:6px 12px;margin:4px 0;border-radius:3px;font-size:.85rem;text-align:left'>"
                                 f"<b>Suite {s_idx}: {suite.get('nome', '')}</b>"
                                 + (f" — {suite.get('descricao', '')}" if suite.get('descricao') else "")
-                                + f"<br><span style='color:#555'>Casos vinculados ({len(casos)}): "
+                                + f"<br><span style='color:#555;text-align:left'>Casos vinculados ({len(casos)}): "
                                 + (", ".join(casos) if casos else "Nenhum")
                                 + "</span></div>",
                                 unsafe_allow_html=True,
