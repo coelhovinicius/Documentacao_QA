@@ -664,49 +664,51 @@ class UserInterface:
             if is_editing:
                 editing_any = True
             label = f"{row.get('id', f'MC-{i+1:03d}')} - {row.get('cenario', '')}"
-            if self._render_row_toggle('active_matriz_row', i, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
-                if is_editing:
-                    with st.container(border=True):
-                        vals = self._render_matriz_form(f"m{i}", row)
-                        cs, cc = st.columns(2)
-                        with cs:
-                            if st.button("💾 Salvar Alterações", key=f"save_m_{i}", type="primary", use_container_width=True):
-                                missing = self._validate_matriz(
-                                    vals['id'], vals['funcionalidade'], vals['requisito'],
-                                    vals['cenario'], vals['categoria'], vals['prioridade'], vals['criticidade'],
-                                )
-                                if missing:
-                                    st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
-                                else:
-                                    matriz[i] = vals
-                                    self.state.set('matriz', matriz)
+            row_uid = row.get('id') or f"idx{i}"
+            with st.container(key=f"matriz_row_{row_uid}"):
+                if self._render_row_toggle('active_matriz_row', i, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
+                    if is_editing:
+                        with st.container(border=True):
+                            vals = self._render_matriz_form(f"m{i}", row)
+                            cs, cc = st.columns(2)
+                            with cs:
+                                if st.button("💾 Salvar Alterações", key=f"save_m_{i}", type="primary", use_container_width=True):
+                                    missing = self._validate_matriz(
+                                        vals['id'], vals['funcionalidade'], vals['requisito'],
+                                        vals['cenario'], vals['categoria'], vals['prioridade'], vals['criticidade'],
+                                    )
+                                    if missing:
+                                        st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
+                                    else:
+                                        matriz[i] = vals
+                                        self.state.set('matriz', matriz)
+                                        self.state.set(f"edit_m_{i}", False)
+                                        st.rerun()
+                            with cc:
+                                if st.button("✖ Cancelar", key=f"cancel_m_{i}", use_container_width=True):
                                     self.state.set(f"edit_m_{i}", False)
                                     st.rerun()
-                        with cc:
-                            if st.button("✖ Cancelar", key=f"cancel_m_{i}", use_container_width=True):
-                                self.state.set(f"edit_m_{i}", False)
+                    else:
+                        self._read_only_table([
+                            ("ID", row.get('id', '—')),
+                            ("Funcionalidade", row.get('funcionalidade', '—')),
+                            ("Requisito", row.get('requisito', '—')),
+                            ("Cenário", row.get('cenario', '—')),
+                            ("Categoria", row.get('categoria', '—')),
+                            ("Prioridade", self._priority_badge(row.get('prioridade', ''))),
+                            ("Criticidade", self._priority_badge(row.get('criticidade', ''))),
+                            ("Observações", row.get('observacoes') or '—'),
+                        ])
+                        st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
+                        ce, cd, _ = st.columns([1, 1, 6])
+                        with ce:
+                            if st.button("✏️ Editar", key=f"btn_edit_m_{i}", use_container_width=True, disabled=self.state.get('is_processing')):
+                                self.state.set(f"edit_m_{i}", True)
+                                self.state.set('active_matriz_row', i)
                                 st.rerun()
-                else:
-                    self._read_only_table([
-                        ("ID", row.get('id', '—')),
-                        ("Funcionalidade", row.get('funcionalidade', '—')),
-                        ("Requisito", row.get('requisito', '—')),
-                        ("Cenário", row.get('cenario', '—')),
-                        ("Categoria", row.get('categoria', '—')),
-                        ("Prioridade", self._priority_badge(row.get('prioridade', ''))),
-                        ("Criticidade", self._priority_badge(row.get('criticidade', ''))),
-                        ("Observações", row.get('observacoes') or '—'),
-                    ])
-                    st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
-                    ce, cd, _ = st.columns([1, 1, 6])
-                    with ce:
-                        if st.button("✏️ Editar", key=f"btn_edit_m_{i}", use_container_width=True, disabled=self.state.get('is_processing')):
-                            self.state.set(f"edit_m_{i}", True)
-                            self.state.set('active_matriz_row', i)
-                            st.rerun()
-                    with cd:
-                        if st.button("🗑️ Excluir", key=f"btn_del_m_{i}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
-                            confirm_matriz_deletion_modal(i)
+                        with cd:
+                            if st.button("🗑️ Excluir", key=f"btn_del_m_{i}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
+                                confirm_matriz_deletion_modal(i)
 
         st.markdown("<div style='margin-top:.5rem'></div>", unsafe_allow_html=True)
         if self.state.get('adding_matriz_row'):
@@ -798,70 +800,71 @@ class UserInterface:
             if is_editing:
                 editing_any = True
             label = f"TC-{idx + 1:02d} - {tc.get('titulo', '')}"
-            if self._render_row_toggle('active_test_case_row', idx, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
-                if is_editing:
-                    with st.container(border=True):
-                        titulo = st.text_input("Título *", value=tc.get('titulo', ''), key=f"tt_{idx}")
-                        pre = st.text_area("Pré-condições *", value=tc.get('pre_condicoes', ''), key=f"tp_{idx}", height=70)
-                        sk = f"edit_steps_{idx}"
-                        self._ensure_steps_state(sk, tc.get('passos', []))
-                        steps = self._render_steps_editor(sk, f"etc{idx}")
-                        cs, cc = st.columns(2)
-                        with cs:
-                            if st.button("💾 Salvar Caso de Teste", key=f"save_tc_{idx}", type="primary", use_container_width=True):
-                                missing = self._validate_tc(titulo, pre, steps)
-                                if missing:
-                                    st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
-                                else:
-                                    test_cases[idx] = {
-                                        'titulo': titulo,
-                                        'pre_condicoes': pre,
-                                        'passos': [
-                                            {'numero': n + 1, 'acao': step['acao'], 'resultado_esperado': step['resultado_esperado']}
-                                            for n, step in enumerate(steps)
-                                        ],
-                                    }
-                                    self.state.set('test_cases', test_cases)
+            with st.container(key=f"tc_row_{idx}"):
+                if self._render_row_toggle('active_test_case_row', idx, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
+                    if is_editing:
+                        with st.container(border=True):
+                            titulo = st.text_input("Título *", value=tc.get('titulo', ''), key=f"tt_{idx}")
+                            pre = st.text_area("Pré-condições *", value=tc.get('pre_condicoes', ''), key=f"tp_{idx}", height=70)
+                            sk = f"edit_steps_{idx}"
+                            self._ensure_steps_state(sk, tc.get('passos', []))
+                            steps = self._render_steps_editor(sk, f"etc{idx}")
+                            cs, cc = st.columns(2)
+                            with cs:
+                                if st.button("💾 Salvar Caso de Teste", key=f"save_tc_{idx}", type="primary", use_container_width=True):
+                                    missing = self._validate_tc(titulo, pre, steps)
+                                    if missing:
+                                        st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
+                                    else:
+                                        test_cases[idx] = {
+                                            'titulo': titulo,
+                                            'pre_condicoes': pre,
+                                            'passos': [
+                                                {'numero': n + 1, 'acao': step['acao'], 'resultado_esperado': step['resultado_esperado']}
+                                                for n, step in enumerate(steps)
+                                            ],
+                                        }
+                                        self.state.set('test_cases', test_cases)
+                                        self.state.set(f"edit_tc_{idx}", False)
+                                        self.state.delete(sk)
+                                        st.rerun()
+                            with cc:
+                                if st.button("✖ Cancelar", key=f"cancel_tc_{idx}", use_container_width=True):
                                     self.state.set(f"edit_tc_{idx}", False)
                                     self.state.delete(sk)
                                     st.rerun()
-                        with cc:
-                            if st.button("✖ Cancelar", key=f"cancel_tc_{idx}", use_container_width=True):
-                                self.state.set(f"edit_tc_{idx}", False)
-                                self.state.delete(sk)
-                                st.rerun()
-                else:
-                    self._read_only_table([("Pré-condições", tc.get('pre_condicoes') or '—')])
-                    passos = tc.get('passos', [])
-                    if passos:
-                        html = (
-                            '<table style="width:100%;border-collapse:collapse;font-size:.83rem;margin-top:.6rem">'
-                            '<thead><tr style="background:#3A3A3A;color:#fff">'
-                            '<th style="padding:6px 10px;width:40px">#</th>'
-                            '<th style="padding:6px 10px;width:48%">Ação</th>'
-                            '<th style="padding:6px 10px">Resultado Esperado</th>'
-                            '</tr></thead><tbody>'
-                        )
-                        for si, step in enumerate(passos):
-                            bg = '#fff' if si % 2 == 0 else '#f5f5f5'
-                            html += (
-                                f'<tr style="background:{bg};border-bottom:1px solid #e0e0e0">'
-                                f'<td style="padding:6px 10px;color:#888;font-weight:600">{step.get("numero", "")}</td>'
-                                f'<td style="padding:6px 10px;color:#2d2d2d">{step.get("acao", "")}</td>'
-                                f'<td style="padding:6px 10px;color:#2d2d2d">{step.get("resultado_esperado", "")}</td></tr>'
+                    else:
+                        self._read_only_table([("Pré-condições", tc.get('pre_condicoes') or '—')])
+                        passos = tc.get('passos', [])
+                        if passos:
+                            html = (
+                                '<table style="width:100%;border-collapse:collapse;font-size:.83rem;margin-top:.6rem">'
+                                '<thead><tr style="background:#3A3A3A;color:#fff">'
+                                '<th style="padding:6px 10px;width:40px">#</th>'
+                                '<th style="padding:6px 10px;width:48%">Ação</th>'
+                                '<th style="padding:6px 10px">Resultado Esperado</th>'
+                                '</tr></thead><tbody>'
                             )
-                        html += '</tbody></table>'
-                        st.markdown(html, unsafe_allow_html=True)
-                    st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
-                    ce, cd, _ = st.columns([1, 1, 6])
-                    with ce:
-                        if st.button("✏️ Editar", key=f"btn_edit_tc_{idx}", use_container_width=True, disabled=self.state.get('is_processing')):
-                            self.state.set(f"edit_tc_{idx}", True)
-                            self.state.set('active_test_case_row', idx)
-                            st.rerun()
-                    with cd:
-                        if st.button("🗑️ Excluir", key=f"btn_del_tc_{idx}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
-                            confirm_deletion_modal('test_cases', idx)
+                            for si, step in enumerate(passos):
+                                bg = '#fff' if si % 2 == 0 else '#f5f5f5'
+                                html += (
+                                    f'<tr style="background:{bg};border-bottom:1px solid #e0e0e0">'
+                                    f'<td style="padding:6px 10px;color:#888;font-weight:600">{step.get("numero", "")}</td>'
+                                    f'<td style="padding:6px 10px;color:#2d2d2d">{step.get("acao", "")}</td>'
+                                    f'<td style="padding:6px 10px;color:#2d2d2d">{step.get("resultado_esperado", "")}</td></tr>'
+                                )
+                            html += '</tbody></table>'
+                            st.markdown(html, unsafe_allow_html=True)
+                        st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
+                        ce, cd, _ = st.columns([1, 1, 6])
+                        with ce:
+                            if st.button("✏️ Editar", key=f"btn_edit_tc_{idx}", use_container_width=True, disabled=self.state.get('is_processing')):
+                                self.state.set(f"edit_tc_{idx}", True)
+                                self.state.set('active_test_case_row', idx)
+                                st.rerun()
+                        with cd:
+                            if st.button("🗑️ Excluir", key=f"btn_del_tc_{idx}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
+                                confirm_deletion_modal('test_cases', idx)
 
         st.markdown("<div style='margin-top:.5rem'></div>", unsafe_allow_html=True)
         if self.state.get('adding_test_case'):
@@ -969,63 +972,64 @@ class UserInterface:
             suite_names = ", ".join(s.get('nome', '') for s in suites) if suites else "Sem suites"
             label = f"**Plano {i + 1:02d}** – {plan.get('nome', '')}  ·  Suites: {suite_names}"
 
-            if self._render_row_toggle('active_test_plan_row', i, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
-                if is_editing:
-                    with st.container(border=True):
-                        nome = st.text_input("Nome do Plano *", value=plan.get('nome', ''), key=f"pn_{i}")
-                        desc = st.text_input("Descrição", value=plan.get('descricao', ''), key=f"pd_{i}")
+            with st.container(key=f"plan_row_{i}"):
+                if self._render_row_toggle('active_test_plan_row', i, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
+                    if is_editing:
+                        with st.container(border=True):
+                            nome = st.text_input("Nome do Plano *", value=plan.get('nome', ''), key=f"pn_{i}")
+                            desc = st.text_input("Descrição", value=plan.get('descricao', ''), key=f"pd_{i}")
 
-                        sk = f"suites_edit_{i}"
-                        self._ensure_suites_state(sk, plan.get('suites', []))
-                        suites_vals = self._render_suites_editor(sk, f"ep{i}", available_cases)
+                            sk = f"suites_edit_{i}"
+                            self._ensure_suites_state(sk, plan.get('suites', []))
+                            suites_vals = self._render_suites_editor(sk, f"ep{i}", available_cases)
 
-                        cs, cc = st.columns(2)
-                        with cs:
-                            if st.button("💾 Salvar Plano", key=f"save_p_{i}", type="primary", use_container_width=True):
-                                missing = self._validate_plan(nome, suites_vals)
-                                if missing:
-                                    st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
-                                else:
-                                    test_plans[i] = {'nome': nome, 'descricao': desc, 'suites': suites_vals}
-                                    self.state.set('test_plans', test_plans)
+                            cs, cc = st.columns(2)
+                            with cs:
+                                if st.button("💾 Salvar Plano", key=f"save_p_{i}", type="primary", use_container_width=True):
+                                    missing = self._validate_plan(nome, suites_vals)
+                                    if missing:
+                                        st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
+                                    else:
+                                        test_plans[i] = {'nome': nome, 'descricao': desc, 'suites': suites_vals}
+                                        self.state.set('test_plans', test_plans)
+                                        self.state.set(f"edit_p_{i}", False)
+                                        self.state.delete(sk)
+                                        st.rerun()
+                            with cc:
+                                if st.button("✖ Cancelar", key=f"cancel_p_{i}", use_container_width=True):
                                     self.state.set(f"edit_p_{i}", False)
                                     self.state.delete(sk)
                                     st.rerun()
-                        with cc:
-                            if st.button("✖ Cancelar", key=f"cancel_p_{i}", use_container_width=True):
-                                self.state.set(f"edit_p_{i}", False)
-                                self.state.delete(sk)
-                                st.rerun()
-                else:
-                    self._read_only_table([
-                        ("Nome", plan.get('nome', '—')),
-                        ("Descrição", plan.get('descricao') or '—'),
-                    ])
-                    if suites:
-                        st.markdown("<div style='margin-top:.6rem'></div>", unsafe_allow_html=True)
-                        for s_idx, suite in enumerate(suites, start=1):
-                            casos = suite.get('casos', [])
-                            st.markdown(
-                                f"<div style='background:#f0f4ff;border-left:3px solid #4A90D9;"
-                                f"padding:6px 12px;margin:4px 0;border-radius:3px;font-size:.85rem'>"
-                                f"<b>Suite {s_idx}: {suite.get('nome', '')}</b>"
-                                + (f" — {suite.get('descricao', '')}" if suite.get('descricao') else "")
-                                + f"<br><span style='color:#555'>Casos vinculados ({len(casos)}): "
-                                + (", ".join(casos) if casos else "Nenhum")
-                                + "</span></div>",
-                                unsafe_allow_html=True,
-                            )
+                    else:
+                        self._read_only_table([
+                            ("Nome", plan.get('nome', '—')),
+                            ("Descrição", plan.get('descricao') or '—'),
+                        ])
+                        if suites:
+                            st.markdown("<div style='margin-top:.6rem'></div>", unsafe_allow_html=True)
+                            for s_idx, suite in enumerate(suites, start=1):
+                                casos = suite.get('casos', [])
+                                st.markdown(
+                                    f"<div style='background:#f0f4ff;border-left:3px solid #4A90D9;"
+                                    f"padding:6px 12px;margin:4px 0;border-radius:3px;font-size:.85rem'>"
+                                    f"<b>Suite {s_idx}: {suite.get('nome', '')}</b>"
+                                    + (f" — {suite.get('descricao', '')}" if suite.get('descricao') else "")
+                                    + f"<br><span style='color:#555'>Casos vinculados ({len(casos)}): "
+                                    + (", ".join(casos) if casos else "Nenhum")
+                                    + "</span></div>",
+                                    unsafe_allow_html=True,
+                                )
 
-                    st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
-                    ce, cd, _ = st.columns([1, 1, 6])
-                    with ce:
-                        if st.button("✏️ Editar", key=f"btn_edit_p_{i}", use_container_width=True):
-                            self.state.set(f"edit_p_{i}", True)
-                            self.state.set('active_test_plan_row', i)
-                            st.rerun()
-                    with cd:
-                        if st.button("🗑️ Excluir", key=f"btn_del_p_{i}", type="primary", use_container_width=True):
-                            confirm_deletion_modal('test_plans', i)
+                        st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
+                        ce, cd, _ = st.columns([1, 1, 6])
+                        with ce:
+                            if st.button("✏️ Editar", key=f"btn_edit_p_{i}", use_container_width=True):
+                                self.state.set(f"edit_p_{i}", True)
+                                self.state.set('active_test_plan_row', i)
+                                st.rerun()
+                        with cd:
+                            if st.button("🗑️ Excluir", key=f"btn_del_p_{i}", type="primary", use_container_width=True):
+                                confirm_deletion_modal('test_plans', i)
 
         st.markdown("<div style='margin-top:.5rem'></div>", unsafe_allow_html=True)
         if self.state.get('adding_test_plan'):
