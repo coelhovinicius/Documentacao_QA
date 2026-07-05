@@ -145,18 +145,35 @@ class UserInterface:
                 table[style] td, table[style] th {
                     text-align: left !important;
                 }
+                
+                /* Container master do botão */
                 div[class*="st-key-active_matriz_row"] button,
                 div[class*="st-key-active_test_case_row"] button,
                 div[class*="st-key-active_test_plan_row"] button {
+                    height: auto !important;
+                    padding-top: 0.75rem !important;
+                    padding-bottom: 0.75rem !important;
+                }
+                
+                /* Container interno flexível do Streamlit */
+                div[class*="st-key-active_matriz_row"] button > div,
+                div[class*="st-key-active_test_case_row"] button > div,
+                div[class*="st-key-active_test_plan_row"] button > div {
+                    display: flex !important;
+                    width: 100% !important;
                     justify-content: flex-start !important;
                     text-align: left !important;
                 }
-                div[class*="st-key-active_matriz_row"] button *,
-                div[class*="st-key-active_test_case_row"] button *,
-                div[class*="st-key-active_test_plan_row"] button * {
-                    text-align: left !important;
-                    display: block !important;
+                
+                /* Renderização da fonte */
+                div[class*="st-key-active_matriz_row"] button p,
+                div[class*="st-key-active_test_case_row"] button p,
+                div[class*="st-key-active_test_plan_row"] button p {
                     width: 100% !important;
+                    text-align: left !important;
+                    white-space: normal !important;
+                    line-height: 1.5 !important;
+                    margin: 0 !important;
                 }
             </style>
             """,
@@ -174,12 +191,12 @@ class UserInterface:
                     pass
             if sidebar_logo_b64:
                 st.markdown(
-                    f"""
+                    f'''
                     <div style="width:100%;padding:0 0 .75rem 0;">
                         <img src="data:image/png;base64,{sidebar_logo_b64}"
                              style="width:100%;height:auto;object-fit:contain;border-radius:0;display:block;">
                     </div>
-                    """,
+                    ''',
                     unsafe_allow_html=True,
                 )
 
@@ -203,7 +220,7 @@ class UserInterface:
                 pass
 
         st.markdown(
-            f"""
+            f'''
             <div style="display:flex;align-items:stretch;margin-bottom:1.5rem;gap:1.5rem;">
                 <div style="flex:0 0 200px;display:flex;align-items:center;justify-content:center;">
                     <img src="data:image/png;base64,{img_b64}"
@@ -214,7 +231,7 @@ class UserInterface:
                     <p style="color:white;margin:0.2rem 0 0 0;font-size:1.05rem;padding:0;">Gerador Inteligente de Casos de Teste — Azure DevOps Integration</p>
                 </div>
             </div>
-            """,
+            ''',
             unsafe_allow_html=True,
         )
 
@@ -314,7 +331,8 @@ class UserInterface:
         completed_steps = set(self.state.get('completed_steps') or [])
         is_processing = self.state.get('is_processing')
 
-        with st.container(key="progress_nav"):
+        # Container global anônimo reestabelecido para mitigar duplicação de instâncias.
+        with st.container():
             cols = st.columns(6)
             for i, (col, label) in enumerate(zip(cols, labels), start=1):
                 with col:
@@ -931,7 +949,6 @@ class UserInterface:
                 except Exception as error:
                     self._err(error)
                     self.clear_action()
-
     def step_5(self):
         st.subheader("Passo 5 – Refinamento dos Planos de Teste")
         test_plans = self.state.get('test_plans')
@@ -956,7 +973,7 @@ class UserInterface:
 
             suites = plan.get('suites', [])
             suite_names = ", ".join(s.get('nome', '') for s in suites) if suites else "Sem suites"
-            label = f"**Plano {i + 1:02d}** – {plan.get('nome', '')}  ·  Suites: {suite_names}"
+            label = f"Plano {i + 1:02d} – {plan.get('nome', '')}  ·  Suites: {suite_names}"
 
             with st.container(key=f"plan_row_{i}"):
                 if self._render_row_toggle('active_test_plan_row', i, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
