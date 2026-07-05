@@ -9,13 +9,13 @@
         "responseMode": "responseNode",
         "options": {}
       },
-      "id": "d20f6a6f-bafe-4b44-b62d-9375b2b079b4",
+      "id": "60e7835f-33b8-47ea-b3ad-7f22d0c0dfbf",
       "name": "Webhook Matrix",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
       "position": [
-        544,
-        192
+        -5536,
+        2016
       ],
       "webhookId": "9aebe7b4-ced2-492d-9407-8cc0db3a895c",
       "credentials": {
@@ -29,13 +29,13 @@
       "parameters": {
         "options": {}
       },
-      "id": "2a424c72-ca9c-4ed4-bba3-d744be4ac5d7",
+      "id": "9c72ad91-7361-41d7-80f3-44f45c8e48cc",
       "name": "Google Gemini",
       "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
       "typeVersion": 1,
       "position": [
-        1136,
-        464
+        -4944,
+        2288
       ],
       "credentials": {
         "googlePalmApi": {
@@ -48,13 +48,13 @@
       "parameters": {
         "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"matriz\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"funcionalidade\": { \"type\": \"string\" },\n          \"requisito\": { \"type\": \"string\" },\n          \"cenario\": { \"type\": \"string\" },\n          \"categoria\": { \"type\": \"string\" },\n          \"prioridade\": { \"type\": \"string\" },\n          \"criticidade\": { \"type\": \"string\" },\n          \"observacoes\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "4badfceb-1959-4001-8d1a-6bbfe27e6ab6",
+      "id": "e2a6e3bb-b129-4781-a037-6c8ad2201a3f",
       "name": "Output Parser Gemini",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
       "position": [
-        1296,
-        464
+        -4784,
+        2288
       ]
     },
     {
@@ -62,13 +62,13 @@
         "model": "llama-3.3-70b-versatile",
         "options": {}
       },
-      "id": "10766ff3-9152-48c7-a6f0-25a19beb35f8",
+      "id": "06bd45b3-3e87-48c5-9d6c-0575933ed27a",
       "name": "Groq Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
       "typeVersion": 1,
       "position": [
-        1536,
-        544
+        -4544,
+        2368
       ],
       "credentials": {
         "groqApi": {
@@ -81,13 +81,13 @@
       "parameters": {
         "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"matriz\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"funcionalidade\": { \"type\": \"string\" },\n          \"requisito\": { \"type\": \"string\" },\n          \"cenario\": { \"type\": \"string\" },\n          \"categoria\": { \"type\": \"string\" },\n          \"prioridade\": { \"type\": \"string\" },\n          \"criticidade\": { \"type\": \"string\" },\n          \"observacoes\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "7da9fe79-55da-4676-8f82-131d2c3bf6e3",
+      "id": "7fbf5f01-ee8c-453b-b793-7663e2ad013a",
       "name": "Output Parser Groq",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
       "position": [
-        1696,
-        544
+        -4384,
+        2368
       ]
     },
     {
@@ -96,13 +96,13 @@
         "responseBody": "={{ $json.output ?? $json }}",
         "options": {}
       },
-      "id": "18ca4371-e137-4151-889f-1aa56b701a8a",
+      "id": "0d9843f8-397d-44d2-a0c0-9ba4d6d7a335",
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
       "position": [
-        2752,
-        160
+        -3328,
+        1984
       ]
     },
     {
@@ -111,13 +111,13 @@
         "text": "=IMPORTANTE:\nTodo o conteúdo gerado DEVE estar exclusivamente em Português do Brasil (pt-BR).\nNão utilize palavras, rótulos ou explicações em inglês.\nTodo o conteúdo deve ser natural e profissional em pt-BR.\n\nAtue como um Analista de QA Sênior especializado em design de testes.\nCom base no documento funcional do projeto '{{ $json.body.nome_projeto }}', gere uma MATRIZ DE COBERTURA DE TESTES.\n\nEsclarecimentos de negócio já fornecidos:\n{{ $json.body.respostas_duvidas }}\n\nDocumento:\n{{ $json.body.document_text }}\n\nRegras:\n1. Seja SELETIVO e FOCADO. Gere apenas os cenários mais críticos e relevantes.\n2. Máximo de 15 itens. Prefira menos itens com maior qualidade a muitos itens superficiais.\n3. Cada item deve ser único e agregar valor real à cobertura de testes.\n4. Priorize: fluxos principais, validações, regras de negócio críticas, integrações e fluxos de exceção.\n5. NÃO gere itens triviais, redundantes ou de baixo impacto.\n6. Categorias permitidas: Fluxo Principal, Validação, Regra de Negócio, Integração, Fluxo Alternativo, Exceção.\n7. Prioridade e Criticidade: use apenas Alta, Média ou Baixa.\n8. Campo observacoes: use \"-\" se não houver nada relevante.\n9. Cada item deve conter exatamente os campos:\n   - id (ex: MC-001, MC-002...)\n   - funcionalidade (nome da funcionalidade sendo testada)\n   - requisito (referência ao requisito, ex: RF-01)\n   - cenario (descrição objetiva do cenário de teste)\n   - categoria (uma das categorias permitidas acima)\n   - prioridade (Alta, Média ou Baixa)\n   - criticidade (Alta, Média ou Baixa)\n   - observacoes (observação relevante ou \"-\")\n\nRetorne APENAS JSON válido conforme o schema. Nenhum texto adicional.",
         "hasOutputParser": true
       },
-      "id": "e5959d3e-6933-4344-b78b-c0b2ec2debbb",
+      "id": "7adae40a-e0cf-4fc9-9e91-31520507a8a6",
       "name": "OpenAI Chain",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
-        784,
-        192
+        -5296,
+        2016
       ],
       "onError": "continueErrorOutput"
     },
@@ -127,13 +127,13 @@
         "text": "=IMPORTANTE:\nTodo o conteúdo gerado DEVE estar exclusivamente em Português do Brasil (pt-BR).\nNão utilize palavras, rótulos ou explicações em inglês.\nTodo o conteúdo deve ser natural e profissional em pt-BR.\n\nAtue como um Analista de QA Sênior especializado em design de testes.\nCom base no documento funcional do projeto '{{ $json.body.nome_projeto }}', gere uma MATRIZ DE COBERTURA DE TESTES.\n\nEsclarecimentos de negócio já fornecidos:\n{{ $json.body.respostas_duvidas }}\n\nDocumento:\n{{ $json.body.document_text }}\n\nRegras:\n1. Seja SELETIVO e FOCADO. Gere apenas os cenários mais críticos e relevantes.\n2. Máximo de 15 itens. Prefira menos itens com maior qualidade a muitos itens superficiais.\n3. Cada item deve ser único e agregar valor real à cobertura de testes.\n4. Priorize: fluxos principais, validações, regras de negócio críticas, integrações e fluxos de exceção.\n5. NÃO gere itens triviais, redundantes ou de baixo impacto.\n6. Categorias permitidas: Fluxo Principal, Validação, Regra de Negócio, Integração, Fluxo Alternativo, Exceção.\n7. Prioridade e Criticidade: use apenas Alta, Média ou Baixa.\n8. Campo observacoes: use \"-\" se não houver nada relevante.\n9. Cada item deve conter exatamente os campos:\n   - id (ex: MC-001, MC-002...)\n   - funcionalidade (nome da funcionalidade sendo testada)\n   - requisito (referência ao requisito, ex: RF-01)\n   - cenario (descrição objetiva do cenário de teste)\n   - categoria (uma das categorias permitidas acima)\n   - prioridade (Alta, Média ou Baixa)\n   - criticidade (Alta, Média ou Baixa)\n   - observacoes (observação relevante ou \"-\")\n\nRetorne APENAS JSON válido conforme o schema. Nenhum texto adicional.",
         "hasOutputParser": true
       },
-      "id": "785ff717-1e2b-46e8-92c8-039200135b52",
+      "id": "d8778816-ef25-4343-8d06-d4ec47b4eac2",
       "name": "Gemini Chain",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
-        1136,
-        272
+        -4944,
+        2096
       ],
       "onError": "continueErrorOutput"
     },
@@ -143,13 +143,13 @@
         "text": "=IMPORTANTE:\nTodo o conteúdo gerado DEVE estar exclusivamente em Português do Brasil (pt-BR).\nNão utilize palavras, rótulos ou explicações em inglês.\nTodo o conteúdo deve ser natural e profissional em pt-BR.\n\nAtue como um Analista de QA Sênior especializado em design de testes.\nCom base no documento funcional do projeto '{{ $json.body.nome_projeto }}', gere uma MATRIZ DE COBERTURA DE TESTES.\n\nEsclarecimentos de negócio já fornecidos:\n{{ $json.body.respostas_duvidas }}\n\nDocumento:\n{{ $json.body.document_text }}\n\nRegras:\n1. Seja SELETIVO e FOCADO. Gere apenas os cenários mais críticos e relevantes.\n2. Máximo de 15 itens. Prefira menos itens com maior qualidade a muitos itens superficiais.\n3. Cada item deve ser único e agregar valor real à cobertura de testes.\n4. Priorize: fluxos principais, validações, regras de negócio críticas, integrações e fluxos de exceção.\n5. NÃO gere itens triviais, redundantes ou de baixo impacto.\n6. Categorias permitidas: Fluxo Principal, Validação, Regra de Negócio, Integração, Fluxo Alternativo, Exceção.\n7. Prioridade e Criticidade: use apenas Alta, Média ou Baixa.\n8. Campo observacoes: use \"-\" se não houver nada relevante.\n9. Cada item deve conter exatamente os campos:\n   - id (ex: MC-001, MC-002...)\n   - funcionalidade (nome da funcionalidade sendo testada)\n   - requisito (referência ao requisito, ex: RF-01)\n   - cenario (descrição objetiva do cenário de teste)\n   - categoria (uma das categorias permitidas acima)\n   - prioridade (Alta, Média ou Baixa)\n   - criticidade (Alta, Média ou Baixa)\n   - observacoes (observação relevante ou \"-\")\n\nRetorne APENAS JSON válido conforme o schema. Nenhum texto adicional.",
         "hasOutputParser": true
       },
-      "id": "e5802bdd-c8fc-4474-b549-51a7c86d5d49",
+      "id": "b5737a10-a3d1-4f07-ae46-63524519e925",
       "name": "Groq Chain",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
-        1536,
-        336
+        -4544,
+        2160
       ],
       "onError": "continueErrorOutput"
     },
@@ -157,9 +157,9 @@
       "parameters": {
         "model": {
           "__rl": true,
-          "value": "gpt-4o-mini",
+          "value": "gpt-5.5",
           "mode": "list",
-          "cachedResultName": "gpt-4o-mini"
+          "cachedResultName": "gpt-5.5"
         },
         "builtInTools": {},
         "options": {}
@@ -167,10 +167,10 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1.3,
       "position": [
-        784,
-        368
+        -5296,
+        2192
       ],
-      "id": "354e0c1f-8643-4fdf-93fe-e7d87aeb1232",
+      "id": "f6ec5d13-3668-4c7b-b2c8-09f4618555b7",
       "name": "OpenAI Chat Model",
       "credentials": {
         "openAiApi": {
@@ -183,13 +183,13 @@
       "parameters": {
         "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"matriz\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"funcionalidade\": { \"type\": \"string\" },\n          \"requisito\": { \"type\": \"string\" },\n          \"cenario\": { \"type\": \"string\" },\n          \"categoria\": { \"type\": \"string\" },\n          \"prioridade\": { \"type\": \"string\" },\n          \"criticidade\": { \"type\": \"string\" },\n          \"observacoes\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "d128265f-b349-4d4c-89c6-37fed51b8353",
+      "id": "467c6270-c634-494f-9302-2f1389252f9c",
       "name": "Output Parser OpenAI",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
       "position": [
-        944,
-        368
+        -5136,
+        2192
       ]
     },
     {
@@ -197,13 +197,13 @@
         "model": "llama-3.3-70b-versatile",
         "options": {}
       },
-      "id": "22f9b744-28c0-4e3e-915a-683e120538de",
+      "id": "8da6db45-e2d5-401d-a9dc-25ee9c254f34",
       "name": "Groq Model1",
       "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
       "typeVersion": 1,
       "position": [
-        1904,
-        608
+        -4176,
+        2432
       ],
       "credentials": {
         "groqApi": {
@@ -216,13 +216,13 @@
       "parameters": {
         "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"matriz\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"funcionalidade\": { \"type\": \"string\" },\n          \"requisito\": { \"type\": \"string\" },\n          \"cenario\": { \"type\": \"string\" },\n          \"categoria\": { \"type\": \"string\" },\n          \"prioridade\": { \"type\": \"string\" },\n          \"criticidade\": { \"type\": \"string\" },\n          \"observacoes\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "63ab0fb2-08cd-4262-9af1-239c8e632e53",
+      "id": "267e0070-c094-437a-a439-2381a17c948c",
       "name": "Output Parser Groq1",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
       "position": [
-        2064,
-        608
+        -4016,
+        2432
       ]
     },
     {
@@ -231,13 +231,13 @@
         "text": "=IMPORTANTE:\nTodo o conteúdo gerado DEVE estar exclusivamente em Português do Brasil (pt-BR).\nNão utilize palavras, rótulos ou explicações em inglês.\nTodo o conteúdo deve ser natural e profissional em pt-BR.\n\nAtue como um Analista de QA Sênior especializado em design de testes.\nCom base no documento funcional do projeto '{{ $json.body.nome_projeto }}', gere uma MATRIZ DE COBERTURA DE TESTES.\n\nEsclarecimentos de negócio já fornecidos:\n{{ $json.body.respostas_duvidas }}\n\nDocumento:\n{{ $json.body.document_text }}\n\nRegras:\n1. Seja SELETIVO e FOCADO. Gere apenas os cenários mais críticos e relevantes.\n2. Máximo de 15 itens. Prefira menos itens com maior qualidade a muitos itens superficiais.\n3. Cada item deve ser único e agregar valor real à cobertura de testes.\n4. Priorize: fluxos principais, validações, regras de negócio críticas, integrações e fluxos de exceção.\n5. NÃO gere itens triviais, redundantes ou de baixo impacto.\n6. Categorias permitidas: Fluxo Principal, Validação, Regra de Negócio, Integração, Fluxo Alternativo, Exceção.\n7. Prioridade e Criticidade: use apenas Alta, Média ou Baixa.\n8. Campo observacoes: use \"-\" se não houver nada relevante.\n9. Cada item deve conter exatamente os campos:\n   - id (ex: MC-001, MC-002...)\n   - funcionalidade (nome da funcionalidade sendo testada)\n   - requisito (referência ao requisito, ex: RF-01)\n   - cenario (descrição objetiva do cenário de teste)\n   - categoria (uma das categorias permitidas acima)\n   - prioridade (Alta, Média ou Baixa)\n   - criticidade (Alta, Média ou Baixa)\n   - observacoes (observação relevante ou \"-\")\n\nRetorne APENAS JSON válido conforme o schema. Nenhum texto adicional.",
         "hasOutputParser": true
       },
-      "id": "365fcbdf-d7ce-4aad-af7f-1edd4194a3e7",
+      "id": "a3a7d3c0-2c29-45b3-8bd8-db8d39faef95",
       "name": "Groq Chain1",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
-        1904,
-        400
+        -4176,
+        2224
       ],
       "onError": "continueErrorOutput"
     },
@@ -245,13 +245,13 @@
       "parameters": {
         "jsonSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"matriz\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"id\": { \"type\": \"string\" },\n          \"funcionalidade\": { \"type\": \"string\" },\n          \"requisito\": { \"type\": \"string\" },\n          \"cenario\": { \"type\": \"string\" },\n          \"categoria\": { \"type\": \"string\" },\n          \"prioridade\": { \"type\": \"string\" },\n          \"criticidade\": { \"type\": \"string\" },\n          \"observacoes\": { \"type\": \"string\" }\n        }\n      }\n    }\n  }\n}"
       },
-      "id": "c4a27e1f-5bb6-4024-864c-f6d0e45da6f6",
+      "id": "05540ad2-01fa-4e5b-ad58-b044ce0f1621",
       "name": "Output Parser Groq2",
       "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
       "typeVersion": 1.1,
       "position": [
-        2416,
-        688
+        -3664,
+        2512
       ]
     },
     {
@@ -260,13 +260,13 @@
         "text": "=IMPORTANTE:\nTodo o conteúdo gerado DEVE estar exclusivamente em Português do Brasil (pt-BR).\nNão utilize palavras, rótulos ou explicações em inglês.\nTodo o conteúdo deve ser natural e profissional em pt-BR.\n\nAtue como um Analista de QA Sênior especializado em design de testes.\nCom base no documento funcional do projeto '{{ $json.body.nome_projeto }}', gere uma MATRIZ DE COBERTURA DE TESTES.\n\nEsclarecimentos de negócio já fornecidos:\n{{ $json.body.respostas_duvidas }}\n\nDocumento:\n{{ $json.body.document_text }}\n\nRegras:\n1. Seja SELETIVO e FOCADO. Gere apenas os cenários mais críticos e relevantes.\n2. Máximo de 15 itens. Prefira menos itens com maior qualidade a muitos itens superficiais.\n3. Cada item deve ser único e agregar valor real à cobertura de testes.\n4. Priorize: fluxos principais, validações, regras de negócio críticas, integrações e fluxos de exceção.\n5. NÃO gere itens triviais, redundantes ou de baixo impacto.\n6. Categorias permitidas: Fluxo Principal, Validação, Regra de Negócio, Integração, Fluxo Alternativo, Exceção.\n7. Prioridade e Criticidade: use apenas Alta, Média ou Baixa.\n8. Campo observacoes: use \"-\" se não houver nada relevante.\n9. Cada item deve conter exatamente os campos:\n   - id (ex: MC-001, MC-002...)\n   - funcionalidade (nome da funcionalidade sendo testada)\n   - requisito (referência ao requisito, ex: RF-01)\n   - cenario (descrição objetiva do cenário de teste)\n   - categoria (uma das categorias permitidas acima)\n   - prioridade (Alta, Média ou Baixa)\n   - criticidade (Alta, Média ou Baixa)\n   - observacoes (observação relevante ou \"-\")\n\nRetorne APENAS JSON válido conforme o schema. Nenhum texto adicional.",
         "hasOutputParser": true
       },
-      "id": "eefd1447-4458-4ea0-b13a-2b6daf07da31",
+      "id": "d1bce4ed-2b7f-454b-a330-8ed23b8662f6",
       "name": "Mistral Chain",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.4,
       "position": [
-        2256,
-        480
+        -3824,
+        2304
       ]
     },
     {
@@ -277,10 +277,10 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
       "typeVersion": 1,
       "position": [
-        2256,
-        688
+        -3824,
+        2512
       ],
-      "id": "d411badb-818c-43e8-80e3-22209858b633",
+      "id": "240352b8-bc83-402b-8e6c-358ae6418ff7",
       "name": "Mistral Cloud Chat Model",
       "credentials": {
         "mistralCloudApi": {
@@ -296,7 +296,7 @@
       "main": [
         [
           {
-            "node": "OpenAI Chain",
+            "node": "Gemini Chain",
             "type": "main",
             "index": 0
           }
@@ -502,7 +502,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "c1a3566c-a923-495c-88a3-cf320f0b9912",
+  "versionId": "611871e5-1311-4673-bfaf-19325eaafe0e",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "562c7355cd5a3106fec1249023da836a71cbf8a0d3aa8209a4d6e83ae9e3b852"
