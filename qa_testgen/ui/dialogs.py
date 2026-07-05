@@ -126,20 +126,23 @@ def confirm_discard_new_modal(discard_flag_key: str):
         if st.button("❌ Voltar a Editar", use_container_width=True, key="cancel_discard"):
             st.rerun()
 
+
 @st.dialog("⚠️ Confirmar Interrupção")
 def confirm_interrupt_modal():
     st.markdown(
-        "Existe um processamento em andamento. Ao confirmar, o app vai tentar interromper a ação atual "
-        "e liberar a tela para edição. Se a chamada externa já estiver em execução, ela pode terminar no servidor antes de parar aqui. "
-        "Deseja continuar?"
+        "Existe um processamento em andamento. Ao confirmar, a requisição atual será "
+        "imediatamente descartada e a aplicação retornará ao estado de edição. Deseja continuar?"
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("⏹️ Sim, Interromper", use_container_width=True, type="primary", key="confirm_interrupt"):
+        # Estado atualizado sincronicamente via block execution para garantir flush no State
+        if st.button("⏹️ Sim, Interromper", use_container_width=True, type="primary", key="confirm_int_btn"):
             st.session_state['current_action'] = None
             st.session_state['is_processing'] = False
             st.session_state['processing_interrupted'] = True
+            st.session_state['show_interrupt_modal'] = False
             st.rerun()
     with c2:
-        if st.button("Cancelar", use_container_width=True, key="cancel_interrupt"):
+        if st.button("Cancelar", use_container_width=True, key="cancel_int_btn"):
+            st.session_state['show_interrupt_modal'] = False
             st.rerun()

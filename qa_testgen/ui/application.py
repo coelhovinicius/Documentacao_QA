@@ -133,36 +133,30 @@ class UserInterface:
         else:
             st.error(f"❌ Fatal Error: {error}")
 
-
     def _inject_ui_styles(self):
         st.markdown(
             """
             <style>
-                div[data-testid="stButton"] > button {
-                    justify-content: flex-start;
-                    text-align: left;
-                }
-                div[data-testid="stButton"] > button p {
-                    text-align: left;
-                }
-                /* Force left alignment for tables rendered via markdown/html */
                 .stMarkdown table, .stMarkdown table th, .stMarkdown table td,
                 div[role="main"] table, div[role="main"] table th, div[role="main"] table td {
                     text-align: left !important;
                     vertical-align: top !important;
                 }
-                /* Small adjustment for read-only tables created by the app */
                 table[style] td, table[style] th {
                     text-align: left !important;
                 }
-                /* Botões da barra de progresso (passos) sempre centralizados,
-                   independente do alinhamento aplicado aos botões de linha */
-                div.st-key-progress_nav div[data-testid="stButton"] > button {
-                    justify-content: center !important;
-                    text-align: center !important;
+                div[class*="st-key-active_matriz_row"] button,
+                div[class*="st-key-active_test_case_row"] button,
+                div[class*="st-key-active_test_plan_row"] button {
+                    justify-content: flex-start !important;
+                    text-align: left !important;
                 }
-                div.st-key-progress_nav div[data-testid="stButton"] > button p {
-                    text-align: center !important;
+                div[class*="st-key-active_matriz_row"] button *,
+                div[class*="st-key-active_test_case_row"] button *,
+                div[class*="st-key-active_test_plan_row"] button * {
+                    text-align: left !important;
+                    display: block !important;
+                    width: 100% !important;
                 }
             </style>
             """,
@@ -193,8 +187,9 @@ class UserInterface:
             st.warning("⚠️ Controles")
             if self.state.get('is_processing'):
                 st.info("Processamento em andamento. Aguarde a conclusão ou solicite a interrupção.")
-                if st.button("⏹️ Interromper Processamento", use_container_width=True, type="primary"):
-                    confirm_interrupt_modal()
+                if st.button("⏹️ Interromper Processamento", use_container_width=True, type="primary", key="btn_interrupt_sidebar"):
+                    self.state.set('show_interrupt_modal', True)
+                    st.rerun()
             if st.button("🔄 Nova Análise", use_container_width=True, type="primary"):
                 self.state.clear()
                 st.rerun()
@@ -224,29 +219,22 @@ class UserInterface:
         )
 
     def _has_editing_in_progress(self) -> bool:
-        """Retorna True se houver qualquer formulário de edição ou criação em aberto."""
         state = self.state
-        # Criação em aberto
         if state.get('adding_matriz_row') or state.get('adding_test_case') or state.get('adding_test_plan'):
             return True
-        # Edição de linha da Matriz
         matriz = state.get('matriz') or []
         for i in range(len(matriz)):
             if state.get(f'edit_m_{i}', False):
                 return True
-        # Edição de Caso de Teste
         test_cases = state.get('test_cases') or []
         for i in range(len(test_cases)):
             if state.get(f'edit_tc_{i}', False):
                 return True
-        # Edição de Plano de Teste
         test_plans = state.get('test_plans') or []
         for i in range(len(test_plans)):
             if state.get(f'edit_p_{i}', False):
                 return True
         return False
-
-
 
     def _render_row_toggle(self, active_key: str, index: int, label: str, disabled: bool = False) -> bool:
         is_active = self.state.get(active_key) == index
@@ -318,11 +306,8 @@ class UserInterface:
             unsafe_allow_html=True,
         )
         st.warning(f"⏳ {action}. Aguarde a conclusão para continuar.")
-        if st.button("⏹️ Solicitar interrupção", key="request_interrupt_main", type="primary", use_container_width=True):
-            confirm_interrupt_modal()
 
     def _progress(self):
-        """Barra de progresso com navegação restrita aos passos liberados."""
         labels = ["📄 Upload", "💬 Dúvidas", "📊 Matriz", "📋 Casos", "📁 Planos", "⬇️ Download"]
         current_step = self.state.get('step')
         max_step = self.state.get('max_step', current_step)
@@ -535,6 +520,7 @@ class UserInterface:
                 value=self.state.get('project_name', ''),
                 key='project_name_input',
                 placeholder="Ex: Passaporte Refuturiza",
+                disabled=self.state.get('is_processing'),
             )
             if project:
                 self.state.set('project_name', project)
@@ -565,14 +551,14 @@ class UserInterface:
             disabled=self.state.get('is_processing'),
         )
 
-        if self.state.get('current_action') == 'analyze_docs':
+        if self.state.get('current_action') == 'analyze_docs' and not self.state.get('show_interrupt_modal'):
             with st.spinner("Extraindo texto..."):
                 text = DocumentProcessor.extract_plain_text(uploaded)
             if not text:
                 st.error("Não foi possível extrair texto.")
                 self.clear_action()
             else:
-                with st.spinner("Aguarde enquanto a análise é processada… Isso pode levar alguns minutos, dependendo do tamanho do documento..."):
+                with st.spinner("Aguarde enquanto a análise é processada… Isso pode levar alguns minutos..."):
                     try:
                         resp = self.client.trigger_analysis(text, project)
                         self.state.set('doc_text', text)
@@ -625,7 +611,7 @@ class UserInterface:
                 disabled=self.state.get('is_processing'),
             )
 
-        if self.state.get('current_action') == 'generate_matrix':
+        if self.state.get('current_action') == 'generate_matrix' and not self.state.get('show_interrupt_modal'):
             with st.spinner("Estruturando Matriz de Rastreabilidade… Aguarde um momento..."):
                 try:
                     resp = self.client.trigger_matrix(
@@ -761,7 +747,7 @@ class UserInterface:
                     disabled=self.state.get('is_processing'),
                 )
 
-        if self.state.get('current_action') == 'generate_cases':
+        if self.state.get('current_action') == 'generate_cases' and not self.state.get('show_interrupt_modal'):
             with st.spinner("Gerando Casos de Teste… Aguarde um momento..."):
                 try:
                     resp = self.client.trigger_generation(
@@ -923,7 +909,7 @@ class UserInterface:
                     disabled=self.state.get('is_processing'),
                 )
 
-        if self.state.get('current_action') == 'generate_plans':
+        if self.state.get('current_action') == 'generate_plans' and not self.state.get('show_interrupt_modal'):
             with st.spinner("Gerando Planos de Teste com a IA… isso pode levar alguns minutos."):
                 try:
                     resp = self.client.trigger_plans(
@@ -1081,7 +1067,7 @@ class UserInterface:
                     disabled=self.state.get('is_processing'),
                 )
 
-        if self.state.get('current_action') == 'build_artifacts':
+        if self.state.get('current_action') == 'build_artifacts' and not self.state.get('show_interrupt_modal'):
             self.state.set('csv_cases', AzureCsvFormatter.cases_only(self.state.get('test_cases'), self.state.get('project_name')))
             self.state.set('csv_plans', AzureCsvFormatter.plans_suites_cases(
                 self.state.get('test_plans'), self.state.get('test_cases'), self.state.get('project_name')
@@ -1151,8 +1137,28 @@ class UserInterface:
     def run(self):
         self._inject_ui_styles()
         self._header()
+        
+        # Scroll Viewport to Top Tracking System
+        current_step = self.state.get('step')
+        if current_step != self.state.get('last_viewed_step'):
+            self.state.set('last_viewed_step', current_step)
+            st.markdown(
+                """
+                <svg onload="
+                    window.parent.scrollTo({top: 0, behavior: 'smooth'}); 
+                    var m = window.parent.document.querySelector('.main'); 
+                    if(m) m.scrollTo({top: 0, behavior: 'smooth'});
+                " style="display:none;"></svg>
+                """,
+                unsafe_allow_html=True
+            )
+
         self._progress()
         self._processing_banner()
+
+        if self.state.get('show_interrupt_modal'):
+            confirm_interrupt_modal()
+
         step = self.state.get('step')
         if step == 1:
             self.step_1()
