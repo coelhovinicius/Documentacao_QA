@@ -127,6 +127,17 @@ def confirm_discard_new_modal(discard_flag_key: str):
             st.rerun()
 
 
+def _action_interrupt():
+    st.session_state['current_action'] = None
+    st.session_state['is_processing'] = False
+    st.session_state['processing_interrupted'] = True
+    st.session_state['show_interrupt_modal'] = False
+
+
+def _action_cancel_interrupt():
+    st.session_state['show_interrupt_modal'] = False
+
+
 @st.dialog("⚠️ Confirmar Interrupção")
 def confirm_interrupt_modal():
     st.markdown(
@@ -135,14 +146,25 @@ def confirm_interrupt_modal():
     )
     c1, c2 = st.columns(2)
     with c1:
-        # Estado atualizado sincronicamente via block execution para garantir flush no State
-        if st.button("⏹️ Sim, Interromper", use_container_width=True, type="primary", key="confirm_int_btn"):
-            st.session_state['current_action'] = None
-            st.session_state['is_processing'] = False
-            st.session_state['processing_interrupted'] = True
-            st.session_state['show_interrupt_modal'] = False
+        if st.button("⏹️ Sim, Interromper", use_container_width=True, type="primary", key="confirm_int_btn", on_click=_action_interrupt):
             st.rerun()
     with c2:
-        if st.button("Cancelar", use_container_width=True, key="cancel_int_btn"):
-            st.session_state['show_interrupt_modal'] = False
+        if st.button("Cancelar", use_container_width=True, key="cancel_int_btn", on_click=_action_cancel_interrupt):
+            st.rerun()
+
+
+@st.dialog("⚠️ Confirmar Nova Análise")
+def confirm_new_analysis_modal():
+    st.markdown(
+        "Todo o progresso atual, incluindo documentos anexados, matriz e casos gerados não exportados, "
+        "será **perdido permanentemente**. Tem certeza que deseja iniciar uma nova análise?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔄 Sim, Iniciar", use_container_width=True, type="primary", key="confirm_new_btn"):
+            st.session_state.clear()
+            st.rerun()
+    with c2:
+        if st.button("Cancelar", use_container_width=True, key="cancel_new_btn"):
+            st.session_state['show_new_analysis_modal'] = False
             st.rerun()

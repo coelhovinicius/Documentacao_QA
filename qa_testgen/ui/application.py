@@ -25,6 +25,7 @@ from qa_testgen.ui.dialogs import (
     confirm_navigate_away_modal,
     confirm_suite_deletion_modal,
     confirm_step_deletion_modal,
+    confirm_new_analysis_modal,
 )
 
 
@@ -191,12 +192,12 @@ class UserInterface:
                     pass
             if sidebar_logo_b64:
                 st.markdown(
-                    f'''
+                    f"""
                     <div style="width:100%;padding:0 0 .75rem 0;">
                         <img src="data:image/png;base64,{sidebar_logo_b64}"
                              style="width:100%;height:auto;object-fit:contain;border-radius:0;display:block;">
                     </div>
-                    ''',
+                    """,
                     unsafe_allow_html=True,
                 )
 
@@ -207,8 +208,9 @@ class UserInterface:
                 if st.button("⏹️ Interromper Processamento", use_container_width=True, type="primary", key="btn_interrupt_sidebar"):
                     self.state.set('show_interrupt_modal', True)
                     st.rerun()
-            if st.button("🔄 Nova Análise", use_container_width=True, type="primary"):
-                self.state.clear()
+            
+            if st.button("🔄 Nova Análise", use_container_width=True, type="primary", key="btn_new_sidebar"):
+                self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
         img_b64 = ""
@@ -220,7 +222,7 @@ class UserInterface:
                 pass
 
         st.markdown(
-            f'''
+            f"""
             <div style="display:flex;align-items:stretch;margin-bottom:1.5rem;gap:1.5rem;">
                 <div style="flex:0 0 200px;display:flex;align-items:center;justify-content:center;">
                     <img src="data:image/png;base64,{img_b64}"
@@ -231,7 +233,7 @@ class UserInterface:
                     <p style="color:white;margin:0.2rem 0 0 0;font-size:1.05rem;padding:0;">Gerador Inteligente de Casos de Teste — Azure DevOps Integration</p>
                 </div>
             </div>
-            ''',
+            """,
             unsafe_allow_html=True,
         )
 
@@ -331,7 +333,6 @@ class UserInterface:
         completed_steps = set(self.state.get('completed_steps') or [])
         is_processing = self.state.get('is_processing')
 
-        # Container global anônimo reestabelecido para mitigar duplicação de instâncias.
         with st.container():
             cols = st.columns(6)
             for i, (col, label) in enumerate(zip(cols, labels), start=1):
@@ -404,7 +405,7 @@ class UserInterface:
             self.state.set(steps_key, updated)
             st.rerun()
         return [{"acao": s['acao'], "resultado_esperado": s['resultado_esperado']} for s in result]
-
+    
     def _ensure_suites_state(self, key: str, initial: list):
         if key not in self.state:
             if initial:
@@ -949,6 +950,7 @@ class UserInterface:
                 except Exception as error:
                     self._err(error)
                     self.clear_action()
+
     def step_5(self):
         st.subheader("Passo 5 – Refinamento dos Planos de Teste")
         test_plans = self.state.get('test_plans')
@@ -1147,8 +1149,8 @@ class UserInterface:
         )
 
         st.divider()
-        if st.button("🔄 Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing')):
-            self.state.clear()
+        if st.button("🔄 Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing'), key="btn_new_step6"):
+            self.state.set('show_new_analysis_modal', True)
             st.rerun()
 
     def run(self):
@@ -1175,6 +1177,9 @@ class UserInterface:
 
         if self.state.get('show_interrupt_modal'):
             confirm_interrupt_modal()
+            
+        if self.state.get('show_new_analysis_modal'):
+            confirm_new_analysis_modal()
 
         step = self.state.get('step')
         if step == 1:
