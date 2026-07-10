@@ -27,6 +27,7 @@ from qa_testgen.ui.dialogs import (
     confirm_step_deletion_modal,
     confirm_new_analysis_modal,
 )
+from qa_testgen.ui.auth import require_login, render_logout_control
 
 
 class UserInterface:
@@ -1154,8 +1155,12 @@ class UserInterface:
             st.rerun()
 
     def run(self):
+        if not require_login():
+            return
+
         self._inject_ui_styles()
         self._header()
+        render_logout_control()
         
         # Scroll Viewport to Top Tracking System
         current_step = self.state.get('step')
