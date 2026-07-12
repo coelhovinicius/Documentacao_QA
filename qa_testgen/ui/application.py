@@ -5,6 +5,7 @@ from pathlib import Path
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 from qa_testgen.config import AppConfiguration, LOGO_PATH, SIMBOLO_PATH
@@ -134,6 +135,49 @@ class UserInterface:
             st.error(f"❌ HTTP Exception: {error}")
         else:
             st.error(f"❌ Fatal Error: {error}")
+
+    def _force_sidebar_collapsed(self):
+        """
+        Recolhe a sidebar automaticamente a cada rerun (troca de tela, upload,
+        clique em botão etc.), mesmo que o usuário a tenha aberto manualmente
+        no rerun anterior. `initial_sidebar_state="collapsed"` só vale para o
+        primeiro carregamento da página, então isso complementa via JS.
+
+        Usa retry porque no momento em que este script roda, a sidebar pode
+        ainda não estar montada no DOM (condição de corrida do rerun).
+        """
+        components.html(
+            """
+            <script>
+                (function () {
+                    function tryCollapse(attemptsLeft) {
+                        const doc = window.parent.document;
+                        const sidebar = doc.querySelector('[data-testid="stSidebar"]');
+
+                        if (sidebar) {
+                            const expanded = sidebar.getAttribute('aria-expanded') === 'true';
+                            if (!expanded) {
+                                return; // já está colapsada, nada a fazer
+                            }
+                            const collapseBtn = doc.querySelector(
+                                '[data-testid="stSidebarCollapseButton"] button'
+                            );
+                            if (collapseBtn) {
+                                collapseBtn.click();
+                                return;
+                            }
+                        }
+
+                        if (attemptsLeft > 0) {
+                            setTimeout(function () { tryCollapse(attemptsLeft - 1); }, 150);
+                        }
+                    }
+                    tryCollapse(25); // tenta por ~3.7s antes de desistir
+                })();
+            </script>
+            """,
+            height=0,
+        )
 
     def _inject_ui_styles(self):
         st.markdown(
@@ -1159,6 +1203,7 @@ class UserInterface:
             return
 
         self._inject_ui_styles()
+        self._force_sidebar_collapsed()
         self._header()
         render_logout_control()
         
