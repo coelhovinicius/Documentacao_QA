@@ -28,3 +28,6 @@ app_v*.py
 
 # Specific directories
 images/
+
+# Hash de senha
+qa_testgen/scripts/

@@ -3,6 +3,7 @@ import json
 import time
 from datetime import datetime, timedelta
 
+import bcrypt
 import extra_streamlit_components as stx
 import streamlit as st
 
@@ -29,7 +30,7 @@ def _get_users() -> dict:
     """
     [credentials]
     [credentials.usernames]
-    admin = "sua-senha-aqui"
+    admin = "$2b$12$....hash-bcrypt...."   # gerado com generate_password_hash.py
 
     cookie_secret = "uma-string-aleatoria-bem-longa"
     """
@@ -46,12 +47,22 @@ def _get_cookie_secret() -> str:
         return "troque-este-segredo-antes-de-publicar"
 
 
+# Hash "dummy" só para gastar o mesmo tempo de bcrypt quando o usuário não
+# existe, evitando que o tempo de resposta revele se um username é válido.
+_DUMMY_HASH = bcrypt.hashpw(b"senha-invalida-placeholder", bcrypt.gensalt())
+
+
 def _check_credentials(username: str, password: str) -> bool:
     users = _get_users()
-    if not username or username not in users:
-        hmac.compare_digest(password or "", "senha-invalida-placeholder")
+    stored_hash = users.get(username, _DUMMY_HASH.decode())
+
+    try:
+        is_valid = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        # Hash mal formatado no secrets.toml (ex.: alguém colocou senha em texto puro)
         return False
-    return hmac.compare_digest(password or "", str(users[username]))
+
+    return is_valid and username in users
 
 
 # --------------------------------------------------------------------------- #
