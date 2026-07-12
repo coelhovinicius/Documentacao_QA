@@ -1,5 +1,11 @@
 import streamlit as st
 
+from qa_testgen.ui.auth import SESSION_AUTH_KEY, SESSION_USER_KEY
+
+# Chaves que NÃO devem ser apagadas ao iniciar uma "Nova Análise":
+# autenticação e o componente interno que lê o cookie de sessão.
+_PRESERVE_ON_RESET = {SESSION_AUTH_KEY, SESSION_USER_KEY, "_cookie_manager"}
+
 DIALOG_PREFIXES = (
     "mid_","mfunc_","mreq_","mcen_","mcat_","mpri_","mcrit_","mobs_","edit_m_",
     "tt_","tp_","ta_","te_","edit_tc_","edit_steps_",
@@ -162,7 +168,9 @@ def confirm_new_analysis_modal():
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔄 Sim, Iniciar", use_container_width=True, type="primary", key="confirm_new_btn"):
-            st.session_state.clear()
+            for key in list(st.session_state.keys()):
+                if key not in _PRESERVE_ON_RESET:
+                    del st.session_state[key]
             st.rerun()
     with c2:
         if st.button("Cancelar", use_container_width=True, key="cancel_new_btn"):
