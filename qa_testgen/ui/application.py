@@ -580,11 +580,7 @@ class UserInterface:
         col1, col2 = st.columns(2)
         with col1:
             project = st.text_input(
-<<<<<<< HEAD
-                "Caminho do Projeto - Área Path *",
-=======
                 "Caminho do Projeto - Area Path *",
->>>>>>> 26f144f41bbb4f4b6027027fbc3c3951a45c00b5
                 value=self.state.get('project_name', ''),
                 key='project_name_input',
                 placeholder="Caso não exista Area Path definida no Azure DevOps, insira o Nome do Projeto",
