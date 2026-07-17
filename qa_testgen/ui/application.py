@@ -580,17 +580,17 @@ class UserInterface:
         col1, col2 = st.columns(2)
         with col1:
             project = st.text_input(
-                "Nome do Projeto *",
+                "Caminho do Projeto - Área Path *",
                 value=self.state.get('project_name', ''),
                 key='project_name_input',
-                placeholder="Ex: Passaporte Refuturiza",
+                placeholder="Caso não exista Area Path definida no Azure DevOps, insira o Nome do Projeto",
                 disabled=self.state.get('is_processing'),
             )
             if project:
                 self.state.set('project_name', project)
         with col2:
             uploaded = st.file_uploader(
-                "Documento de Requisitos (Máx 20MB) *",
+                "Documentos do Projeto (TXT, PDF, DOCX -Máx 20MB) *",
                 type=["pdf", "txt", "docx"],
                 key='step1_uploaded_file',
                 disabled=self.state.get('is_processing'),
