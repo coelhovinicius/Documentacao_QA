@@ -580,7 +580,7 @@ class UserInterface:
         col1, col2 = st.columns(2)
         with col1:
             project = st.text_input(
-                "Nome do Projeto *",
+                "Caminho do Projeto - Area Path *",
                 value=self.state.get('project_name', ''),
                 key='project_name_input',
                 placeholder="Ex: Passaporte Refuturiza",
