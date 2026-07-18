@@ -25,6 +25,10 @@ class SessionState:
         'active_matriz_row': None,
         'active_test_case_row': None,
         'active_test_plan_row': None,
+        'ado_push_scope': 'Nenhum',
+        'ado_test_case_ids': {},
+        'ado_plan_ids': {},
+        'ado_push_log': [],
     }
 
     def __init__(self):

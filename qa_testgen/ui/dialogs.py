@@ -133,6 +133,31 @@ def confirm_discard_new_modal(discard_flag_key: str):
             st.rerun()
 
 
+@st.dialog("🔗 Confirmar Integração com Azure DevOps")
+def confirm_azure_devops_push_modal(scope: str, num_cases: int, num_plans: int):
+    st.markdown(f"Você está prestes a enviar os seguintes itens para o Azure DevOps, com o escopo **{scope}**:")
+
+    if scope in ("Somente Test Cases", "Test Cases + Test Plans/Suites"):
+        st.markdown(f"- **{num_cases}** Test Case(s)")
+    if scope in ("Somente Test Plans/Suites", "Test Cases + Test Plans/Suites"):
+        st.markdown(f"- **{num_plans}** Test Plan(s) (com suas Suites e vínculos de casos)")
+
+    st.warning(
+        "Essa ação cria itens reais no seu projeto do Azure DevOps e **não pode ser desfeita "
+        "automaticamente** — se algo sair errado, a exclusão precisa ser feita manualmente lá. "
+        "Tem certeza que deseja prosseguir?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="confirm_ado_push"):
+            st.session_state['current_action'] = 'push_azure_devops'
+            st.session_state['is_processing'] = True
+            st.rerun()
+    with c2:
+        if st.button("❌ Cancelar", use_container_width=True, key="cancel_ado_push"):
+            st.rerun()
+
+
 def _action_interrupt():
     st.session_state['current_action'] = None
     st.session_state['is_processing'] = False

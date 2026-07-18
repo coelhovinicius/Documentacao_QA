@@ -24,6 +24,10 @@ class AppConfiguration:
         )
         self.api_key = self._get('N8N_API_KEY', '')
 
+        self.azure_devops_org = self._get('AZURE_DEVOPS_ORG', '')
+        self.azure_devops_project = self._get('AZURE_DEVOPS_PROJECT', '')
+        self.azure_devops_pat = self._get('AZURE_DEVOPS_PAT', '')
+
     def _get(self, key: str, default: str) -> str:
         value = os.getenv(key)
         if value:
