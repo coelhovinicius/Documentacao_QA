@@ -32,6 +32,10 @@ from qa_testgen.ui.dialogs import (
 )
 from qa_testgen.ui.auth import require_login, render_logout_control
 
+# Liga/desliga a seção de integração direta com o Azure DevOps no Passo 6.
+# Coloque True quando quiser reativar a integração.
+AZURE_DEVOPS_INTEGRATION_ENABLED = False
+
 
 class UserInterface:
     def __init__(self):
@@ -587,10 +591,10 @@ class UserInterface:
         col1, col2 = st.columns(2)
         with col1:
             project = st.text_input(
-                "Caminho do Projeto / Area Path exato do Azure DevOps *",
+                "Nome do Projeto *",
                 value=self.state.get('project_name', ''),
                 key='project_name_input',
-                placeholder="Caso o Area Path ainda não tenha sido definido, insira o nome do projeto",
+                placeholder="Ex: Passaporte Refuturiza",
                 disabled=self.state.get('is_processing'),
             )
             if project:
@@ -1203,7 +1207,9 @@ class UserInterface:
         st.divider()
         st.markdown("### 🚀 Integração Direta com Azure DevOps")
 
-        if not self.ado_client.is_configured():
+        if not AZURE_DEVOPS_INTEGRATION_ENABLED:
+            st.info("🛠️ Em desenvolvimento 🛠️")
+        elif not self.ado_client.is_configured():
             st.info(
                 "Configure `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT` e `AZURE_DEVOPS_PAT` "
                 "no `secrets.toml` para habilitar o envio direto via API."
@@ -1261,6 +1267,9 @@ class UserInterface:
                         st.markdown(f"- [{nome}]({self.ado_client.test_plan_url(pid)}) — ID {pid}")
 
         st.divider()
+        st.markdown("### 📑 Nova Análise – Flush Session")
+        st.caption("Inicia uma nova análise, limpando todos os dados da sessão atual. Use com cautela.")
+
         if st.button("🔄 Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing'), key="btn_new_step6"):
             self.state.set('show_new_analysis_modal', True)
             st.rerun()

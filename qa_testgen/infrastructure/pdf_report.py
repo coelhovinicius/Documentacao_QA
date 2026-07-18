@@ -1,6 +1,7 @@
 import io
 import os
 from datetime import datetime
+from xml.sax.saxutils import escape as _xml_escape
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -11,6 +12,17 @@ from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, PageBreak, 
 from qa_testgen.config import TZ_BR, LOGO_PATH, COR_LARANJA, COR_CINZA_ESC, COR_CINZA_MED, COR_LARANJA_CLARO, COR_AZUL_CLARO, COR_CINZA_LIN, COR_BRANCO
 
 class PdfReportGenerator:
+    @staticmethod
+    def _esc(value) -> str:
+        """
+        Escapa &, < e > antes de qualquer texto entrar num Paragraph do
+        ReportLab. O Paragraph interpreta o texto como uma mini-linguagem de
+        marcação (parecida com XML); sem isso, conteúdo gerado pela IA que
+        contenha esses caracteres (ex.: "valor > 100", "clique em <Salvar>")
+        quebra o parser com "unclosed tags".
+        """
+        return _xml_escape("" if value is None else str(value))
+
     @staticmethod
     def _styles():
         base = getSampleStyleSheet()
@@ -57,15 +69,19 @@ class PdfReportGenerator:
     def _on_page(canvas, doc, project_name):
         canvas.saveState()
         w, h = A4
-        canvas.setFillColor(COR_LARANJA)
+        canvas.setFillColor(COR_BRANCO)
         canvas.rect(0, h - 52, w, 52, fill=True, stroke=False)
         if os.path.exists(LOGO_PATH):
             canvas.drawImage(LOGO_PATH, 18, h - 46, width=120, height=36, preserveAspectRatio=True, mask='auto')
         canvas.setFont('Helvetica-Bold', 11)
-        canvas.setFillColor(COR_BRANCO)
-        canvas.drawRightString(w - 18, h - 28, f"QA TestGen |  {project_name}")
+        canvas.setFillColor(COR_LARANJA)
+        canvas.drawRightString(w - 18, h - 28, f"QA TestGen |  {PdfReportGenerator._esc(project_name)}")
         canvas.setFont('Helvetica', 8)
+        canvas.setFillColor(COR_LARANJA)
         canvas.drawRightString(w - 18, h - 42, datetime.now(TZ_BR).strftime('%d/%m/%Y %H:%M'))
+        canvas.setStrokeColor(COR_LARANJA)
+        canvas.setLineWidth(1.2)
+        canvas.line(0, h - 52, w, h - 52)
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(COR_CINZA_MED)
         canvas.drawString(18, 20, "Refuturiza – Gerado automaticamente pelo QA TestGen")
@@ -96,7 +112,7 @@ class PdfReportGenerator:
         story.append(Spacer(1, 0.4 * cm))
         story.append(Paragraph("Documentação QA", styles['title']))
         story.append(Paragraph(
-            f"Projeto: <b>{project_name}</b> &nbsp;|&nbsp; "
+            f"Projeto: <b>{cls._esc(project_name)}</b> &nbsp;|&nbsp; "
             f"Gerado em {datetime.now(TZ_BR).strftime('%d/%m/%Y às %H:%M')}",
             styles['subtitle'],
         ))
@@ -109,7 +125,7 @@ class PdfReportGenerator:
             widths = [1.4 * cm, 3 * cm, 2 * cm, 4.5 * cm, 2.8 * cm, 2 * cm, 2.2 * cm, 3 * cm]
             data = [[Paragraph(label, styles['cell_head']) for label in labels]]
             for row in matriz:
-                data.append([Paragraph(str(row.get(col, '') or ''), styles['cell']) for col in hcols])
+                data.append([Paragraph(cls._esc(row.get(col, '') or ''), styles['cell']) for col in hcols])
             table = Table(data, colWidths=widths, repeatRows=1)
             table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), COR_LARANJA),
@@ -133,7 +149,7 @@ class PdfReportGenerator:
                 plan_desc = plan.get('descricao', '')
                 suites = plan.get('suites', [])
 
-                phdr = Table([[Paragraph(f"Plano {p_idx:02d} – {plan_name}", styles['plan_title'])]], colWidths=[pw])
+                phdr = Table([[Paragraph(f"Plano {p_idx:02d} – {cls._esc(plan_name)}", styles['plan_title'])]], colWidths=[pw])
                 phdr.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA),
                     ('TOPPADDING', (0, 0), (-1, -1), 5),
@@ -144,7 +160,7 @@ class PdfReportGenerator:
 
                 if plan_desc:
                     desc_t = Table(
-                        [[Paragraph("<b>Descrição:</b>", styles['cell']), Paragraph(plan_desc, styles['cell'])]],
+                        [[Paragraph("<b>Descrição:</b>", styles['cell']), Paragraph(cls._esc(plan_desc), styles['cell'])]],
                         colWidths=[2.8 * cm, pw - 2.8 * cm],
                     )
                     desc_t.setStyle(TableStyle([
@@ -157,15 +173,15 @@ class PdfReportGenerator:
                     story.append(desc_t)
 
                 for s_idx, suite in enumerate(suites, start=1):
-                    story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;Suite {s_idx}: {suite.get('nome','')}", styles['subsection']))
+                    story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;Suite {s_idx}: {cls._esc(suite.get('nome',''))}", styles['subsection']))
                     if suite.get('descricao'):
-                        story.append(Paragraph(suite['descricao'], styles['body']))
+                        story.append(Paragraph(cls._esc(suite['descricao']), styles['body']))
 
                     casos = suite.get('casos', [])
                     if casos:
                         suite_data = [[Paragraph("#", styles['cell_head']), Paragraph("Caso de Teste", styles['cell_head'])]]
                         for c_idx, caso in enumerate(casos, start=1):
-                            suite_data.append([Paragraph(str(c_idx), styles['cell']), Paragraph(str(caso), styles['cell'])])
+                            suite_data.append([Paragraph(str(c_idx), styles['cell']), Paragraph(cls._esc(caso), styles['cell'])])
                         st_t = Table(suite_data, colWidths=[1 * cm, pw - 1 * cm], repeatRows=1)
                         st_t.setStyle(TableStyle([
                             ('BACKGROUND', (0, 0), (-1, 0), COR_CINZA_ESC),
@@ -190,7 +206,7 @@ class PdfReportGenerator:
             pre = tc.get('pre_condicoes', '—')
             passos = tc.get('passos', [])
 
-            hdr = Table([[Paragraph(f"TC-{idx:02d} – {titulo}", styles['tc_title'])]], colWidths=[pw])
+            hdr = Table([[Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['tc_title'])]], colWidths=[pw])
             hdr.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA),
                 ('TOPPADDING', (0, 0), (-1, -1), 5),
@@ -198,7 +214,7 @@ class PdfReportGenerator:
                 ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ]))
             pre_t = Table(
-                [[Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(pre, styles['cell'])]],
+                [[Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(cls._esc(pre), styles['cell'])]],
                 colWidths=[3 * cm, pw - 3 * cm],
             )
             pre_t.setStyle(TableStyle([
@@ -215,9 +231,9 @@ class PdfReportGenerator:
             ]]
             for step in passos:
                 step_data.append([
-                    Paragraph(str(step.get('numero', '')), styles['cell']),
-                    Paragraph(str(step.get('acao', '')), styles['cell']),
-                    Paragraph(str(step.get('resultado_esperado', '')), styles['cell']),
+                    Paragraph(cls._esc(step.get('numero', '')), styles['cell']),
+                    Paragraph(cls._esc(step.get('acao', '')), styles['cell']),
+                    Paragraph(cls._esc(step.get('resultado_esperado', '')), styles['cell']),
                 ])
             st_t = Table(step_data, colWidths=[1 * cm, (pw - 1 * cm) * 0.45, (pw - 1 * cm) * 0.55], repeatRows=1)
             st_t.setStyle(TableStyle([
