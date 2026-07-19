@@ -77,7 +77,7 @@ class PdfReportGenerator:
         canvas.setFillColor(COR_LARANJA)
         canvas.drawRightString(w - 18, h - 28, f"QA TestGen |  {PdfReportGenerator._esc(project_name)}")
         canvas.setFont('Helvetica', 8)
-        canvas.setFillColor(COR_LARANJA)
+        canvas.setFillColor(COR_CINZA_ESC)
         canvas.drawRightString(w - 18, h - 42, datetime.now(TZ_BR).strftime('%d/%m/%Y %H:%M'))
         canvas.setStrokeColor(COR_LARANJA)
         canvas.setLineWidth(1.2)
