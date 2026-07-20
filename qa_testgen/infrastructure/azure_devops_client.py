@@ -98,13 +98,17 @@ class AzureDevOpsClient:
         total = len(passos or [])
         return f'<steps id="0" last="{total}">{steps_inner}</steps>'
 
+    # Reference name do campo customizado "Pre condicoes" no processo de
+    # Test Case dessa organização. Se reusar esse cliente em outra
+    # organização/projeto com um processo diferente, confira o nome certo
+    # rodando list_test_case_fields.py e ajuste aqui.
+    PRECONDICOES_FIELD = "Custom.Precondicoes"
+
     def create_test_case(self, titulo: str, pre_condicoes: str, passos: list) -> int:
         """Cria um work item do tipo Test Case e retorna o ID numérico criado."""
-        pre_html = f"<DIV><P><B>Pré-condições:</B> {html.escape(pre_condicoes or '')}</P></DIV>"
-
         body = [
             {"op": "add", "path": "/fields/System.Title", "value": titulo},
-            {"op": "add", "path": "/fields/System.Description", "value": pre_html},
+            {"op": "add", "path": f"/fields/{self.PRECONDICOES_FIELD}", "value": pre_condicoes or ""},
             {"op": "add", "path": "/fields/Microsoft.VSTS.TCM.Steps", "value": self._build_steps_xml(passos)},
         ]
 
