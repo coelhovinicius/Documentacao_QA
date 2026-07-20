@@ -134,27 +134,25 @@ def confirm_discard_new_modal(discard_flag_key: str):
 
 
 @st.dialog("🔗 Confirmar Integração com Azure DevOps")
-def confirm_azure_devops_push_modal(scope: str, num_cases: int, num_plans: int):
-    st.markdown(f"Você está prestes a enviar os seguintes itens para o Azure DevOps, com o escopo **{scope}**:")
-
-    if scope in ("Somente Test Cases", "Test Cases + Test Plans/Suites"):
-        st.markdown(f"- **{num_cases}** Test Case(s)")
-    if scope in ("Somente Test Plans/Suites", "Test Cases + Test Plans/Suites"):
-        st.markdown(f"- **{num_plans}** Test Plan(s) (com suas Suites e vínculos de casos)")
+def confirm_azure_devops_full_push_modal(num_cases_total: int, num_work_items: int, num_links: int):
+    st.markdown("Você está prestes a integrar com o Azure DevOps:")
+    st.markdown(f"- **{num_work_items}** Work Item(s) vão virar Requirement-based Suite(s)")
+    st.markdown(f"- **{num_links}** vínculo(s) Caso de Teste ↔ Work Item serão criados/confirmados")
+    st.markdown(f"- Casos de Teste ainda não existentes no Azure DevOps (de um total de {num_cases_total} gerados) serão criados agora")
 
     st.warning(
-        "Essa ação cria itens reais no seu projeto do Azure DevOps e **não pode ser desfeita "
-        "automaticamente** — se algo sair errado, a exclusão precisa ser feita manualmente lá. "
-        "Tem certeza que deseja prosseguir?"
+        "Essa ação cria itens reais no seu projeto do Azure DevOps (Test Plan, Suites, Test "
+        "Cases e vínculos) e **não pode ser desfeita automaticamente** — se algo sair errado, "
+        "a exclusão precisa ser feita manualmente lá. Tem certeza que deseja prosseguir?"
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="confirm_ado_push"):
-            st.session_state['current_action'] = 'push_azure_devops'
+        if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="confirm_ado_full_push"):
+            st.session_state['current_action'] = 'push_azure_devops_full'
             st.session_state['is_processing'] = True
             st.rerun()
     with c2:
-        if st.button("❌ Cancelar", use_container_width=True, key="cancel_ado_push"):
+        if st.button("❌ Cancelar", use_container_width=True, key="cancel_ado_full_push"):
             st.rerun()
 
 

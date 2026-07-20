@@ -181,3 +181,32 @@ class WebhookClient:
         response.raise_for_status()
         data = self._parse(response)
         return {"planos_de_teste": self._extract_required_list(data, "planos_de_teste")}
+
+    def trigger_matching(self, work_items: list, test_cases: list, project: str) -> dict:
+        """
+        Chama o webhook do n8n responsável por sugerir o vínculo entre Casos
+        de Teste gerados e Work Items existentes no board do Azure DevOps.
+
+        Contrato esperado da resposta do n8n:
+        {
+            "vinculos": [
+                {"work_item_id": 123, "casos": ["Título do Caso 1", "Título do Caso 2"]},
+                {"work_item_id": 456, "casos": ["Título do Caso 3"]}
+            ]
+        }
+        Work Items sem nenhum caso relacionado simplesmente não precisam
+        aparecer na lista (ou podem aparecer com "casos": []).
+        """
+        response = requests.post(
+            self.config.webhook_matching,
+            json={
+                "work_items": json.dumps(work_items, ensure_ascii=False),
+                "casos_de_teste": json.dumps(test_cases, ensure_ascii=False),
+                "nome_projeto": project,
+            },
+            headers=self.headers,
+            timeout=180,
+        )
+        response.raise_for_status()
+        data = self._parse(response)
+        return {"vinculos": self._extract_required_list(data, "vinculos")}

@@ -28,6 +28,7 @@ app_v*.py
 
 # Specific directories
 images/
+n8n_workflows/
 
 # Hash de senha
 qa_testgen/scripts/

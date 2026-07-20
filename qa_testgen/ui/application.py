@@ -20,7 +20,7 @@ from qa_testgen.domain.validators.plan_validator import TestPlanValidator
 from qa_testgen.domain.validators.testcase_validator import TestCaseValidator
 from qa_testgen.ui.dialogs import (
     clear_widget_states,
-    confirm_azure_devops_push_modal,
+    confirm_azure_devops_full_push_modal,
     confirm_deletion_modal,
     confirm_discard_new_modal,
     confirm_interrupt_modal,
@@ -383,14 +383,14 @@ class UserInterface:
         st.warning(f"⏳ {action}. Aguarde a conclusão para continuar.")
 
     def _progress(self):
-        labels = ["📄 Upload", "💬 Dúvidas", "📊 Matriz", "📋 Casos", "📁 Planos", "⬇️ Download"]
+        labels = ["📄 Upload", "💬 Dúvidas", "📊 Matriz", "📋 Casos", "📁 Planos", "⬇️ Download", "🔗 Azure DevOps"]
         current_step = self.state.get('step')
         max_step = self.state.get('max_step', current_step)
         completed_steps = set(self.state.get('completed_steps') or [])
         is_processing = self.state.get('is_processing')
 
         with st.container():
-            cols = st.columns(6)
+            cols = st.columns(7)
             for i, (col, label) in enumerate(zip(cols, labels), start=1):
                 with col:
                     is_current = i == current_step
@@ -591,10 +591,10 @@ class UserInterface:
         col1, col2 = st.columns(2)
         with col1:
             project = st.text_input(
-                "Nome do Projeto *",
+                "Area Path do Projeto no Azure DevOps *",
                 value=self.state.get('project_name', ''),
                 key='project_name_input',
-                placeholder="Ex: Passaporte Refuturiza",
+                placeholder="Caso não exista, preencha com o Nome do Projeto",
                 disabled=self.state.get('is_processing'),
             )
             if project:
@@ -1205,152 +1205,272 @@ class UserInterface:
         )
 
         st.divider()
-        st.markdown("### 🚀 Integração Direta com Azure DevOps")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing'), key="btn_new_step6"):
+                self.state.set('show_new_analysis_modal', True)
+                st.rerun()
+        with c2:
+            if st.button("🔗 Ir para Integração com Azure DevOps →", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_goto_step7"):
+                self._set_step(7, allow_during_processing=True)
+                st.rerun()
+
+    def step_7(self):
+        st.subheader("Passo 7 – Integração com Azure DevOps")
 
         if not AZURE_DEVOPS_INTEGRATION_ENABLED:
-            st.info("🛠️ Em desenvolvimento 🛠️")
-        elif not self.ado_client.is_configured():
+            st.info("🛠️ Em breve! Essa integração está temporariamente desativada.")
+            st.divider()
+            if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_back_step7_disabled"):
+                self._set_step(6)
+                st.rerun()
+            return
+
+        if not self.ado_client.is_configured():
             st.info(
                 "Configure `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT` e `AZURE_DEVOPS_PAT` "
-                "no `secrets.toml` para habilitar o envio direto via API."
+                "no `secrets.toml` para habilitar a integração direta via API."
             )
+            st.divider()
+            if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_back_step7_unconfigured"):
+                self._set_step(6)
+                st.rerun()
+            return
+
+        area_path = st.text_input(
+            "Area Path no Azure DevOps",
+            value=self.state.get('ado_area_path') or self.config.azure_devops_project,
+            help=(
+                "Caminho exato da Area no Azure DevOps (ex.: 'QA-TestGen-Sandbox' ou "
+                "'QA-TestGen-Sandbox\\\\Time A'). É usado tanto pra criar os Test Cases "
+                "quanto pra buscar os Work Items do Board abaixo."
+            ),
+            disabled=self.state.get('is_processing'),
+            key="ado_area_path_input",
+        )
+        self.state.set('ado_area_path', area_path)
+
+        if st.button("🔄 Buscar Work Items do Board", disabled=self.state.get('is_processing'), key="btn_fetch_wi_s7"):
+            try:
+                with st.spinner("Buscando Work Items..."):
+                    items = self.ado_client.fetch_work_items_by_area_path(area_path)
+                self.state.set('ado_board_items', items)
+                if not items:
+                    st.warning("Nenhum Work Item encontrado nesse Area Path (além de Test Cases).")
+            except AzureDevOpsError as error:
+                st.error(f"❌ {error}")
+            except Exception as error:
+                st.error(f"❌ Erro inesperado: {error}")
+
+        board_items = self.state.get('ado_board_items') or []
+        test_cases = self.state.get('test_cases') or []
+
+        if not board_items:
+            st.info("Busque os Work Items do Board (botão acima) antes de continuar.")
+        elif not test_cases:
+            st.info("Nenhum Caso de Teste foi gerado ainda nesta análise.")
         else:
-            scope_options = [
-                "Nenhum",
-                "Somente Test Cases",
-                "Somente Test Plans/Suites",
-                "Test Cases + Test Plans/Suites",
-            ]
-            current_scope = self.state.get('ado_push_scope', 'Nenhum')
-            scope = st.radio(
-                "O que deseja criar automaticamente no Azure DevOps?",
-                options=scope_options,
-                index=scope_options.index(current_scope) if current_scope in scope_options else 0,
-                key="ado_scope_radio",
-                disabled=self.state.get('is_processing'),
+            st.divider()
+            st.markdown("### 🤖 Sugestão automática de vínculos (IA via n8n)")
+            st.caption(
+                "Envia os Work Items e os Casos de Teste gerados pro n8n, que devolve uma "
+                "sugestão de quais casos se relacionam a quais Work Items. Você pode ajustar "
+                "tudo manualmente depois, antes de confirmar."
             )
-            self.state.set('ado_push_scope', scope)
+            if st.button(
+                "🤖 Sugerir Vínculos com IA",
+                type="primary",
+                disabled=self.state.get('is_processing'),
+                key="btn_suggest_links",
+            ):
+                self._suggest_ado_links(board_items, test_cases)
 
-            if scope != "Nenhum":
-                if st.button(
-                    "🔗 Integrar com Azure DevOps",
-                    use_container_width=True,
-                    type="primary",
+            st.divider()
+            st.markdown("### ✏️ Revisar e confirmar vínculos")
+            st.caption(
+                "Adicione ou remova Casos de Teste livremente pra cada Work Item. Um caso pode "
+                "ser atribuído a mais de um Work Item. Work Items sem nenhum caso selecionado "
+                "não geram Suite no Azure DevOps."
+            )
+
+            links = dict(self.state.get('ado_wi_case_links') or {})
+            case_titles = [tc.get('titulo', f'Caso #{i}') for i, tc in enumerate(test_cases, start=1)]
+
+            for item in board_items:
+                wid_key = str(item['id'])
+                current = [c for c in links.get(wid_key, []) if c in case_titles]
+                selected = st.multiselect(
+                    f"{item['id']} - {item['title']} ({item['type']}, {item['state']})",
+                    options=case_titles,
+                    default=current,
+                    key=f"ado_wi_multiselect_{item['id']}",
                     disabled=self.state.get('is_processing'),
-                    key="btn_open_ado_confirm",
-                ):
-                    confirm_azure_devops_push_modal(
-                        scope,
-                        len(self.state.get('test_cases') or []),
-                        len(self.state.get('test_plans') or []),
-                    )
+                )
+                links[wid_key] = selected
+            self.state.set('ado_wi_case_links', links)
 
-            if self.state.get('current_action') == 'push_azure_devops' and not self.state.get('show_interrupt_modal'):
-                self._push_to_azure_devops(scope)
+            assigned_titles = set()
+            for casos in links.values():
+                assigned_titles.update(casos)
+            unassigned = [t for t in case_titles if t not in assigned_titles]
+            if unassigned:
+                with st.expander(f"⚠️ {len(unassigned)} Caso(s) sem nenhum Work Item vinculado (não serão enviados)"):
+                    for t in unassigned:
+                        st.write(f"- {t}")
+
+            items_with_cases = {wid: casos for wid, casos in links.items() if casos}
+            total_links = sum(len(c) for c in items_with_cases.values())
+
+            st.divider()
+            if items_with_cases:
+                if st.button(
+                    "🔗 Confirmar e Integrar com Azure DevOps",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=self.state.get('is_processing'),
+                    key="btn_open_ado_full_confirm",
+                ):
+                    confirm_azure_devops_full_push_modal(len(test_cases), len(items_with_cases), total_links)
+            else:
+                st.info("Vincule pelo menos um Caso de Teste a um Work Item antes de continuar.")
+
+            if self.state.get('current_action') == 'push_azure_devops_full' and not self.state.get('show_interrupt_modal'):
+                self._push_full_azure_devops(area_path)
                 self.clear_action()
 
-            log = self.state.get('ado_push_log') or []
+            log = self.state.get('ado_full_push_log') or []
             if log:
-                st.markdown("#### 📋 Resultado do último envio")
+                st.markdown("#### 📋 Resultado da integração")
                 for line in log:
                     st.write(line)
 
-            case_ids = self.state.get('ado_test_case_ids') or {}
-            plan_ids = self.state.get('ado_plan_ids') or {}
-            if case_ids:
-                with st.expander(f"✅ {len(case_ids)} Test Case(s) criados no Azure DevOps nesta sessão"):
-                    for titulo, wid in case_ids.items():
-                        st.markdown(f"- [{titulo}]({self.ado_client.work_item_url(wid)}) — ID {wid}")
-            if plan_ids:
-                with st.expander(f"✅ {len(plan_ids)} Test Plan(s) criados nesta sessão"):
-                    for nome, pid in plan_ids.items():
-                        st.markdown(f"- [{nome}]({self.ado_client.test_plan_url(pid)}) — ID {pid}")
-
         st.divider()
-        st.markdown("### 📑 Nova Análise – Flush Session")
-        st.caption("Inicia uma nova análise, limpando todos os dados da sessão atual. Use com cautela.")
-
-        if st.button("🔄 Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing'), key="btn_new_step6"):
-            self.state.set('show_new_analysis_modal', True)
+        if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_back_step7"):
+            self._set_step(6)
             st.rerun()
 
-    def _push_to_azure_devops(self, scope: str):
+    def _suggest_ado_links(self, board_items: list, test_cases: list):
+        payload_items = [
+            {"id": item["id"], "title": item["title"], "type": item["type"], "state": item["state"]}
+            for item in board_items
+        ]
+        payload_cases = [
+            {
+                "titulo": tc.get("titulo", ""),
+                "pre_condicoes": tc.get("pre_condicoes", ""),
+                "passos": tc.get("passos", []),
+            }
+            for tc in test_cases
+        ]
+        try:
+            with st.spinner("Consultando a IA (n8n) para sugerir os vínculos..."):
+                result = self.client.trigger_matching(payload_items, payload_cases, self.state.get('project_name'))
+            links = {}
+            for vinculo in result.get("vinculos", []):
+                wid = vinculo.get("work_item_id")
+                casos = vinculo.get("casos", [])
+                if wid is not None:
+                    links[str(wid)] = casos
+            self.state.set('ado_wi_case_links', links)
+            st.success(f"✅ IA sugeriu vínculos para {len(links)} Work Item(s). Revise abaixo antes de confirmar.")
+        except ValueError as error:
+            st.error(f"❌ {error}")
+        except Exception as error:
+            st.error(f"❌ Erro inesperado ao consultar sugestão da IA: {error}")
+
+    def _push_full_azure_devops(self, area_path: str):
         test_cases = self.state.get('test_cases') or []
-        test_plans = self.state.get('test_plans') or []
+        project_name = self.state.get('project_name') or "QA TestGen"
         case_ids = dict(self.state.get('ado_test_case_ids') or {})
-        plan_ids = dict(self.state.get('ado_plan_ids') or {})
+        case_links = dict(self.state.get('ado_case_links') or {})
+        links = self.state.get('ado_wi_case_links') or {}
         log = []
 
-        push_cases = scope in ("Somente Test Cases", "Test Cases + Test Plans/Suites")
-        push_plans = scope in ("Somente Test Plans/Suites", "Test Cases + Test Plans/Suites")
+        items_with_cases = {wid: casos for wid, casos in links.items() if casos}
+        titles_needed = set()
+        for casos in items_with_cases.values():
+            titles_needed.update(casos)
 
-        if push_cases and test_cases:
-            total = len(test_cases)
+        # 1) Garante que todos os casos necessários já existem no Azure DevOps
+        cases_to_create = [tc for tc in test_cases if tc.get('titulo') in titles_needed and tc.get('titulo') not in case_ids]
+        if cases_to_create:
+            total = len(cases_to_create)
             progress = st.progress(0, text=f"Criando Test Cases no Azure DevOps... (0/{total})")
-            for idx, tc in enumerate(test_cases, start=1):
-                titulo = tc.get('titulo', f'Caso #{idx}')
-                if titulo not in case_ids:
-                    try:
-                        wid = self.ado_client.create_test_case(
-                            titulo, tc.get('pre_condicoes', ''), tc.get('passos', [])
-                        )
-                        case_ids[titulo] = wid
-                        log.append(f"✅ Test Case criado: **{titulo}** (ID {wid})")
-                    except AzureDevOpsError as error:
-                        log.append(f"❌ Falha ao criar Test Case '{titulo}': {error}")
-                    except Exception as error:
-                        log.append(f"❌ Erro inesperado ao criar Test Case '{titulo}': {error}")
+            for idx, tc in enumerate(cases_to_create, start=1):
+                titulo = tc.get('titulo')
+                try:
+                    wid = self.ado_client.create_test_case(
+                        titulo, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path
+                    )
+                    case_ids[titulo] = wid
+                    log.append(f"✅ Test Case criado: **{titulo}** (ID {wid})")
+                except AzureDevOpsError as error:
+                    log.append(f"❌ Falha ao criar Test Case '{titulo}': {error}")
+                except Exception as error:
+                    log.append(f"❌ Erro inesperado ao criar Test Case '{titulo}': {error}")
                 progress.progress(idx / total, text=f"Criando Test Cases no Azure DevOps... ({idx}/{total})")
             self.state.set('ado_test_case_ids', case_ids)
 
-        if push_plans and test_plans:
-            missing_cases = set()
-            total = len(test_plans)
-            progress = st.progress(0, text=f"Criando Test Plans/Suites no Azure DevOps... (0/{total})")
-            for idx, plan in enumerate(test_plans, start=1):
-                nome = plan.get('nome', f'Plano #{idx}')
-                try:
-                    if nome in plan_ids:
-                        log.append(
-                            f"↪️ Plano '{nome}' já foi criado nesta sessão (ID {plan_ids[nome]}); "
-                            "suites não são recriadas automaticamente para evitar duplicidade."
-                        )
-                    else:
-                        result = self.ado_client.create_test_plan(nome, plan.get('descricao', ''))
-                        plan_ids[nome] = result["id"]
-                        log.append(f"✅ Test Plan criado: **{nome}** (ID {result['id']})")
+        # 2) Cria o Test Plan
+        plan_name = f"{project_name} - QA TestGen"
+        try:
+            plan = self.ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen para {project_name}")
+            plan_id = plan["id"]
+            root_suite_id = plan.get("root_suite_id")
+            log.append(f"✅ Test Plan criado: **{plan_name}** (ID {plan_id})")
+        except AzureDevOpsError as error:
+            log.append(f"❌ Falha ao criar Test Plan: {error}")
+            self.state.set('ado_full_push_log', log)
+            st.rerun()
+            return
+        except Exception as error:
+            log.append(f"❌ Erro inesperado ao criar Test Plan: {error}")
+            self.state.set('ado_full_push_log', log)
+            st.rerun()
+            return
 
-                        root_suite_id = result.get("root_suite_id")
-                        for suite in plan.get('suites', []):
-                            suite_nome = suite.get('nome', 'Suite')
-                            suite_id = self.ado_client.create_test_suite(result["id"], root_suite_id, suite_nome)
-                            log.append(f"&nbsp;&nbsp;↳ Suite criada: {suite_nome} (ID {suite_id})")
+        if not root_suite_id:
+            log.append("⚠️ Não recebi o ID da suite raiz do plano — não é possível criar as Requirement Suites.")
+            self.state.set('ado_full_push_log', log)
+            st.rerun()
+            return
 
-                            ids_to_link = []
-                            for case_titulo in suite.get('casos', []):
-                                if case_titulo in case_ids:
-                                    ids_to_link.append(case_ids[case_titulo])
-                                else:
-                                    missing_cases.add(case_titulo)
-                            if ids_to_link:
-                                self.ado_client.add_cases_to_suite(result["id"], suite_id, ids_to_link)
-                                log.append(f"&nbsp;&nbsp;&nbsp;&nbsp;↳ {len(ids_to_link)} caso(s) vinculado(s)")
-                except AzureDevOpsError as error:
-                    log.append(f"❌ Falha ao criar Plano '{nome}': {error}")
-                except Exception as error:
-                    log.append(f"❌ Erro inesperado ao criar Plano '{nome}': {error}")
-                progress.progress(idx / total, text=f"Criando Test Plans/Suites no Azure DevOps... ({idx}/{total})")
-            self.state.set('ado_plan_ids', plan_ids)
+        # 3) Para cada Work Item com casos: cria a Requirement Suite e vincula os casos
+        total_items = len(items_with_cases)
+        progress2 = st.progress(0, text=f"Criando Suites no Azure DevOps... (0/{total_items})")
+        for idx, (wid_str, casos) in enumerate(items_with_cases.items(), start=1):
+            work_item_id = int(wid_str)
+            try:
+                suite_id = self.ado_client.create_requirement_based_suite(plan_id, root_suite_id, work_item_id)
+                log.append(f"✅ Suite criada para Work Item {work_item_id} (Suite ID {suite_id})")
+                for titulo in casos:
+                    case_id = case_ids.get(titulo)
+                    if not case_id:
+                        log.append(f"&nbsp;&nbsp;⚠️ Caso '{titulo}' não existe no Azure DevOps, pulando vínculo.")
+                        continue
+                    already_linked = work_item_id in case_links.get(titulo, [])
+                    if already_linked:
+                        log.append(f"&nbsp;&nbsp;↪️ '{titulo}' já estava vinculado ao Work Item {work_item_id}")
+                        continue
+                    try:
+                        self.ado_client.link_test_case_to_work_item(case_id, work_item_id)
+                        case_links.setdefault(titulo, []).append(work_item_id)
+                        log.append(f"&nbsp;&nbsp;↳ '{titulo}' (Caso {case_id}) vinculado ao Work Item {work_item_id}")
+                    except AzureDevOpsError as error:
+                        log.append(f"&nbsp;&nbsp;❌ Falha ao vincular '{titulo}': {error}")
+                    except Exception as error:
+                        log.append(f"&nbsp;&nbsp;❌ Erro inesperado ao vincular '{titulo}': {error}")
+            except AzureDevOpsError as error:
+                log.append(f"❌ Falha ao criar Suite para Work Item {work_item_id}: {error}")
+            except Exception as error:
+                log.append(f"❌ Erro inesperado no Work Item {work_item_id}: {error}")
+            progress2.progress(idx / total_items, text=f"Criando Suites no Azure DevOps... ({idx}/{total_items})")
 
-            if missing_cases:
-                log.append(
-                    "⚠️ Os seguintes casos não foram vinculados por ainda não existirem no "
-                    f"Azure DevOps: {', '.join(sorted(missing_cases))}. Envie com "
-                    "'Somente Test Cases' ou o modo combinado primeiro."
-                )
-
-        self.state.set('ado_push_log', log)
+        self.state.set('ado_case_links', case_links)
+        log.append(f"\n🔗 Confira o Test Plan completo: {self.ado_client.test_plan_url(plan_id)}")
+        self.state.set('ado_full_push_log', log)
         st.rerun()
+
 
     def run(self):
         if not require_login():
@@ -1398,3 +1518,5 @@ class UserInterface:
             self.step_5()
         elif step == 6:
             self.step_6()
+        elif step == 7:
+            self.step_7()

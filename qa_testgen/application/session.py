@@ -25,10 +25,12 @@ class SessionState:
         'active_matriz_row': None,
         'active_test_case_row': None,
         'active_test_plan_row': None,
-        'ado_push_scope': 'Nenhum',
+        'ado_area_path': '',
+        'ado_board_items': [],
         'ado_test_case_ids': {},
-        'ado_plan_ids': {},
-        'ado_push_log': [],
+        'ado_wi_case_links': {},
+        'ado_case_links': {},
+        'ado_full_push_log': [],
     }
 
     def __init__(self):

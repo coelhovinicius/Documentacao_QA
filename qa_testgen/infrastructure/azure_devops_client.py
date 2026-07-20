@@ -104,13 +104,15 @@ class AzureDevOpsClient:
     # rodando list_test_case_fields.py e ajuste aqui.
     PRECONDICOES_FIELD = "Custom.Precondicoes"
 
-    def create_test_case(self, titulo: str, pre_condicoes: str, passos: list) -> int:
+    def create_test_case(self, titulo: str, pre_condicoes: str, passos: list, area_path: str = None) -> int:
         """Cria um work item do tipo Test Case e retorna o ID numérico criado."""
         body = [
             {"op": "add", "path": "/fields/System.Title", "value": titulo},
             {"op": "add", "path": f"/fields/{self.PRECONDICOES_FIELD}", "value": pre_condicoes or ""},
             {"op": "add", "path": "/fields/Microsoft.VSTS.TCM.Steps", "value": self._build_steps_xml(passos)},
         ]
+        if area_path:
+            body.append({"op": "add", "path": "/fields/System.AreaPath", "value": area_path})
 
         url = f"{self._base_url()}/wit/workitems/$Test%20Case?api-version={API_VERSION}"
         response = requests.post(url, json=body, headers=self.headers_json_patch, timeout=60)
@@ -136,6 +138,23 @@ class AzureDevOpsClient:
 
         root_suite = data.get("rootSuite") or {}
         return {"id": data["id"], "root_suite_id": root_suite.get("id")}
+
+    def create_requirement_based_suite(self, plan_id: int, parent_suite_id: int, work_item_id: int) -> int:
+        """
+        Cria uma Requirement-based Suite dentro do plano, vinculada ao Work
+        Item informado. O Azure DevOps nomeia a suite automaticamente com o
+        título do Work Item, e ela passa a "puxar" sozinha qualquer Test Case
+        que tenha um link 'Tests' apontando pra esse Work Item.
+        """
+        body = {
+            "suiteType": "RequirementTestSuite",
+            "requirementId": work_item_id,
+            "parentSuite": {"id": parent_suite_id},
+        }
+        url = f"{self._base_url()}/testplan/Plans/{plan_id}/suites?api-version={API_VERSION}"
+        response = requests.post(url, json=body, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Criar Requirement Suite para Work Item {work_item_id}")
+        return data["id"]
 
     def create_test_suite(self, plan_id: int, parent_suite_id: int, nome: str) -> int:
         """Cria uma Static Test Suite dentro de um plano e retorna o ID da suite."""
@@ -166,3 +185,80 @@ class AzureDevOpsClient:
 
     def test_plan_url(self, plan_id: int) -> str:
         return f"https://dev.azure.com/{self.organization}/{self.project}/_testPlans/execute?planId={plan_id}"
+
+    # ------------------------------------------------------------------ #
+    # Work Items existentes (para vincular Test Cases a eles)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _wiql_escape(value: str) -> str:
+        """Escapa aspas simples para uso dentro de uma string WIQL."""
+        return (value or "").replace("'", "''")
+
+    def fetch_work_items_by_area_path(self, area_path: str) -> list:
+        """
+        Busca (via WIQL) todos os Work Items dentro do Area Path informado,
+        exceto Test Cases. Retorna uma lista de dicts:
+        {'id': int, 'title': str, 'type': str, 'state': str}
+        """
+        project_esc = self._wiql_escape(self.project)
+        area_esc = self._wiql_escape(area_path or self.project)
+
+        wiql = {
+            "query": (
+                "SELECT [System.Id] FROM WorkItems "
+                f"WHERE [System.TeamProject] = '{project_esc}' "
+                f"AND [System.AreaPath] UNDER '{area_esc}' "
+                "AND [System.WorkItemType] <> 'Test Case' "
+                "ORDER BY [System.Id]"
+            )
+        }
+        url = f"{self._base_url()}/wit/wiql?api-version={API_VERSION}"
+        response = requests.post(url, json=wiql, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Buscar Work Items por Area Path")
+
+        ids = [str(wi["id"]) for wi in data.get("workItems", [])]
+        if not ids:
+            return []
+
+        ids_str = ",".join(ids)
+        fields = "System.Id,System.Title,System.WorkItemType,System.State"
+        details_url = (
+            f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}"
+            f"&api-version={API_VERSION}"
+        )
+        details_response = requests.get(details_url, headers=self.headers_json, timeout=60)
+        details_data = self._handle_response(details_response, "Detalhar Work Items")
+
+        items = []
+        for wi in details_data.get("value", []):
+            f = wi.get("fields", {})
+            items.append({
+                "id": wi["id"],
+                "title": f.get("System.Title", ""),
+                "type": f.get("System.WorkItemType", ""),
+                "state": f.get("System.State", ""),
+            })
+        return items
+
+    def link_test_case_to_work_item(
+        self, test_case_id: int, work_item_id: int, comment: str = "Vinculado via QA TestGen"
+    ) -> None:
+        """
+        Cria um vínculo do tipo 'Tests' no Test Case, apontando para o Work
+        Item (ex.: User Story, Feature, Bug). Esse é exatamente o link que uma
+        Requirement-based Suite usa para "puxar" automaticamente os casos de
+        teste vinculados ao Work Item selecionado.
+        """
+        target_url = f"{self._base_url()}/wit/workItems/{work_item_id}"
+        body = [{
+            "op": "add",
+            "path": "/relations/-",
+            "value": {
+                "rel": "Microsoft.VSTS.Common.TestedBy-Reverse",
+                "url": target_url,
+                "attributes": {"comment": comment},
+            },
+        }]
+        url = f"{self._base_url()}/wit/workitems/{test_case_id}?api-version={API_VERSION}"
+        response = requests.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
+        self._handle_response(response, f"Vincular Test Case {test_case_id} ao Work Item {work_item_id}")
