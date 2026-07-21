@@ -3,6 +3,7 @@ import html
 import xml.sax.saxutils as saxutils
 
 import requests
+from urllib3.util.retry import Retry
 
 API_VERSION = "7.1"
 
@@ -44,8 +45,23 @@ class AzureDevOpsClient:
         # Reaproveita conexões TCP/TLS entre chamadas (bem mais rápido que
         # abrir uma conexão nova a cada requisição). pool_maxsize aumentado
         # porque o app dispara várias chamadas em paralelo (ThreadPoolExecutor).
+        # Retry automático: a maioria dos "Connection aborted"/reset é
+        # transitória (rede local, throttling do lado do Azure DevOps) e
+        # passa numa segunda tentativa, sem precisar que o usuário reenvie.
+        retry_strategy = Retry(
+            total=4,
+            connect=4,
+            read=4,
+            status=4,
+            backoff_factor=0.8,  # 0.8s, 1.6s, 3.2s, 6.4s entre tentativas
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST", "PATCH"],
+            raise_on_status=False,
+        )
         self.session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=20, pool_maxsize=20, max_retries=retry_strategy
+        )
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 
@@ -210,7 +226,7 @@ class AzureDevOpsClient:
     # Estados que NUNCA devem entrar na integração — nem como sugestão, nem
     # manualmente. Ajuste essa lista se o processo do seu projeto usar outros
     # nomes de estado (ex.: "Done", "Closed", "Removed").
-    EXCLUDED_STATES = {"Finalizado", "Backlog", "Cancelados"}
+    EXCLUDED_STATES = {"Finalizado", "Backlog"}
 
     def fetch_work_items_by_area_path(self, area_path: str) -> list:
         """

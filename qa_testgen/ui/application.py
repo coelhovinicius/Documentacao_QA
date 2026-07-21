@@ -1406,6 +1406,11 @@ class UserInterface:
                 self.clear_action()
                 st.rerun()
 
+            suggest_msg = self.state.get('ado_suggest_message')
+            if suggest_msg:
+                level, text = suggest_msg
+                {"success": st.success, "warning": st.warning, "error": st.error}.get(level, st.info)(text)
+
             st.divider()
             st.markdown("### ✏️ Revisar e confirmar vínculos")
             st.caption(
@@ -1462,12 +1467,12 @@ class UserInterface:
                         self.state.set('ado_confirm_modal_params', (len(test_cases), len(items_with_cases), total_links))
                         self.state.set('show_ado_confirm_modal', True)
                         st.rerun()
+            else:
+                st.info("Vincule pelo menos um Caso de Teste a um Work Item antes de continuar.")
 
             if self.state.get('show_ado_confirm_modal'):
                 params = self.state.get('ado_confirm_modal_params') or (0, 0, 0)
                 confirm_azure_devops_full_push_modal(*params)
-            else:
-                st.info("Vincule pelo menos um Caso de Teste a um Work Item antes de continuar.")
 
             if self.state.get('current_action') == 'push_azure_devops_full' and not self.state.get('show_interrupt_modal'):
                 self._push_full_azure_devops(ado_client, area_path)
@@ -1546,15 +1551,16 @@ class UserInterface:
                 ]
 
             if links:
-                st.success(f"✅ IA sugeriu vínculos para {len(links)} Work Item(s). Revise abaixo antes de confirmar.")
+                msg = ("success", f"✅ IA sugeriu vínculos para {len(links)} Work Item(s). Revise abaixo antes de confirmar.")
             else:
-                st.warning("⚠️ A IA não sugeriu nenhum vínculo válido. Você pode montar manualmente abaixo.")
+                msg = ("warning", "⚠️ A IA não sugeriu nenhum vínculo válido. Você pode montar manualmente abaixo.")
             if skipped:
-                st.caption(f"({skipped} item(ns) da resposta da IA vieram em formato inesperado e foram ignorados.)")
+                msg = (msg[0], msg[1] + f" ({skipped} item(ns) da resposta da IA vieram em formato inesperado e foram ignorados.)")
+            self.state.set('ado_suggest_message', msg)
         except ValueError as error:
-            st.error(f"❌ {error}")
+            self.state.set('ado_suggest_message', ("error", f"❌ {error}"))
         except Exception as error:
-            st.error(f"❌ Erro inesperado ao consultar sugestão da IA: {error}")
+            self.state.set('ado_suggest_message', ("error", f"❌ Erro inesperado ao consultar sugestão da IA: {error}"))
 
     def _push_full_azure_devops(self, ado_client, area_path: str):
         test_cases = self.state.get('test_cases') or []
@@ -1571,7 +1577,7 @@ class UserInterface:
         # ORIGINAL do caso; só o texto enviado como Title pro Azure DevOps é
         # que leva o prefixo.
         titled = AzureCsvFormatter._titled(test_cases)
-        MAX_WORKERS = 8  # nº de chamadas simultâneas à API do Azure DevOps
+        MAX_WORKERS = 4  # nº de chamadas simultâneas à API do Azure DevOps (reduzido — 8 causava reset de conexão)
 
         # 1) Garante que TODOS os Casos de Teste gerados existem no Azure DevOps,
         # vinculados a algum Work Item ou não — casos sem vínculo são criados
