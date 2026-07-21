@@ -77,7 +77,7 @@ class PdfReportGenerator:
         canvas.setFillColor(COR_LARANJA)
         canvas.drawRightString(w - 18, h - 28, f"QA TestGen |  {PdfReportGenerator._esc(project_name)}")
         canvas.setFont('Helvetica', 8)
-        canvas.setFillColor(COR_CINZA_ESC)
+        canvas.setFillColor(COR_LARANJA)
         canvas.drawRightString(w - 18, h - 42, datetime.now(TZ_BR).strftime('%d/%m/%Y %H:%M'))
         canvas.setStrokeColor(COR_LARANJA)
         canvas.setLineWidth(1.2)
@@ -109,6 +109,17 @@ class PdfReportGenerator:
         pw = doc.width
         story = []
 
+        # Numeração TC-XX consistente entre a Matriz, os Planos e os Casos,
+        # e um índice reverso (requisito da Matriz -> quais TC-XX o cobrem)
+        # usado no resumo de rastreabilidade logo após a Matriz.
+        tc_numbers = {tc.get('titulo', ''): idx for idx, tc in enumerate(test_cases or [], start=1)}
+        cases_by_titulo = {tc.get('titulo', ''): tc for tc in test_cases or []}
+        coverage_by_mc_id = {}
+        for tc in test_cases or []:
+            tc_label = f"TC-{tc_numbers.get(tc.get('titulo', ''), 0):02d}"
+            for mc_id in (tc.get('requisitos_relacionados') or []):
+                coverage_by_mc_id.setdefault(str(mc_id), []).append(tc_label)
+
         story.append(Spacer(1, 0.4 * cm))
         story.append(Paragraph("Documentação QA", styles['title']))
         story.append(Paragraph(
@@ -137,6 +148,46 @@ class PdfReportGenerator:
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ]))
             story.append(table)
+
+            story.append(Spacer(1, 12))
+            story.append(Paragraph("1.1 Resumo de Rastreabilidade", styles['subsection']))
+            cov_data = [[
+                Paragraph("ID", styles['cell_head']),
+                Paragraph("Requisito", styles['cell_head']),
+                Paragraph("Casos de Teste que Cobrem", styles['cell_head']),
+            ]]
+            cov_row_colors = [COR_BRANCO]  # cabeçalho, cor não usada mas mantém índice alinhado
+            for row in matriz:
+                mc_id = str(row.get('id', '') or '')
+                requisito = str(row.get('requisito', '') or '')
+                covering = coverage_by_mc_id.get(mc_id, [])
+                if covering:
+                    cov_text = ", ".join(covering)
+                    row_color = COR_BRANCO
+                else:
+                    cov_text = "⚠ Sem cobertura"
+                    row_color = colors.HexColor('#FDEAEA')
+                cov_row_colors.append(row_color)
+                cov_data.append([
+                    Paragraph(cls._esc(mc_id), styles['cell']),
+                    Paragraph(cls._esc(requisito), styles['cell']),
+                    Paragraph(cls._esc(cov_text), styles['cell']),
+                ])
+            cov_table = Table(cov_data, colWidths=[2 * cm, 3 * cm, pw - 5 * cm], repeatRows=1)
+            cov_style = [
+                ('BACKGROUND', (0, 0), (-1, 0), COR_CINZA_ESC),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]
+            for r_idx, r_color in enumerate(cov_row_colors):
+                if r_idx == 0:
+                    continue
+                cov_style.append(('BACKGROUND', (0, r_idx), (-1, r_idx), r_color))
+            cov_table.setStyle(TableStyle(cov_style))
+            story.append(cov_table)
         else:
             story.append(Paragraph("Nenhuma entrada na Matriz.", styles['body']))
 
@@ -179,10 +230,22 @@ class PdfReportGenerator:
 
                     casos = suite.get('casos', [])
                     if casos:
-                        suite_data = [[Paragraph("#", styles['cell_head']), Paragraph("Caso de Teste", styles['cell_head'])]]
+                        suite_data = [[
+                            Paragraph("#", styles['cell_head']),
+                            Paragraph("Caso de Teste", styles['cell_head']),
+                            Paragraph("Requisitos", styles['cell_head']),
+                        ]]
                         for c_idx, caso in enumerate(casos, start=1):
-                            suite_data.append([Paragraph(str(c_idx), styles['cell']), Paragraph(cls._esc(caso), styles['cell'])])
-                        st_t = Table(suite_data, colWidths=[1 * cm, pw - 1 * cm], repeatRows=1)
+                            tc_num = tc_numbers.get(caso)
+                            caso_label = f"TC-{tc_num:02d} – {caso}" if tc_num else caso
+                            reqs = (cases_by_titulo.get(caso, {}) or {}).get('requisitos_relacionados') or []
+                            reqs_text = ", ".join(str(r) for r in reqs) if reqs else "—"
+                            suite_data.append([
+                                Paragraph(str(c_idx), styles['cell']),
+                                Paragraph(cls._esc(caso_label), styles['cell']),
+                                Paragraph(cls._esc(reqs_text), styles['cell']),
+                            ])
+                        st_t = Table(suite_data, colWidths=[1 * cm, (pw - 1 * cm) * 0.65, (pw - 1 * cm) * 0.35], repeatRows=1)
                         st_t.setStyle(TableStyle([
                             ('BACKGROUND', (0, 0), (-1, 0), COR_CINZA_ESC),
                             ('ROWBACKGROUNDS', (0, 1), (-1, -1), [COR_BRANCO, COR_CINZA_LIN]),
@@ -205,6 +268,8 @@ class PdfReportGenerator:
             titulo = tc.get('titulo', f'Caso #{idx}')
             pre = tc.get('pre_condicoes', '—')
             passos = tc.get('passos', [])
+            reqs = tc.get('requisitos_relacionados') or []
+            reqs_text = ", ".join(str(r) for r in reqs) if reqs else "—"
 
             hdr = Table([[Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['tc_title'])]], colWidths=[pw])
             hdr.setStyle(TableStyle([
@@ -214,7 +279,10 @@ class PdfReportGenerator:
                 ('LEFTPADDING', (0, 0), (-1, -1), 8),
             ]))
             pre_t = Table(
-                [[Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(cls._esc(pre), styles['cell'])]],
+                [
+                    [Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(cls._esc(pre), styles['cell'])],
+                    [Paragraph("<b>Rastreabilidade:</b>", styles['cell']), Paragraph(cls._esc(reqs_text), styles['cell'])],
+                ],
                 colWidths=[3 * cm, pw - 3 * cm],
             )
             pre_t.setStyle(TableStyle([

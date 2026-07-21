@@ -5,7 +5,7 @@ class SessionState:
         'step': 1,
         'doc_text': '',
         'project_name': '',
-        'uploaded_file': None,
+        'uploaded_files': [],
         'questions': [],
         'user_answers': {},
         'step_2_answers': {},
@@ -31,6 +31,8 @@ class SessionState:
         'ado_wi_case_links': {},
         'ado_case_links': {},
         'ado_full_push_log': [],
+        'show_ado_confirm_modal': False,
+        'ado_confirm_modal_params': None,
     }
 
     def __init__(self):

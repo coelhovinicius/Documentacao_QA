@@ -4,7 +4,7 @@ from qa_testgen.ui.auth import SESSION_AUTH_KEY, SESSION_USER_KEY
 
 # Chaves que NÃO devem ser apagadas ao iniciar uma "Nova Análise":
 # autenticação e o componente interno que lê o cookie de sessão.
-_PRESERVE_ON_RESET = {SESSION_AUTH_KEY, SESSION_USER_KEY, "_cookie_manager"}
+_PRESERVE_ON_RESET = {SESSION_AUTH_KEY, SESSION_USER_KEY}
 
 DIALOG_PREFIXES = (
     "mid_","mfunc_","mreq_","mcen_","mcat_","mpri_","mcrit_","mobs_","edit_m_",
@@ -145,14 +145,34 @@ def confirm_azure_devops_full_push_modal(num_cases_total: int, num_work_items: i
         "Cases e vínculos) e **não pode ser desfeita automaticamente** — se algo sair errado, "
         "a exclusão precisa ser feita manualmente lá. Tem certeza que deseja prosseguir?"
     )
+    st.markdown(
+        """
+        <style>
+            div[class*="st-key-azure_blue_btn_"] button {
+                background-color: #0078D4 !important;
+                border-color: #0078D4 !important;
+                color: #FFFFFF !important;
+            }
+            div[class*="st-key-azure_blue_btn_"] button:hover {
+                background-color: #106EBE !important;
+                border-color: #106EBE !important;
+                color: #FFFFFF !important;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="confirm_ado_full_push"):
-            st.session_state['current_action'] = 'push_azure_devops_full'
-            st.session_state['is_processing'] = True
-            st.rerun()
+        with st.container(key="azure_blue_btn_modal_confirm"):
+            if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="confirm_ado_full_push"):
+                st.session_state['show_ado_confirm_modal'] = False
+                st.session_state['current_action'] = 'push_azure_devops_full'
+                st.session_state['is_processing'] = True
+                st.rerun()
     with c2:
         if st.button("❌ Cancelar", use_container_width=True, key="cancel_ado_full_push"):
+            st.session_state['show_ado_confirm_modal'] = False
             st.rerun()
 
 

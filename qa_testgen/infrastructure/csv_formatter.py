@@ -15,6 +15,7 @@ class AzureCsvFormatter:
         "Area Path",
         "Assigned To",
         "State",
+        "Requisitos Relacionados",
     ]
 
     @staticmethod
@@ -27,6 +28,13 @@ class AzureCsvFormatter:
     @staticmethod
     def _text(value) -> str:
         return "" if value is None else str(value)
+
+    @staticmethod
+    def _requisitos(tc: dict) -> str:
+        reqs = tc.get('requisitos_relacionados') or []
+        if isinstance(reqs, str):
+            return reqs
+        return "; ".join(str(r) for r in reqs)
 
     @staticmethod
     def _titled(test_cases: list) -> dict:
@@ -60,6 +68,7 @@ class AzureCsvFormatter:
                 AzureCsvFormatter._text(project_name),
                 "",
                 "Design",
+                AzureCsvFormatter._requisitos(tc),
             ])
             for step in tc.get('passos', []):
                 rows.append([
@@ -70,6 +79,7 @@ class AzureCsvFormatter:
                     "",
                     AzureCsvFormatter._text(step.get('acao')),
                     AzureCsvFormatter._text(step.get('resultado_esperado')),
+                    "",
                     "",
                     "",
                     "",
@@ -103,6 +113,7 @@ class AzureCsvFormatter:
                         AzureCsvFormatter._text(project_name),
                         "",
                         "Design",
+                        AzureCsvFormatter._requisitos(tc),
                         suite_name,
                         plan_name,
                     ])
@@ -115,6 +126,7 @@ class AzureCsvFormatter:
                             "",
                             AzureCsvFormatter._text(step.get('acao')),
                             AzureCsvFormatter._text(step.get('resultado_esperado')),
+                            "",
                             "",
                             "",
                             "",

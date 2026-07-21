@@ -41,6 +41,14 @@ class AzureDevOpsClient:
             "Accept": "application/json",
         }
 
+        # Reaproveita conexões TCP/TLS entre chamadas (bem mais rápido que
+        # abrir uma conexão nova a cada requisição). pool_maxsize aumentado
+        # porque o app dispara várias chamadas em paralelo (ThreadPoolExecutor).
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
     def _base_url(self) -> str:
         return f"https://dev.azure.com/{self.organization}/{self.project}/_apis"
 
@@ -115,7 +123,7 @@ class AzureDevOpsClient:
             body.append({"op": "add", "path": "/fields/System.AreaPath", "value": area_path})
 
         url = f"{self._base_url()}/wit/workitems/$Test%20Case?api-version={API_VERSION}"
-        response = requests.post(url, json=body, headers=self.headers_json_patch, timeout=60)
+        response = self.session.post(url, json=body, headers=self.headers_json_patch, timeout=60)
         data = self._handle_response(response, f"Criar Test Case '{titulo}'")
         return data["id"]
 
@@ -133,7 +141,7 @@ class AzureDevOpsClient:
             body["description"] = descricao
 
         url = f"{self._base_url()}/testplan/plans?api-version={API_VERSION}"
-        response = requests.post(url, json=body, headers=self.headers_json, timeout=60)
+        response = self.session.post(url, json=body, headers=self.headers_json, timeout=60)
         data = self._handle_response(response, f"Criar Test Plan '{nome}'")
 
         root_suite = data.get("rootSuite") or {}
@@ -152,7 +160,7 @@ class AzureDevOpsClient:
             "parentSuite": {"id": parent_suite_id},
         }
         url = f"{self._base_url()}/testplan/Plans/{plan_id}/suites?api-version={API_VERSION}"
-        response = requests.post(url, json=body, headers=self.headers_json, timeout=60)
+        response = self.session.post(url, json=body, headers=self.headers_json, timeout=60)
         data = self._handle_response(response, f"Criar Requirement Suite para Work Item {work_item_id}")
         return data["id"]
 
@@ -164,7 +172,7 @@ class AzureDevOpsClient:
             "parentSuite": {"id": parent_suite_id},
         }
         url = f"{self._base_url()}/testplan/Plans/{plan_id}/suites?api-version={API_VERSION}"
-        response = requests.post(url, json=body, headers=self.headers_json, timeout=60)
+        response = self.session.post(url, json=body, headers=self.headers_json, timeout=60)
         data = self._handle_response(response, f"Criar Suite '{nome}'")
         return data["id"]
 
@@ -177,7 +185,7 @@ class AzureDevOpsClient:
             f"{self._base_url()}/test/Plans/{plan_id}/Suites/{suite_id}"
             f"/testcases/{ids_str}?api-version={API_VERSION}"
         )
-        response = requests.post(url, headers=self.headers_json, timeout=60)
+        response = self.session.post(url, headers=self.headers_json, timeout=60)
         self._handle_response(response, f"Vincular casos à suite {suite_id}")
 
     def work_item_url(self, work_item_id: int) -> str:
@@ -194,26 +202,44 @@ class AzureDevOpsClient:
         """Escapa aspas simples para uso dentro de uma string WIQL."""
         return (value or "").replace("'", "''")
 
+    # Tipos de work item que NUNCA são "requisitos" pra vincular casos de
+    # teste — são artefatos do próprio Test Plans (inclusive criados pela
+    # integração), não itens reais do backlog.
+    EXCLUDED_TYPES = {"Test Case", "Test Plan", "Test Suite"}
+
+    # Estados que NUNCA devem entrar na integração — nem como sugestão, nem
+    # manualmente. Ajuste essa lista se o processo do seu projeto usar outros
+    # nomes de estado (ex.: "Done", "Closed", "Removed").
+    EXCLUDED_STATES = {"Finalizado", "Backlog", "Cancelados"}
+
     def fetch_work_items_by_area_path(self, area_path: str) -> list:
         """
         Busca (via WIQL) todos os Work Items dentro do Area Path informado,
-        exceto Test Cases. Retorna uma lista de dicts:
-        {'id': int, 'title': str, 'type': str, 'state': str}
+        exceto os tipos em EXCLUDED_TYPES e os estados em EXCLUDED_STATES.
+        Retorna uma lista de dicts: {'id': int, 'title': str, 'type': str, 'state': str}
         """
         project_esc = self._wiql_escape(self.project)
         area_esc = self._wiql_escape(area_path or self.project)
+
+        state_filters = " ".join(
+            f"AND [System.State] <> '{self._wiql_escape(s)}'" for s in self.EXCLUDED_STATES
+        )
+        type_filters = " ".join(
+            f"AND [System.WorkItemType] <> '{self._wiql_escape(t)}'" for t in self.EXCLUDED_TYPES
+        )
 
         wiql = {
             "query": (
                 "SELECT [System.Id] FROM WorkItems "
                 f"WHERE [System.TeamProject] = '{project_esc}' "
                 f"AND [System.AreaPath] UNDER '{area_esc}' "
-                "AND [System.WorkItemType] <> 'Test Case' "
+                f"{type_filters} "
+                f"{state_filters} "
                 "ORDER BY [System.Id]"
             )
         }
         url = f"{self._base_url()}/wit/wiql?api-version={API_VERSION}"
-        response = requests.post(url, json=wiql, headers=self.headers_json, timeout=60)
+        response = self.session.post(url, json=wiql, headers=self.headers_json, timeout=60)
         data = self._handle_response(response, "Buscar Work Items por Area Path")
 
         ids = [str(wi["id"]) for wi in data.get("workItems", [])]
@@ -226,17 +252,24 @@ class AzureDevOpsClient:
             f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}"
             f"&api-version={API_VERSION}"
         )
-        details_response = requests.get(details_url, headers=self.headers_json, timeout=60)
+        details_response = self.session.get(details_url, headers=self.headers_json, timeout=60)
         details_data = self._handle_response(details_response, "Detalhar Work Items")
 
         items = []
         for wi in details_data.get("value", []):
             f = wi.get("fields", {})
+            state = f.get("System.State", "")
+            wi_type = f.get("System.WorkItemType", "")
+            if state in self.EXCLUDED_STATES or wi_type in self.EXCLUDED_TYPES:
+                # Rede de segurança: mesmo que o filtro do WIQL falhe por
+                # algum motivo (nome de campo customizado, cache, etc.),
+                # ainda garante que esses itens nunca aparecem na lista.
+                continue
             items.append({
                 "id": wi["id"],
                 "title": f.get("System.Title", ""),
                 "type": f.get("System.WorkItemType", ""),
-                "state": f.get("System.State", ""),
+                "state": state,
             })
         return items
 
@@ -260,5 +293,5 @@ class AzureDevOpsClient:
             },
         }]
         url = f"{self._base_url()}/wit/workitems/{test_case_id}?api-version={API_VERSION}"
-        response = requests.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
+        response = self.session.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
         self._handle_response(response, f"Vincular Test Case {test_case_id} ao Work Item {work_item_id}")
