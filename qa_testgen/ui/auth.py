@@ -143,13 +143,12 @@ def _render_login_form():
 
     _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        st.markdown("## 🧪 QA TestGen - Azure DevOps")
+        st.markdown("## 🧪 QA Automation – Azure DevOps")
         st.caption("Acesso restrito. Informe suas credenciais para continuar.")
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Usuário")
             password = st.text_input("Senha", type="password")
             submitted = st.form_submit_button("Entrar", use_container_width=True, type="primary")
-        st.caption("Caso não possua acesso, entre em contato com o administrador do sistema.")
 
         if submitted:
             username = username.strip()

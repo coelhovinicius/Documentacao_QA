@@ -164,12 +164,11 @@ def confirm_azure_devops_full_push_modal(num_cases_total: int, num_work_items: i
     )
     c1, c2 = st.columns(2)
     with c1:
-        with st.container(key="azure_blue_btn_modal_confirm"):
-            if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="confirm_ado_full_push"):
-                st.session_state['show_ado_confirm_modal'] = False
-                st.session_state['current_action'] = 'push_azure_devops_full'
-                st.session_state['is_processing'] = True
-                st.rerun()
+        if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="azure_blue_btn_modal_confirm"):
+            st.session_state['show_ado_confirm_modal'] = False
+            st.session_state['current_action'] = 'push_azure_devops_full'
+            st.session_state['is_processing'] = True
+            st.rerun()
     with c2:
         if st.button("❌ Cancelar", use_container_width=True, key="cancel_ado_full_push"):
             st.session_state['show_ado_confirm_modal'] = False

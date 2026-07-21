@@ -67,7 +67,7 @@ class AzureCsvFormatter:
                 "Not Automated",
                 AzureCsvFormatter._text(project_name),
                 "",
-                "Design",
+                "Ready",
                 AzureCsvFormatter._requisitos(tc),
             ])
             for step in tc.get('passos', []):
@@ -112,7 +112,7 @@ class AzureCsvFormatter:
                         "Not Automated",
                         AzureCsvFormatter._text(project_name),
                         "",
-                        "Design",
+                        "Ready",
                         AzureCsvFormatter._requisitos(tc),
                         suite_name,
                         plan_name,

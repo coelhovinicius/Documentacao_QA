@@ -44,7 +44,7 @@ def main():
     # 1) Criar Test Case
     print("1) Criando um Test Case de teste...")
     try:
-        case_id = client.create_test_case(
+        result = client.create_test_case(
             titulo="[TESTE DE CONEXÃO] Caso de exemplo",
             pre_condicoes="Usuário autenticado no sistema.",
             passos=[
@@ -52,6 +52,7 @@ def main():
                 {"numero": 2, "acao": "Clicar em Salvar", "resultado_esperado": "Mensagem de sucesso aparece"},
             ],
         )
+        case_id = result["id"]
         print(f"   ✅ Test Case criado com sucesso! ID: {case_id}")
         print(f"   🔗 {client.work_item_url(case_id)}")
     except AzureDevOpsError as e:

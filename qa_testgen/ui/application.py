@@ -307,8 +307,8 @@ class UserInterface:
                          style="max-width:100%;max-height:80px;object-fit:contain;">
                 </div>
                 <div style="flex:1;background:linear-gradient(135deg,#F15A24,#c94a1a);padding:1rem 1.5rem;border-radius:6px;display:flex;flex-direction:column;justify-content:center;min-height:80px;">
-                    <h1 style="color:white;margin:0;font-size:1.6rem;padding:0;">🧪 QA TestGen – Automation</h1>
-                    <p style="color:white;margin:0.2rem 0 0 0;font-size:1.05rem;padding:0;">Gerador Inteligente de Casos de Teste — Azure DevOps Integration</p>
+                    <h1 style="color:white;margin:0;font-size:1.6rem;padding:0;">🧪 QA Automation – Azure DevOps</h1>
+                    <p style="color:white;margin:0.2rem 0 0 0;font-size:1.05rem;padding:0;">Automação QA com IA - Integração ao Azure DevOps</p>
                 </div>
             </div>
             """,
@@ -356,32 +356,41 @@ class UserInterface:
             'generate_plans': 'Gerando os Planos de Teste',
             'build_artifacts': 'Construindo os artefatos finais',
             'fetch_wi': 'Buscando Work Items do Board no Azure DevOps',
+            'fetch_orgs': 'Carregando organizações acessíveis a este PAT',
+            'fetch_projects': 'Buscando projetos da organização selecionada',
+            'fetch_area_paths': 'Buscando Area Paths do projeto selecionado',
             'suggest_ado_links': 'Consultando a IA (n8n) para sugerir vínculos',
             'push_azure_devops_full': 'Integrando com o Azure DevOps',
+            'check_ado_plan_name': 'Verificando se já existe um Test Plan com esse nome',
         }
         action = labels.get(self.state.get('current_action'), 'Processando informações')
         st.markdown(
             """
             <style>
                 /* Garante que o modal nativo do Streamlit (st.dialog) sempre
-                   fique acima do overlay de "Processamento em andamento" —
-                   sem isso, o overlay (z-index 999/1000) pode cobrir o
-                   modal, deixando ele parecendo "preso"/sem resposta. */
+                   fique acima do overlay de "Processamento em andamento". */
                 [data-testid="stDialog"],
                 div[role="dialog"],
                 [data-testid="stModal"] {
                     z-index: 2147483647 !important;
                 }
 
+                /* pointer-events: auto -> ISSO bloqueia clique de verdade em
+                   tudo que estiver embaixo, enquanto durar o processamento.
+                   Antes estava "none", ou seja, só era visual — qualquer
+                   botão embaixo continuava clicável normalmente. */
                 .qa-processing-shade {
                     position: fixed;
                     inset: 0;
-                    background: rgba(20, 24, 31, 0.18);
+                    background: rgba(20, 24, 31, 0.35);
                     z-index: 999;
-                    pointer-events: none;
+                    pointer-events: auto;
                 }
-                .qa-processing-card {
-                    position: fixed;
+
+                /* O card fica acima do shade e É a única coisa clicável —
+                   por isso ele mesmo tem o botão real de Cancelar dentro. */
+                div[class*="st-key-qa_processing_card"] {
+                    position: fixed !important;
                     right: 1.5rem;
                     bottom: 1.5rem;
                     z-index: 1000;
@@ -389,13 +398,13 @@ class UserInterface:
                     border: 1px solid #f15a24;
                     border-left: 5px solid #f15a24;
                     border-radius: 6px;
-                    box-shadow: 0 12px 28px rgba(0,0,0,.18);
-                    padding: .9rem 1rem;
+                    box-shadow: 0 12px 28px rgba(0,0,0,.25);
+                    padding: .9rem 1rem 1rem 1rem;
                     max-width: 380px;
-                    pointer-events: none;
+                    pointer-events: auto;
                 }
                 .qa-processing-title {font-weight: 700;color: #3A3A3A;margin-bottom: .2rem;}
-                .qa-processing-text {color: #5b5b5b;font-size: .9rem;}
+                .qa-processing-text {color: #5b5b5b;font-size: .9rem; margin-bottom: .7rem;}
                 .qa-processing-dot {
                     display: inline-block;
                     width: .6rem;
@@ -408,14 +417,18 @@ class UserInterface:
                 @keyframes qaPulse {0%, 100% {opacity: .25; transform: scale(.85);} 50% {opacity: 1; transform: scale(1.1);}}
             </style>
             <div class="qa-processing-shade"></div>
-            <div class="qa-processing-card">
-                <div class="qa-processing-title"><span class="qa-processing-dot"></span>Processamento em andamento</div>
-                <div class="qa-processing-text">Aguarde a conclusão. Evite navegar ou atualizar a página durante esta etapa.</div>
-            </div>
             """,
             unsafe_allow_html=True,
         )
-        st.warning(f"⏳ {action}. Aguarde a conclusão para continuar.")
+        with st.container(key="qa_processing_card"):
+            st.markdown(
+                f'<div class="qa-processing-title"><span class="qa-processing-dot"></span>Processamento em andamento</div>'
+                f'<div class="qa-processing-text">{action}.<br>Esta é a única ação disponível até finalizar.</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("⏹️ Cancelar Processamento", key="qa_processing_cancel_btn", use_container_width=True, type="primary"):
+                self.state.set('show_interrupt_modal', True)
+                st.rerun()
 
     def _progress(self):
         labels = ["📄 Upload", "💬 Dúvidas", "📊 Matriz", "📋 Casos", "📁 Planos", "⬇️ Download", "🔗 Azure DevOps"]
@@ -1307,26 +1320,133 @@ class UserInterface:
 
         st.markdown("#### 🔧 Configuração do Azure DevOps")
         st.caption(
-            "Organização e Projeto podem mudar por análise — não precisa ser sempre o mesmo "
-            "projeto configurado no secrets.toml. O PAT (token de acesso) é sempre o configurado "
-            "no backend, por segurança — não fica editável aqui na tela."
+            "Organização, Projeto e Area Path vêm direto do que esse PAT consegue acessar no "
+            "Azure DevOps — nada aqui é digitado livremente. Cada nível só é buscado quando você "
+            "pedir (clicando no botão correspondente), pra não travar a tela buscando informações "
+            "que talvez você nem vá usar."
         )
-        col_org, col_proj = st.columns(2)
-        with col_org:
-            ado_org = st.text_input(
-                "Organização",
-                value=self.state.get('ado_org_override') or self.config.azure_devops_org,
-                disabled=self.state.get('is_processing'),
-                key="ado_org_input",
+
+        if not self.config.azure_devops_pat:
+            st.error("`AZURE_DEVOPS_PAT` não está configurado no `secrets.toml` — não é possível continuar.")
+            st.divider()
+            self._render_step7_back_and_new("no_pat")
+            return
+
+        # 1) Organizações — busca automática (é só 1 chamada rápida, ou nem
+        # isso quando cai no fallback abaixo), então não precisa de um botão
+        # manual só pra isso. Busca uma vez por sessão.
+        if not self.state.get('ado_orgs_fetch_done'):
+            probe_org = AzureDevOpsClient("", "", self.config.azure_devops_pat)
+            try:
+                with st.spinner("Carregando organizações acessíveis a este PAT..."):
+                    orgs = probe_org.list_accessible_organizations()
+                self.state.set('ado_accessible_orgs', orgs)
+                self.state.set('ado_orgs_fetch_error', None)
+            except Exception as error:
+                # Esse endpoint específico (app.vssps.visualstudio.com) só
+                # funciona com PATs criados com escopo "All accessible
+                # organizations". Um PAT restrito a uma única organização
+                # recebe 401 aqui — não significa que o PAT esteja errado
+                # para o resto da integração. Cai pro fallback abaixo.
+                self.state.set('ado_accessible_orgs', [])
+                self.state.set('ado_orgs_fetch_error', str(error))
+            self.state.set('ado_orgs_fetch_done', True)
+
+        orgs = self.state.get('ado_accessible_orgs') or []
+
+        if not orgs and self.config.azure_devops_org and self.state.get('ado_orgs_fetch_error'):
+            # Fallback: não conseguimos listar dinamicamente (provavelmente
+            # PAT restrito a uma única org), mas há uma organização padrão
+            # configurada — usa ela como única opção válida do dropdown.
+            orgs = [self.config.azure_devops_org]
+            st.caption(
+                f"ℹ️ Não foi possível listar organizações dinamicamente (PAT provavelmente restrito "
+                f"a uma única organização) — usando **{self.config.azure_devops_org}**, configurada "
+                f"no `secrets.toml`, como única opção."
             )
-        with col_proj:
-            ado_project = st.text_input(
-                "Projeto",
-                value=self.state.get('ado_project_override') or self.config.azure_devops_project,
-                disabled=self.state.get('is_processing'),
-                key="ado_project_input",
-            )
+
+        if not orgs:
+            st.warning("Nenhuma organização encontrada para o PAT configurado. Confira o token no `secrets.toml`.")
+            fetch_error = self.state.get('ado_orgs_fetch_error')
+            if fetch_error:
+                st.caption(f"Detalhe do erro: {fetch_error}")
+            if st.button("🔄 Tentar novamente", disabled=self.state.get('is_processing'), key="btn_retry_orgs"):
+                self.state.set('ado_orgs_fetch_done', False)
+                st.rerun()
+            st.divider()
+            self._render_step7_back_and_new("no_orgs_yet")
+            return
+
+        previous_org = self.state.get('ado_org_override')
+        default_org = previous_org if previous_org in orgs else (
+            self.config.azure_devops_org if self.config.azure_devops_org in orgs else orgs[0]
+        )
+        ado_org = st.selectbox(
+            "Organização *",
+            options=orgs,
+            index=orgs.index(default_org),
+            disabled=self.state.get('is_processing'),
+            key="ado_org_select",
+            help="Lista vem direto do Azure DevOps — só as organizações que esse PAT consegue acessar.",
+        )
+        if ado_org != previous_org:
+            # Organização mudou — projetos/Area Paths buscados antes eram de
+            # outra org, não faz sentido continuar mostrando eles.
+            self.state.set('ado_available_projects', [])
+            self.state.set('ado_projects_org', '')
+            self.state.set('ado_project_override', '')
+            self.state.set('ado_available_area_paths', [])
+            self.state.set('ado_area_paths_project', '')
+            self.state.set('ado_area_path', '')
         self.state.set('ado_org_override', ado_org)
+
+        # 2) Projetos — só buscados quando o usuário pedir explicitamente.
+        with st.container(key="azure_blue_btn_fetch_projects"):
+            st.button(
+                "🔄 Buscar Projetos desta Organização",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_projects",
+                on_click=self.trigger_action,
+                args=("fetch_projects",),
+            )
+        if self.state.get('current_action') == 'fetch_projects' and not self.state.get('show_interrupt_modal'):
+            probe_proj = AzureDevOpsClient(ado_org, "", self.config.azure_devops_pat)
+            try:
+                with st.spinner(f"Buscando projetos em '{ado_org}'..."):
+                    projects = probe_proj.list_projects()
+                self.state.set('ado_available_projects', projects)
+                self.state.set('ado_projects_org', ado_org)
+            except AzureDevOpsError as error:
+                st.error(f"❌ Não foi possível listar projetos de '{ado_org}': {error}")
+                self.state.set('ado_available_projects', [])
+            except Exception as error:
+                st.error(f"❌ Erro inesperado ao listar projetos: {error}")
+                self.state.set('ado_available_projects', [])
+            self.clear_action()
+            st.rerun()
+
+        projects = self.state.get('ado_available_projects') or []
+
+        if not projects or self.state.get('ado_projects_org') != ado_org:
+            st.info(f"Clique em **\"Buscar Projetos desta Organização\"** acima para escolher um projeto de **{ado_org}**.")
+            st.divider()
+            self._render_step7_back_and_new("no_projects_yet")
+            return
+
+        current_project = self.state.get('ado_project_override')
+        default_project = current_project if current_project in projects else projects[0]
+        ado_project = st.selectbox(
+            "Projeto *",
+            options=projects,
+            index=projects.index(default_project),
+            disabled=self.state.get('is_processing'),
+            key="ado_project_select",
+            help="Lista vem direto do Azure DevOps — só os projetos visíveis a esse PAT dentro da organização selecionada.",
+        )
+        if ado_project != current_project:
+            self.state.set('ado_available_area_paths', [])
+            self.state.set('ado_area_paths_project', '')
+            self.state.set('ado_area_path', '')
         self.state.set('ado_project_override', ado_project)
 
         ado_client = AzureDevOpsClient(ado_org, ado_project, self.config.azure_devops_pat)
@@ -1341,18 +1461,55 @@ class UserInterface:
             return
 
         st.divider()
-        area_path = st.text_input(
-            "Area Path no Azure DevOps",
-            value=self.state.get('ado_area_path') or ado_project,
-            help=(
-                "Caminho exato da Area no Azure DevOps (ex.: 'QA-TestGen-Sandbox' ou "
-                "'QA-TestGen-Sandbox\\\\Time A'). É usado tanto pra criar os Test Cases "
-                "quanto pra buscar os Work Items do Board abaixo."
-            ),
-            disabled=self.state.get('is_processing'),
-            key="ado_area_path_input",
-        )
-        self.state.set('ado_area_path', area_path)
+
+        # 3) Area Path — o padrão é a RAIZ do projeto, que é sempre um Area
+        # Path válido (é literalmente o nome do projeto) e não exige nenhuma
+        # chamada extra à API. Buscar a árvore inteira de sub-areas só faz
+        # sentido pra quem realmente precisa restringir a uma sub-area
+        # específica — por isso vira uma opção avançada, não obrigatória.
+        if self.state.get('ado_area_paths_project') != ado_project:
+            self.state.set('ado_area_path', ado_project)
+
+        area_path = self.state.get('ado_area_path') or ado_project
+        st.caption(f"📁 Area Path: **{area_path}** (raiz do projeto)")
+
+        with st.expander("🔍 Usar uma sub-area específica em vez da raiz do projeto (opcional)"):
+            with st.container(key="azure_blue_btn_fetch_areas"):
+                st.button(
+                    "🔄 Buscar Area Paths deste Projeto",
+                    disabled=self.state.get('is_processing'),
+                    key="btn_fetch_areas",
+                    on_click=self.trigger_action,
+                    args=("fetch_area_paths",),
+                )
+            if self.state.get('current_action') == 'fetch_area_paths' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner(f"Buscando Area Paths em '{ado_project}'..."):
+                        area_paths = ado_client.list_area_paths()
+                    self.state.set('ado_available_area_paths', area_paths)
+                    self.state.set('ado_area_paths_project', ado_project)
+                except AzureDevOpsError as error:
+                    st.error(f"❌ Não foi possível listar os Area Paths de '{ado_project}': {error}")
+                    self.state.set('ado_available_area_paths', [])
+                except Exception as error:
+                    st.error(f"❌ Erro inesperado ao listar Area Paths: {error}")
+                    self.state.set('ado_available_area_paths', [])
+                self.clear_action()
+                st.rerun()
+
+            available_area_paths = self.state.get('ado_available_area_paths') or []
+            if available_area_paths and self.state.get('ado_area_paths_project') == ado_project:
+                default_area_path = area_path if area_path in available_area_paths else available_area_paths[0]
+                sub_area_path = st.selectbox(
+                    "Area Path no Azure DevOps",
+                    options=available_area_paths,
+                    index=available_area_paths.index(default_area_path),
+                    help="Lista vem direto do Azure DevOps — só os Area Paths que realmente existem no projeto selecionado.",
+                    disabled=self.state.get('is_processing'),
+                    key="ado_area_path_select",
+                )
+                self.state.set('ado_area_path', sub_area_path)
+                area_path = sub_area_path
 
         with st.container(key="azure_blue_btn_fetch_wi"):
             st.button(
@@ -1455,6 +1612,32 @@ class UserInterface:
             total_links = sum(len(c) for c in items_with_cases.values())
 
             st.divider()
+            st.markdown("### 📋 Nome do Test Plan")
+            default_plan_name = f"{self.state.get('project_name') or 'QA TestGen'} - QA TestGen"
+            plan_name = st.text_input(
+                "Nome do Test Plan a ser criado no Azure DevOps",
+                value=self.state.get('ado_test_plan_name') or default_plan_name,
+                disabled=self.state.get('is_processing'),
+                key="ado_test_plan_name_input",
+                help="Precisa ser único no projeto — não pode repetir o nome de um Test Plan já existente.",
+            )
+            self.state.set('ado_test_plan_name', plan_name)
+
+            initial_state_label = st.selectbox(
+                "Estado inicial dos Casos de Teste criados",
+                options=["Design (revisar manualmente antes de rodar)", "Ready (pronto para execução)"],
+                index=1 if self.state.get('ado_tc_initial_state', 'Ready') == 'Ready' else 0,
+                disabled=self.state.get('is_processing'),
+                key="ado_tc_initial_state_select",
+            )
+            initial_state = "Ready" if initial_state_label.startswith("Ready") else "Design"
+            self.state.set('ado_tc_initial_state', initial_state)
+
+            plan_name_error = self.state.get('ado_plan_name_error')
+            if plan_name_error:
+                st.error(plan_name_error)
+
+            st.divider()
             if items_with_cases:
                 with st.container(key="azure_blue_btn_confirm"):
                     if st.button(
@@ -1464,18 +1647,42 @@ class UserInterface:
                         disabled=self.state.get('is_processing'),
                         key="btn_open_ado_full_confirm",
                     ):
-                        self.state.set('ado_confirm_modal_params', (len(test_cases), len(items_with_cases), total_links))
-                        self.state.set('show_ado_confirm_modal', True)
-                        st.rerun()
+                        if not plan_name.strip():
+                            self.state.set('ado_plan_name_error', "❌ Informe um nome para o Test Plan antes de continuar.")
+                            st.rerun()
+                        else:
+                            self.state.set('ado_confirm_modal_params', (len(test_cases), len(items_with_cases), total_links))
+                            self.trigger_action("check_ado_plan_name")
+                            st.rerun()
             else:
                 st.info("Vincule pelo menos um Caso de Teste a um Work Item antes de continuar.")
+
+            if self.state.get('current_action') == 'check_ado_plan_name' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner("Verificando se já existe um Test Plan com esse nome..."):
+                        duplicate = ado_client.test_plan_name_exists(plan_name.strip())
+                    if duplicate:
+                        self.state.set(
+                            'ado_plan_name_error',
+                            f"❌ Já existe um Test Plan chamado **{plan_name.strip()}** neste projeto do "
+                            "Azure DevOps. Escolha um nome diferente antes de continuar.",
+                        )
+                    else:
+                        self.state.set('ado_plan_name_error', None)
+                        self.state.set('show_ado_confirm_modal', True)
+                except AzureDevOpsError as error:
+                    self.state.set('ado_plan_name_error', f"❌ Não foi possível checar duplicidade: {error}")
+                except Exception as error:
+                    self.state.set('ado_plan_name_error', f"❌ Erro inesperado ao checar duplicidade: {error}")
+                self.clear_action()
+                st.rerun()
 
             if self.state.get('show_ado_confirm_modal'):
                 params = self.state.get('ado_confirm_modal_params') or (0, 0, 0)
                 confirm_azure_devops_full_push_modal(*params)
 
             if self.state.get('current_action') == 'push_azure_devops_full' and not self.state.get('show_interrupt_modal'):
-                self._push_full_azure_devops(ado_client, area_path)
+                self._push_full_azure_devops(ado_client, area_path, plan_name.strip(), initial_state)
 
             log = self.state.get('ado_full_push_log') or []
             if log:
@@ -1562,7 +1769,7 @@ class UserInterface:
         except Exception as error:
             self.state.set('ado_suggest_message', ("error", f"❌ Erro inesperado ao consultar sugestão da IA: {error}"))
 
-    def _push_full_azure_devops(self, ado_client, area_path: str):
+    def _push_full_azure_devops(self, ado_client, area_path: str, plan_name: str, initial_state: str = None):
         test_cases = self.state.get('test_cases') or []
         project_name = self.state.get('project_name') or "QA TestGen"
         case_ids = dict(self.state.get('ado_test_case_ids') or {})
@@ -1592,10 +1799,10 @@ class UserInterface:
             def _create_case(tc):
                 titulo = tc.get('titulo')
                 titulo_prefixado = titled.get(titulo, titulo)
-                wid = ado_client.create_test_case(
-                    titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path
+                result = ado_client.create_test_case(
+                    titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path, initial_state
                 )
-                return titulo, titulo_prefixado, wid
+                return titulo, titulo_prefixado, result["id"], result.get("state_warning")
 
             with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, total)) as executor:
                 futures = {executor.submit(_create_case, tc): tc for tc in cases_to_create}
@@ -1604,9 +1811,11 @@ class UserInterface:
                     titulo_original = tc.get('titulo')
                     titulo_prefixado = titled.get(titulo_original, titulo_original)
                     try:
-                        titulo, _, wid = future.result()
+                        titulo, _, wid, state_warning = future.result()
                         case_ids[titulo] = wid
                         log.append(f"✅ Test Case criado: **{titulo_prefixado}** (ID {wid})")
+                        if state_warning:
+                            log.append(f"&nbsp;&nbsp;⚠️ {state_warning}")
                     except AzureDevOpsError as error:
                         log.append(f"❌ Falha ao criar Test Case '{titulo_prefixado}': {error}")
                     except Exception as error:
@@ -1616,7 +1825,6 @@ class UserInterface:
             self.state.set('ado_test_case_ids', case_ids)
 
         # 2) Cria o Test Plan (precisa existir antes das Suites — não dá pra paralelizar com o resto)
-        plan_name = f"{project_name} - QA TestGen"
         try:
             plan = ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen para {project_name}")
             plan_id = plan["id"]

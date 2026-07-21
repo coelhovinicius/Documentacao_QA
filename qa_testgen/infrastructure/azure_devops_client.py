@@ -71,6 +71,79 @@ class AzureDevOpsClient:
     def is_configured(self) -> bool:
         return bool(self.organization and self.project and self.pat)
 
+    def is_org_pat_configured(self) -> bool:
+        """Só checa Organização + PAT — usado para listar Projetos, que não
+        depende de um Projeto já estar escolhido."""
+        return bool(self.organization and self.pat)
+
+    def list_projects(self) -> list:
+        """
+        Lista os nomes dos projetos da organização que ESTE PAT consegue
+        visualizar (a API do Azure DevOps já filtra pelas permissões do
+        usuário/token — não é preciso filtrar manualmente).
+        """
+        names = []
+        url = f"https://dev.azure.com/{self.organization}/_apis/projects?api-version={API_VERSION}&$top=1000"
+        while url:
+            response = self.session.get(url, headers=self.headers_json, timeout=60)
+            data = self._handle_response(response, "Listar Projetos da Organização")
+            for p in data.get("value", []):
+                name = p.get("name")
+                if name:
+                    names.append(name)
+            continuation = response.headers.get("x-ms-continuationtoken")
+            if continuation:
+                url = (
+                    f"https://dev.azure.com/{self.organization}/_apis/projects"
+                    f"?continuationToken={continuation}&api-version={API_VERSION}&$top=1000"
+                )
+            else:
+                url = None
+        return sorted(names, key=str.lower)
+
+    def list_area_paths(self) -> list:
+        """
+        Lista os Area Paths REAIS já existentes no projeto atual (self.project),
+        varrendo a árvore de "classification nodes" do Azure DevOps. Retorna
+        os caminhos completos (ex.: "QA-TestGen-Sandbox", "QA-TestGen-Sandbox\\Time A"),
+        exatamente como o Azure DevOps espera no campo Area Path.
+        """
+        url = f"{self._base_url()}/wit/classificationnodes/Areas?$depth=50&api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Area Paths do Projeto")
+
+        paths = []
+
+        def _walk(node, prefix):
+            name = node.get("name", "")
+            full = f"{prefix}\\{name}" if prefix else name
+            if full:
+                paths.append(full)
+            for child in node.get("children") or []:
+                _walk(child, full)
+
+        _walk(data, "")
+        return paths
+
+    def list_accessible_organizations(self) -> list:
+        """
+        Lista as organizações do Azure DevOps que este PAT consegue acessar
+        (informativo). Usa um host diferente (vssps.visualstudio.com),
+        próprio da API de perfil/contas do Azure DevOps.
+        """
+        profile_url = "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1"
+        resp = self.session.get(profile_url, headers=self.headers_json, timeout=30)
+        data = self._handle_response(resp, "Buscar perfil do usuário do PAT")
+        member_id = data.get("id")
+        if not member_id:
+            return []
+
+        accounts_url = f"https://app.vssps.visualstudio.com/_apis/accounts?memberId={member_id}&api-version=7.1"
+        resp2 = self.session.get(accounts_url, headers=self.headers_json, timeout=30)
+        data2 = self._handle_response(resp2, "Listar organizações acessíveis")
+        names = [a.get("accountName") for a in data2.get("value", []) if a.get("accountName")]
+        return sorted(names, key=str.lower)
+
     def _handle_response(self, response: requests.Response, context: str) -> dict:
         if response.status_code == 401:
             raise AzureDevOpsError(
@@ -128,8 +201,18 @@ class AzureDevOpsClient:
     # rodando list_test_case_fields.py e ajuste aqui.
     PRECONDICOES_FIELD = "Custom.Precondicoes"
 
-    def create_test_case(self, titulo: str, pre_condicoes: str, passos: list, area_path: str = None) -> int:
-        """Cria um work item do tipo Test Case e retorna o ID numérico criado."""
+    def create_test_case(self, titulo: str, pre_condicoes: str, passos: list, area_path: str = None, initial_state: str = None) -> dict:
+        """
+        Cria um work item do tipo Test Case e retorna {'id': int, 'state_warning': str|None}.
+
+        O campo System.State não pode ser definido direto na criação — o
+        Azure DevOps valida isso como uma transição de workflow (ex.: só
+        permite ir de "Design" para "Ready" via uma atualização posterior,
+        não no mesmo PATCH que cria o item). Por isso, criamos primeiro no
+        estado padrão (garantido funcionar) e, se um `initial_state`
+        diferente foi pedido, tentamos mudar depois — sem derrubar a criação
+        do caso se essa segunda etapa falhar.
+        """
         body = [
             {"op": "add", "path": "/fields/System.Title", "value": titulo},
             {"op": "add", "path": f"/fields/{self.PRECONDICOES_FIELD}", "value": pre_condicoes or ""},
@@ -141,11 +224,58 @@ class AzureDevOpsClient:
         url = f"{self._base_url()}/wit/workitems/$Test%20Case?api-version={API_VERSION}"
         response = self.session.post(url, json=body, headers=self.headers_json_patch, timeout=60)
         data = self._handle_response(response, f"Criar Test Case '{titulo}'")
-        return data["id"]
+        work_item_id = data["id"]
+
+        state_warning = None
+        if initial_state:
+            try:
+                self.set_work_item_state(work_item_id, initial_state)
+            except AzureDevOpsError as error:
+                state_warning = (
+                    f"Caso criado, mas não foi possível mudar o estado para '{initial_state}' "
+                    f"(ficou no estado padrão): {error}"
+                )
+
+        return {"id": work_item_id, "state_warning": state_warning}
+
+    def set_work_item_state(self, work_item_id: int, state: str) -> None:
+        """Atualiza o campo System.State de um Work Item já existente."""
+        body = [{"op": "add", "path": "/fields/System.State", "value": state}]
+        url = f"{self._base_url()}/wit/workitems/{work_item_id}?api-version={API_VERSION}"
+        response = self.session.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
+        self._handle_response(response, f"Mudar estado do Work Item {work_item_id} para '{state}'")
 
     # ------------------------------------------------------------------ #
     # Test Plans
     # ------------------------------------------------------------------ #
+    def list_test_plan_names(self) -> list:
+        """
+        Lista os nomes de todos os Test Plans já existentes no projeto —
+        usado para checar duplicidade antes de criar um novo.
+        """
+        names = []
+        url = f"{self._base_url()}/testplan/plans?api-version={API_VERSION}"
+        while url:
+            response = self.session.get(url, headers=self.headers_json, timeout=60)
+            data = self._handle_response(response, "Listar Test Plans existentes")
+            for plan in data.get("value", []):
+                name = plan.get("name")
+                if name:
+                    names.append(name)
+            continuation = response.headers.get("x-ms-continuationtoken")
+            if continuation:
+                url = f"{self._base_url()}/testplan/plans?continuationToken={continuation}&api-version={API_VERSION}"
+            else:
+                url = None
+        return names
+
+    def test_plan_name_exists(self, name: str) -> bool:
+        """Checagem case-insensitive de nome duplicado de Test Plan no projeto."""
+        target = (name or "").strip().lower()
+        if not target:
+            return False
+        return any(existing.strip().lower() == target for existing in self.list_test_plan_names())
+
     def create_test_plan(self, nome: str, descricao: str = "") -> dict:
         """Cria um Test Plan e retorna {'id':, 'root_suite_id':}."""
         body = {
