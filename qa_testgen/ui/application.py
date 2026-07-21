@@ -1305,18 +1305,51 @@ class UserInterface:
             self._render_step7_back_and_new("disabled")
             return
 
-        if not self.ado_client.is_configured():
-            st.info(
-                "Configure `AZURE_DEVOPS_ORG`, `AZURE_DEVOPS_PROJECT` e `AZURE_DEVOPS_PAT` "
-                "no `secrets.toml` para habilitar a integração direta via API."
+        st.markdown("#### 🔧 Configuração do Azure DevOps")
+        st.caption(
+            "Pode ser diferente por projeto — não precisa ser sempre a mesma organização/projeto "
+            "configurada no secrets.toml. Os campos abaixo já vêm preenchidos com o padrão, se houver, "
+            "mas você pode sobrescrever livremente nesta sessão."
+        )
+        col_org, col_proj = st.columns(2)
+        with col_org:
+            ado_org = st.text_input(
+                "Organização",
+                value=self.state.get('ado_org_override') or self.config.azure_devops_org,
+                disabled=self.state.get('is_processing'),
+                key="ado_org_input",
             )
+        with col_proj:
+            ado_project = st.text_input(
+                "Projeto",
+                value=self.state.get('ado_project_override') or self.config.azure_devops_project,
+                disabled=self.state.get('is_processing'),
+                key="ado_project_input",
+            )
+        ado_pat = st.text_input(
+            "Personal Access Token (PAT)",
+            value=self.state.get('ado_pat_override') or self.config.azure_devops_pat,
+            type="password",
+            disabled=self.state.get('is_processing'),
+            key="ado_pat_input",
+            help="Se deixado em branco, usa o PAT padrão do secrets.toml (se houver).",
+        )
+        self.state.set('ado_org_override', ado_org)
+        self.state.set('ado_project_override', ado_project)
+        self.state.set('ado_pat_override', ado_pat)
+
+        ado_client = AzureDevOpsClient(ado_org, ado_project, ado_pat)
+
+        if not ado_client.is_configured():
+            st.info("Preencha Organização, Projeto e PAT acima (ou configure valores padrão no `secrets.toml`) para habilitar a integração.")
             st.divider()
             self._render_step7_back_and_new("unconfigured")
             return
 
+        st.divider()
         area_path = st.text_input(
             "Area Path no Azure DevOps",
-            value=self.state.get('ado_area_path') or self.config.azure_devops_project,
+            value=self.state.get('ado_area_path') or ado_project,
             help=(
                 "Caminho exato da Area no Azure DevOps (ex.: 'QA-TestGen-Sandbox' ou "
                 "'QA-TestGen-Sandbox\\\\Time A'). É usado tanto pra criar os Test Cases "
@@ -1339,7 +1372,7 @@ class UserInterface:
         if self.state.get('current_action') == 'fetch_wi' and not self.state.get('show_interrupt_modal'):
             try:
                 with st.spinner("Buscando Work Items..."):
-                    items = self.ado_client.fetch_work_items_by_area_path(area_path)
+                    items = ado_client.fetch_work_items_by_area_path(area_path)
                 self.state.set('ado_board_items', items)
                 if not items:
                     st.warning("Nenhum Work Item encontrado nesse Area Path (além de Test Cases).")
@@ -1443,7 +1476,7 @@ class UserInterface:
                 st.info("Vincule pelo menos um Caso de Teste a um Work Item antes de continuar.")
 
             if self.state.get('current_action') == 'push_azure_devops_full' and not self.state.get('show_interrupt_modal'):
-                self._push_full_azure_devops(area_path)
+                self._push_full_azure_devops(ado_client, area_path)
 
             log = self.state.get('ado_full_push_log') or []
             if log:
@@ -1529,7 +1562,7 @@ class UserInterface:
         except Exception as error:
             st.error(f"❌ Erro inesperado ao consultar sugestão da IA: {error}")
 
-    def _push_full_azure_devops(self, area_path: str):
+    def _push_full_azure_devops(self, ado_client, area_path: str):
         test_cases = self.state.get('test_cases') or []
         project_name = self.state.get('project_name') or "QA TestGen"
         case_ids = dict(self.state.get('ado_test_case_ids') or {})
@@ -1559,7 +1592,7 @@ class UserInterface:
             def _create_case(tc):
                 titulo = tc.get('titulo')
                 titulo_prefixado = titled.get(titulo, titulo)
-                wid = self.ado_client.create_test_case(
+                wid = ado_client.create_test_case(
                     titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path
                 )
                 return titulo, titulo_prefixado, wid
@@ -1585,7 +1618,7 @@ class UserInterface:
         # 2) Cria o Test Plan (precisa existir antes das Suites — não dá pra paralelizar com o resto)
         plan_name = f"{project_name} - QA TestGen"
         try:
-            plan = self.ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen para {project_name}")
+            plan = ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen para {project_name}")
             plan_id = plan["id"]
             root_suite_id = plan.get("root_suite_id")
             log.append(f"✅ Test Plan criado: **{plan_name}** (ID {plan_id})")
@@ -1622,7 +1655,7 @@ class UserInterface:
             for idx, (wid_str, _casos) in enumerate(suite_tasks, start=1):
                 work_item_id = int(wid_str)
                 try:
-                    suite_id = self.ado_client.create_requirement_based_suite(plan_id, root_suite_id, work_item_id)
+                    suite_id = ado_client.create_requirement_based_suite(plan_id, root_suite_id, work_item_id)
                     log.append(f"✅ Suite criada para Work Item {work_item_id} (Suite ID {suite_id})")
                 except AzureDevOpsError as error:
                     log.append(f"❌ Falha ao criar Suite para Work Item {work_item_id}: {error}")
@@ -1660,7 +1693,7 @@ class UserInterface:
                 resultados = []
                 for work_item_id, case_id in pares:
                     try:
-                        self.ado_client.link_test_case_to_work_item(case_id, work_item_id)
+                        ado_client.link_test_case_to_work_item(case_id, work_item_id)
                         resultados.append((work_item_id, case_id, None))
                     except AzureDevOpsError as error:
                         resultados.append((work_item_id, case_id, error))
@@ -1688,7 +1721,7 @@ class UserInterface:
                     )
 
         self.state.set('ado_case_links', case_links)
-        log.append(f"\n🔗 Confira o Test Plan completo: {self.ado_client.test_plan_url(plan_id)}")
+        log.append(f"\n🔗 Confira o Test Plan completo: {ado_client.test_plan_url(plan_id)}")
         self.state.set('ado_full_push_log', log)
         self.clear_action()
         st.rerun()
