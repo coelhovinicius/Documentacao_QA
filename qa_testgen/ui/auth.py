@@ -143,7 +143,7 @@ def _render_login_form():
 
     _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        st.markdown("## 🧪 QA Automation – Azure")
+        st.markdown("## 🧪 QA Automation – DevOps")
         st.caption("Acesso restrito. Informe suas credenciais para continuar.")
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Usuário")
