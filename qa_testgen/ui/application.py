@@ -1307,9 +1307,9 @@ class UserInterface:
 
         st.markdown("#### 🔧 Configuração do Azure DevOps")
         st.caption(
-            "Pode ser diferente por projeto — não precisa ser sempre a mesma organização/projeto "
-            "configurada no secrets.toml. Os campos abaixo já vêm preenchidos com o padrão, se houver, "
-            "mas você pode sobrescrever livremente nesta sessão."
+            "Organização e Projeto podem mudar por análise — não precisa ser sempre o mesmo "
+            "projeto configurado no secrets.toml. O PAT (token de acesso) é sempre o configurado "
+            "no backend, por segurança — não fica editável aqui na tela."
         )
         col_org, col_proj = st.columns(2)
         with col_org:
@@ -1326,22 +1326,16 @@ class UserInterface:
                 disabled=self.state.get('is_processing'),
                 key="ado_project_input",
             )
-        ado_pat = st.text_input(
-            "Personal Access Token (PAT)",
-            value=self.state.get('ado_pat_override') or self.config.azure_devops_pat,
-            type="password",
-            disabled=self.state.get('is_processing'),
-            key="ado_pat_input",
-            help="Se deixado em branco, usa o PAT padrão do secrets.toml (se houver).",
-        )
         self.state.set('ado_org_override', ado_org)
         self.state.set('ado_project_override', ado_project)
-        self.state.set('ado_pat_override', ado_pat)
 
-        ado_client = AzureDevOpsClient(ado_org, ado_project, ado_pat)
+        ado_client = AzureDevOpsClient(ado_org, ado_project, self.config.azure_devops_pat)
 
         if not ado_client.is_configured():
-            st.info("Preencha Organização, Projeto e PAT acima (ou configure valores padrão no `secrets.toml`) para habilitar a integração.")
+            st.info(
+                "Preencha Organização e Projeto acima. Além disso, `AZURE_DEVOPS_PAT` precisa "
+                "estar configurado no `secrets.toml` (não é editável nesta tela, por segurança)."
+            )
             st.divider()
             self._render_step7_back_and_new("unconfigured")
             return

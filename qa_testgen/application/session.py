@@ -28,7 +28,6 @@ class SessionState:
         'ado_area_path': '',
         'ado_org_override': '',
         'ado_project_override': '',
-        'ado_pat_override': '',
         'ado_board_items': [],
         'ado_test_case_ids': {},
         'ado_wi_case_links': {},
