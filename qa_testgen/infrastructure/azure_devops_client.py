@@ -351,7 +351,10 @@ class AzureDevOpsClient:
     # Tipos de work item que NUNCA são "requisitos" pra vincular casos de
     # teste — são artefatos do próprio Test Plans (inclusive criados pela
     # integração), não itens reais do backlog.
-    EXCLUDED_TYPES = {"Test Case", "Test Plan", "Test Suite"}
+    EXCLUDED_TYPES = {
+        "Test Case", "Test Plan", "Test Suite",
+        "Epic", "Task", "Spike", "Feature", "Improvement",
+    }
 
     # Estados que NUNCA devem entrar na integração — nem como sugestão, nem
     # manualmente. Ajuste essa lista se o processo do seu projeto usar outros

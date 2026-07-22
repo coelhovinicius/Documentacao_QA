@@ -1,0 +1,184 @@
+===================================================================
+QA AUTOMATION - AZURE DEVOPS
+Documentação em Linguagem Simples
+===================================================================
+
+
+1. O QUE É ESSE APP?
+-------------------------------------------------------------------
+É um sistema que usa Inteligência Artificial para automatizar a
+criação de documentação de testes (QA) de um projeto de software.
+
+Em resumo, ele:
+  - Recebe um documento de requisitos (PDF, Word ou TXT)
+  - Usa IA pra gerar automaticamente:
+      > Perguntas sobre pontos ambíguos do documento
+      > Uma Matriz de Cobertura (lista de cenários de teste)
+      > Casos de Teste completos (com passos e resultados esperados)
+      > Planos de Teste (organizando os casos em grupos)
+  - Deixa o usuário revisar e editar tudo antes de finalizar
+  - Gera arquivos prontos (CSV e PDF) pra usar no Azure DevOps
+  - Envia tudo automaticamente pro Azure DevOps, se o usuário quiser
+
+
+2. ONDE O APP FICA HOSPEDADO?
+-------------------------------------------------------------------
+O app roda no "Streamlit Cloud", um serviço gratuito da empresa
+Streamlit que hospeda aplicações Python como essa.
+
+  Endereço público: https://quality-assurance-docs.streamlit.app
+
+  Como funciona o "deploy" (colocar uma atualização no ar):
+      1. As mudanças são feitas nos arquivos, no computador local
+      2. Os arquivos são enviados pro GitHub (git push)
+      3. O Streamlit Cloud detecta a mudança e atualiza o site
+         sozinho, automaticamente, em 1 ou 2 minutos
+
+  Importante: só mexer nos arquivos no computador NÃO atualiza o
+  site sozinho. É preciso "subir" (git push) pra valer.
+
+
+3. ONDE FICA O CÓDIGO-FONTE?
+-------------------------------------------------------------------
+No GitHub (um site de hospedagem de código). É de lá que o
+Streamlit Cloud "puxa" a versão mais recente do app.
+
+  Arquivos sensíveis (senhas, tokens de acesso) NÃO vão pro GitHub
+  por segurança - eles ficam guardados separadamente, direto na
+  configuração do Streamlit Cloud (chamada de "Secrets").
+
+
+4. O QUE É O N8N E PRA QUE SERVE?
+-------------------------------------------------------------------
+O n8n é a ferramenta que realmente "conversa" com as IAs
+(Gemini, Groq, OpenAI, Mistral) pra gerar o conteúdo.
+
+  Por que não é o próprio app que fala direto com a IA?
+  Porque assim fica mais fácil trocar/ajustar os modelos de IA,
+  os prompts (instruções pra IA) e a lógica de tentativa/erro sem
+  precisar mexer no código do app em si.
+
+  Onde o n8n está hospedado:
+      - Não é um serviço pago (n8n Cloud) - é "self-hosted", ou
+        seja, rodando num servidor próprio
+      - Usa Docker (uma forma de "empacotar" o programa pra rodar
+        de forma isolada e fácil de manter)
+      - É acessado publicamente através de um endereço criado com
+        DuckDNS (um serviço gratuito de "apelido" de endereço na
+        internet, tipo vinitestes-qa.duckdns.org)
+      - Na frente do n8n tem um "nginx", que é como um porteiro:
+        recebe os pedidos de fora e encaminha pro n8n certinho
+
+  O que o n8n faz, na prática:
+      Existem 5 "workflows" (processos automatizados) dentro do
+      n8n, um pra cada tarefa:
+        1. Analisar o documento e gerar dúvidas
+        2. Gerar a Matriz de Cobertura
+        3. Gerar os Casos de Teste
+        4. Gerar os Planos de Teste
+        5. Sugerir quais Casos de Teste se relacionam com quais
+           itens já existentes no board do Azure DevOps
+
+  Como cada workflow tenta gerar o conteúdo:
+      Cada um tenta até 5 provedores de IA diferentes, em ordem,
+      um atrás do outro, só passando pro próximo se o anterior
+      falhar. Isso evita que o app pare de funcionar só porque
+      uma IA específica está fora do ar ou lenta naquele momento.
+
+
+5. COMO O APP SE CONECTA COM O AZURE DEVOPS?
+-------------------------------------------------------------------
+Usando um "token de acesso" (PAT - Personal Access Token), que é
+tipo uma senha especial só pra esse tipo de conexão automática.
+
+  Esse token:
+      - Fica guardado só no "backend" (na configuração escondida
+        do app) - nunca aparece na tela pro usuário digitar ou ver
+      - Tem prazo de validade - precisa ser renovado de vez em
+        quando (a pessoa que criou o token vê a data de expiração)
+
+  O que o app consegue fazer no Azure DevOps:
+      - Buscar quais Organizações, Projetos e "Areas" existem
+        (sempre busca de verdade, nunca deixa a pessoa digitar um
+        nome que pode estar errado)
+      - Criar Casos de Teste automaticamente
+      - Criar um Plano de Teste
+      - Criar "Suítes" dentro do plano, uma pra cada item do board
+        que tiver casos de teste relacionados
+      - Vincular os Casos de Teste aos itens do board certos
+
+  Um detalhe técnico importante:
+      O Azure DevOps não deixa você definir certos campos (como o
+      "status" de um Caso de Teste) já na hora de criar - só depois,
+      numa segunda etapa. O app já sabe disso e faz certinho: cria
+      o caso primeiro, e depois muda o status, sem travar o processo
+      se essa segunda parte falhar.
+
+
+6. COMO FUNCIONA O LOGIN?
+-------------------------------------------------------------------
+  - Usuário e senha configurados no backend (não dá pra criar
+    conta pela tela)
+  - As senhas são guardadas de forma criptografada (nunca em texto
+    puro em lugar nenhum)
+  - Depois de logar, a sessão continua ativa mesmo se você
+    atualizar a página (F5)
+  - Se você ficar 1 hora sem usar o app, ele desloga sozinho, por
+    segurança
+  - Tem um botão "Sair" pra deslogar na hora, se quiser
+
+
+7. COMO O APP É ORGANIZADO POR DENTRO (PASSO A PASSO)?
+-------------------------------------------------------------------
+O app funciona em 7 etapas, uma de cada vez:
+
+  PASSO 1 - Upload
+      Você coloca o nome do projeto e anexa o(s) documento(s) de
+      requisitos.
+
+  PASSO 2 - Dúvidas
+      A IA lê o documento e aponta pontos que não ficaram claros.
+      Você responde essas dúvidas.
+
+  PASSO 3 - Matriz de Cobertura
+      A IA gera uma tabela relacionando requisitos a cenários de
+      teste. Você pode editar, adicionar ou remover linhas.
+
+  PASSO 4 - Casos de Teste
+      A IA gera os casos de teste completos (com passos). Você
+      pode editar, adicionar ou remover casos.
+
+  PASSO 5 - Planos de Teste
+      A IA organiza os casos de teste em Planos e Suítes. Você
+      pode editar tudo também.
+
+  PASSO 6 - Download
+      Aqui você baixa: um CSV só com os casos, um CSV com
+      planos+suítes+casos, e um PDF com o relatório completo.
+
+  PASSO 7 - Integração com Azure DevOps
+      Você escolhe a Organização, Projeto e Area do Azure DevOps
+      (tudo vindo direto da API, nunca digitado). O app busca os
+      itens já existentes no board, sugere (via IA) quais casos de
+      teste se relacionam com quais itens, você revisa/ajusta essa
+      sugestão, e confirma o envio.
+
+
+8. PRINCIPAIS CUIDADOS PARA MANTER O APP FUNCIONANDO
+-------------------------------------------------------------------
+  - O token do Azure DevOps (PAT) expira - fique de olho na data
+  - Os workflows do n8n precisam estar "ativados" - se alguém
+    desativar sem querer, os recursos de IA param de funcionar
+  - Os modelos de IA configurados no n8n podem, com o tempo, deixar
+    de existir (empresas de IA aposentam modelos antigos) - vale
+    checar de vez em quando se ainda estão funcionando
+  - O arquivo de configuração com senhas e tokens (secrets.toml)
+    NÃO vai pro GitHub - precisa ser configurado manualmente tanto
+    no computador local quanto no Streamlit Cloud
+  - Qualquer mudança no código só aparece pro público depois de
+    git push - lembrar sempre desse passo
+
+
+===================================================================
+FIM DA DOCUMENTAÇÃO
+===================================================================
