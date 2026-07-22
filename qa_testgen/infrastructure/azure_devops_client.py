@@ -1,6 +1,7 @@
 import base64
 import html
 import xml.sax.saxutils as saxutils
+from urllib.parse import quote
 
 import requests
 from urllib3.util.retry import Retry
@@ -66,7 +67,7 @@ class AzureDevOpsClient:
         self.session.mount("http://", adapter)
 
     def _base_url(self) -> str:
-        return f"https://dev.azure.com/{self.organization}/{self.project}/_apis"
+        return f"https://dev.azure.com/{quote(self.organization, safe='')}/{quote(self.project, safe='')}/_apis"
 
     def is_configured(self) -> bool:
         return bool(self.organization and self.project and self.pat)
@@ -83,7 +84,7 @@ class AzureDevOpsClient:
         usuário/token — não é preciso filtrar manualmente).
         """
         names = []
-        url = f"https://dev.azure.com/{self.organization}/_apis/projects?api-version={API_VERSION}&$top=1000"
+        url = f"https://dev.azure.com/{quote(self.organization, safe='')}/_apis/projects?api-version={API_VERSION}&$top=1000"
         while url:
             response = self.session.get(url, headers=self.headers_json, timeout=60)
             data = self._handle_response(response, "Listar Projetos da Organização")
@@ -94,7 +95,7 @@ class AzureDevOpsClient:
             continuation = response.headers.get("x-ms-continuationtoken")
             if continuation:
                 url = (
-                    f"https://dev.azure.com/{self.organization}/_apis/projects"
+                    f"https://dev.azure.com/{quote(self.organization, safe='')}/_apis/projects"
                     f"?continuationToken={continuation}&api-version={API_VERSION}&$top=1000"
                 )
             else:
@@ -335,10 +336,16 @@ class AzureDevOpsClient:
         self._handle_response(response, f"Vincular casos à suite {suite_id}")
 
     def work_item_url(self, work_item_id: int) -> str:
-        return f"https://dev.azure.com/{self.organization}/{self.project}/_workitems/edit/{work_item_id}"
+        return (
+            f"https://dev.azure.com/{quote(self.organization, safe='')}"
+            f"/{quote(self.project, safe='')}/_workitems/edit/{work_item_id}"
+        )
 
     def test_plan_url(self, plan_id: int) -> str:
-        return f"https://dev.azure.com/{self.organization}/{self.project}/_testPlans/execute?planId={plan_id}"
+        return (
+            f"https://dev.azure.com/{quote(self.organization, safe='')}"
+            f"/{quote(self.project, safe='')}/_testPlans/execute?planId={plan_id}"
+        )
 
     # ------------------------------------------------------------------ #
     # Work Items existentes (para vincular Test Cases a eles)
