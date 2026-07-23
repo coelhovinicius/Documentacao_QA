@@ -36,6 +36,7 @@ class SessionState:
         'ado_available_projects': [],
         'ado_projects_org': '',
         'ado_board_items': [],
+        'ado_wi_for_matching_labels': None,
         'ado_test_case_ids': {},
         'ado_wi_case_links': {},
         'ado_suggest_message': None,

@@ -1462,54 +1462,58 @@ class UserInterface:
 
         st.divider()
 
-        # 3) Area Path — o padrão é a RAIZ do projeto, que é sempre um Area
-        # Path válido (é literalmente o nome do projeto) e não exige nenhuma
-        # chamada extra à API. Buscar a árvore inteira de sub-areas só faz
-        # sentido pra quem realmente precisa restringir a uma sub-area
-        # específica — por isso vira uma opção avançada, não obrigatória.
+        # 3) Area Path do Board — sempre visível, nunca obrigatório: o padrão
+        # é a RAIZ do projeto (sempre válida), mas como projetos costumam ter
+        # vários boards diferentes (um por Area Path), o botão de busca fica
+        # sempre à vista, não escondido atrás de um expansor.
         if self.state.get('ado_area_paths_project') != ado_project:
             self.state.set('ado_area_path', ado_project)
 
         area_path = self.state.get('ado_area_path') or ado_project
-        st.caption(f"📁 Area Path: **{area_path}** (raiz do projeto)")
 
-        with st.expander("🔍 Usar uma sub-area específica em vez da raiz do projeto (opcional)"):
-            with st.container(key="azure_blue_btn_fetch_areas"):
-                st.button(
-                    "🔄 Buscar Area Paths deste Projeto",
-                    disabled=self.state.get('is_processing'),
-                    key="btn_fetch_areas",
-                    on_click=self.trigger_action,
-                    args=("fetch_area_paths",),
-                )
-            if self.state.get('current_action') == 'fetch_area_paths' and not self.state.get('show_interrupt_modal'):
-                try:
-                    with st.spinner(f"Buscando Area Paths em '{ado_project}'..."):
-                        area_paths = ado_client.list_area_paths()
-                    self.state.set('ado_available_area_paths', area_paths)
-                    self.state.set('ado_area_paths_project', ado_project)
-                except AzureDevOpsError as error:
-                    st.error(f"❌ Não foi possível listar os Area Paths de '{ado_project}': {error}")
-                    self.state.set('ado_available_area_paths', [])
-                except Exception as error:
-                    st.error(f"❌ Erro inesperado ao listar Area Paths: {error}")
-                    self.state.set('ado_available_area_paths', [])
-                self.clear_action()
-                st.rerun()
+        st.markdown("##### 📁 Area Path do Board no Azure DevOps")
+        st.caption(
+            f"Padrão atual: **{area_path}** (raiz do projeto). Se o board que você quer usar "
+            "fica numa Area diferente da raiz, busque abaixo e selecione o caminho correto — "
+            "preciso do Area Path exato do board certo pra encontrar os Work Items dele."
+        )
 
-            available_area_paths = self.state.get('ado_available_area_paths') or []
-            if available_area_paths and self.state.get('ado_area_paths_project') == ado_project:
-                default_area_path = area_path if area_path in available_area_paths else available_area_paths[0]
-                sub_area_path = st.selectbox(
-                    "Area Path no Azure DevOps",
-                    options=available_area_paths,
-                    index=available_area_paths.index(default_area_path),
-                    help="Lista vem direto do Azure DevOps — só os Area Paths que realmente existem no projeto selecionado.",
-                    disabled=self.state.get('is_processing'),
-                    key="ado_area_path_select",
-                )
-                self.state.set('ado_area_path', sub_area_path)
-                area_path = sub_area_path
+        with st.container(key="azure_blue_btn_fetch_areas"):
+            st.button(
+                "🔄 Buscar Area Paths deste Projeto",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_areas",
+                on_click=self.trigger_action,
+                args=("fetch_area_paths",),
+            )
+        if self.state.get('current_action') == 'fetch_area_paths' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner(f"Buscando Area Paths em '{ado_project}'..."):
+                    area_paths = ado_client.list_area_paths()
+                self.state.set('ado_available_area_paths', area_paths)
+                self.state.set('ado_area_paths_project', ado_project)
+            except AzureDevOpsError as error:
+                st.error(f"❌ Não foi possível listar os Area Paths de '{ado_project}': {error}")
+                self.state.set('ado_available_area_paths', [])
+            except Exception as error:
+                st.error(f"❌ Erro inesperado ao listar Area Paths: {error}")
+                self.state.set('ado_available_area_paths', [])
+            self.clear_action()
+            st.rerun()
+
+        available_area_paths = self.state.get('ado_available_area_paths') or []
+        if available_area_paths and self.state.get('ado_area_paths_project') == ado_project:
+            default_area_path = area_path if area_path in available_area_paths else available_area_paths[0]
+            sub_area_path = st.selectbox(
+                "Area Path do Board",
+                options=available_area_paths,
+                index=available_area_paths.index(default_area_path),
+                help="Lista vem direto do Azure DevOps — todos os Area Paths que existem no projeto selecionado.",
+                disabled=self.state.get('is_processing'),
+                key="ado_area_path_select",
+            )
+            self.state.set('ado_area_path', sub_area_path)
+            area_path = sub_area_path
 
         with st.container(key="azure_blue_btn_fetch_wi"):
             st.button(
@@ -1525,6 +1529,11 @@ class UserInterface:
                 with st.spinner("Buscando Work Items..."):
                     items = ado_client.fetch_work_items_by_area_path(area_path)
                 self.state.set('ado_board_items', items)
+                # Nova busca -> reseta a seleção de "quais entram no matching"
+                # pra não arrastar uma seleção antiga de um board diferente.
+                self.state.set('ado_wi_for_matching_labels', None)
+                if 'ado_wi_for_matching_select' in st.session_state:
+                    del st.session_state['ado_wi_for_matching_select']
                 if not items:
                     st.warning("Nenhum Work Item encontrado nesse Area Path (além de Test Cases).")
             except AzureDevOpsError as error:
@@ -1545,21 +1554,41 @@ class UserInterface:
             st.divider()
             st.markdown("### 🤖 Sugestão automática de vínculos (IA via n8n)")
             st.caption(
-                "Envia os Work Items e os Casos de Teste gerados pro n8n, que devolve uma "
-                "sugestão de quais casos se relacionam a quais Work Items. Você pode ajustar "
-                "tudo manualmente depois, antes de confirmar."
+                "Envia os Work Items selecionados abaixo e os Casos de Teste gerados pro n8n, "
+                "que devolve uma sugestão de quais casos se relacionam a quais Work Items. Você "
+                "pode ajustar tudo manualmente depois, antes de confirmar."
             )
+
+            wi_labels = {
+                f"{item['id']} - {item['title']} ({item['type']}, {item['state']})": item
+                for item in board_items
+            }
+            stored_selection = self.state.get('ado_wi_for_matching_labels')
+            default_labels = stored_selection if stored_selection is not None else list(wi_labels.keys())
+            selected_labels = st.multiselect(
+                "🎯 Work Items considerados na análise da IA",
+                options=list(wi_labels.keys()),
+                default=default_labels,
+                disabled=self.state.get('is_processing'),
+                key="ado_wi_for_matching_select",
+                help="Por padrão, todos entram na análise. Desmarque os que não fazem sentido pra reduzir o escopo.",
+            )
+            self.state.set('ado_wi_for_matching_labels', selected_labels)
+            selected_board_items = [wi_labels[label] for label in selected_labels]
+
             with st.container(key="azure_blue_btn_suggest"):
                 st.button(
                     "🤖 Sugerir Vínculos com IA",
                     type="primary",
-                    disabled=self.state.get('is_processing'),
+                    disabled=self.state.get('is_processing') or not selected_board_items,
                     key="btn_suggest_links",
                     on_click=self.trigger_action,
                     args=("suggest_ado_links",),
                 )
+            if not selected_board_items:
+                st.caption("Selecione ao menos 1 Work Item acima para habilitar a sugestão da IA.")
             if self.state.get('current_action') == 'suggest_ado_links' and not self.state.get('show_interrupt_modal'):
-                self._suggest_ado_links(board_items, test_cases)
+                self._suggest_ado_links(selected_board_items, test_cases)
                 self.clear_action()
                 st.rerun()
 
@@ -1744,6 +1773,28 @@ class UserInterface:
                     continue
                 links[str(wid_int)] = casos
 
+            # Rede de segurança: mesmo com o prompt ajustado, a IA ainda pode
+            # devolver o mesmo Caso de Teste vinculado a vários Work Items.
+            # Por padrão, cada caso deve pertencer a só 1 Work Item — mantém
+            # só a PRIMEIRA ocorrência (na ordem em que a IA respondeu, que
+            # tende a ser o vínculo mais forte) e remove o caso dos demais.
+            # O usuário ainda pode adicionar vínculos extras manualmente na
+            # revisão abaixo, se for um caso genuinamente excepcional.
+            seen_cases = set()
+            deduped_links = {}
+            duplicates_removed = 0
+            for wid_key, casos in links.items():
+                kept = []
+                for c in casos:
+                    if c in seen_cases:
+                        duplicates_removed += 1
+                        continue
+                    seen_cases.add(c)
+                    kept.append(c)
+                if kept:
+                    deduped_links[wid_key] = kept
+            links = deduped_links
+
             self.state.set('ado_wi_case_links', links)
 
             # Força a atualização visual dos multiselects: como eles já foram
@@ -1763,6 +1814,12 @@ class UserInterface:
                 msg = ("warning", "⚠️ A IA não sugeriu nenhum vínculo válido. Você pode montar manualmente abaixo.")
             if skipped:
                 msg = (msg[0], msg[1] + f" ({skipped} item(ns) da resposta da IA vieram em formato inesperado e foram ignorados.)")
+            if duplicates_removed:
+                msg = (
+                    msg[0],
+                    msg[1] + f" ({duplicates_removed} vínculo(s) duplicado(s) — mesmo caso em vários Work "
+                    "Items — foram reduzidos a 1 vínculo por padrão; adicione manualmente na revisão abaixo se for exceção real.)",
+                )
             self.state.set('ado_suggest_message', msg)
         except ValueError as error:
             self.state.set('ado_suggest_message', ("error", f"❌ {error}"))
