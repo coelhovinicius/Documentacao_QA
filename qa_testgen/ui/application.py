@@ -1,5 +1,6 @@
 import os
 import base64
+import difflib
 import json
 import uuid
 from pathlib import Path
@@ -359,6 +360,7 @@ class UserInterface:
             'fetch_orgs': 'Carregando organizações acessíveis a este PAT',
             'fetch_projects': 'Buscando projetos da organização selecionada',
             'fetch_area_paths': 'Buscando Area Paths do projeto selecionado',
+            'fetch_area_paths_auto': 'Buscando Area Paths do projeto selecionado',
             'suggest_ado_links': 'Consultando a IA (n8n) para sugerir vínculos',
             'push_azure_devops_full': 'Integrando com o Azure DevOps',
             'check_ado_plan_name': 'Verificando se já existe um Test Plan com esse nome',
@@ -639,7 +641,7 @@ class UserInterface:
         col1, col2 = st.columns(2)
         with col1:
             project = st.text_input(
-                "Nome do Projeto *",
+                "Nome do Test Plan *",
                 value=self.state.get('project_name', ''),
                 key='project_name_input',
                 placeholder="Ex: Passaporte Refuturiza",
@@ -1320,10 +1322,7 @@ class UserInterface:
 
         st.markdown("#### 🔧 Configuração do Azure DevOps")
         st.caption(
-            "Organização, Projeto e Area Path vêm direto do que esse PAT consegue acessar no "
-            "Azure DevOps — nada aqui é digitado livremente. Cada nível só é buscado quando você "
-            "pedir (clicando no botão correspondente), pra não travar a tela buscando informações "
-            "que talvez você nem vá usar."
+            "Organização, Projeto e Area Path vêm direto do Azure DevOps — nada aqui é digitado livremente."
         )
 
         if not self.config.azure_devops_pat:
@@ -1403,7 +1402,7 @@ class UserInterface:
         # 2) Projetos — só buscados quando o usuário pedir explicitamente.
         with st.container(key="azure_blue_btn_fetch_projects"):
             st.button(
-                "🔄 Buscar Projetos desta Organização",
+                "🔍 Buscar Projetos desta Organização",
                 disabled=self.state.get('is_processing'),
                 key="btn_fetch_projects",
                 on_click=self.trigger_action,
@@ -1428,26 +1427,40 @@ class UserInterface:
         projects = self.state.get('ado_available_projects') or []
 
         if not projects or self.state.get('ado_projects_org') != ado_org:
-            st.info(f"Clique em **\"Buscar Projetos desta Organização\"** acima para escolher um projeto de **{ado_org}**.")
+            # Ainda não buscou projetos desta organização — a tela para por
+            # aqui de propósito: só Organização + botão ficam visíveis.
             st.divider()
             self._render_step7_back_and_new("no_projects_yet")
             return
 
-        current_project = self.state.get('ado_project_override')
-        default_project = current_project if current_project in projects else projects[0]
-        ado_project = st.selectbox(
+        PLACEHOLDER = "---"
+        project_options = [PLACEHOLDER] + projects
+        current_project = self.state.get('ado_project_override') or PLACEHOLDER
+        if current_project not in project_options:
+            current_project = PLACEHOLDER
+        ado_project_choice = st.selectbox(
             "Projeto *",
-            options=projects,
-            index=projects.index(default_project),
+            options=project_options,
+            index=project_options.index(current_project),
             disabled=self.state.get('is_processing'),
             key="ado_project_select",
             help="Lista vem direto do Azure DevOps — só os projetos visíveis a esse PAT dentro da organização selecionada.",
         )
-        if ado_project != current_project:
+        if ado_project_choice != self.state.get('ado_project_override'):
             self.state.set('ado_available_area_paths', [])
             self.state.set('ado_area_paths_project', '')
             self.state.set('ado_area_path', '')
-        self.state.set('ado_project_override', ado_project)
+            self.state.set('ado_area_path_choice', PLACEHOLDER)
+        self.state.set('ado_project_override', '' if ado_project_choice == PLACEHOLDER else ado_project_choice)
+
+        ado_project = self.state.get('ado_project_override')
+
+        if not ado_project:
+            # Nenhum projeto real escolhido ainda (ainda em "---") — não
+            # revela Area Path/Work Items até o usuário escolher de verdade.
+            st.divider()
+            self._render_step7_back_and_new("no_project_selected")
+            return
 
         ado_client = AzureDevOpsClient(ado_org, ado_project, self.config.azure_devops_pat)
 
@@ -1462,58 +1475,55 @@ class UserInterface:
 
         st.divider()
 
-        # 3) Area Path do Board — sempre visível, nunca obrigatório: o padrão
-        # é a RAIZ do projeto (sempre válida), mas como projetos costumam ter
-        # vários boards diferentes (um por Area Path), o botão de busca fica
-        # sempre à vista, não escondido atrás de um expansor.
-        if self.state.get('ado_area_paths_project') != ado_project:
-            self.state.set('ado_area_path', ado_project)
+        # 3) Area Path do Board — busca automática assim que um Projeto real é
+        # escolhido (sem botão), mas o dropdown SEMPRE começa em "---" (nada
+        # pré-selecionado) — se ficar em "---", usamos a raiz do projeto por
+        # baixo dos panos. É opcional. Passa pelo padrão trigger_action pra
+        # travar a tela durante a busca, igual a qualquer outra chamada de rede.
+        if self.state.get('ado_area_paths_project') != ado_project and self.state.get('current_action') != 'fetch_area_paths_auto':
+            self.trigger_action('fetch_area_paths_auto')
+            st.rerun()
 
-        area_path = self.state.get('ado_area_path') or ado_project
-
-        st.markdown("##### 📁 Area Path do Board no Azure DevOps")
-        st.caption(
-            f"Padrão atual: **{area_path}** (raiz do projeto). Se o board que você quer usar "
-            "fica numa Area diferente da raiz, busque abaixo e selecione o caminho correto — "
-            "preciso do Area Path exato do board certo pra encontrar os Work Items dele."
-        )
-
-        with st.container(key="azure_blue_btn_fetch_areas"):
-            st.button(
-                "🔄 Buscar Area Paths deste Projeto",
-                disabled=self.state.get('is_processing'),
-                key="btn_fetch_areas",
-                on_click=self.trigger_action,
-                args=("fetch_area_paths",),
-            )
-        if self.state.get('current_action') == 'fetch_area_paths' and not self.state.get('show_interrupt_modal'):
+        if self.state.get('current_action') == 'fetch_area_paths_auto' and not self.state.get('show_interrupt_modal'):
             try:
                 with st.spinner(f"Buscando Area Paths em '{ado_project}'..."):
                     area_paths = ado_client.list_area_paths()
                 self.state.set('ado_available_area_paths', area_paths)
-                self.state.set('ado_area_paths_project', ado_project)
             except AzureDevOpsError as error:
                 st.error(f"❌ Não foi possível listar os Area Paths de '{ado_project}': {error}")
                 self.state.set('ado_available_area_paths', [])
             except Exception as error:
                 st.error(f"❌ Erro inesperado ao listar Area Paths: {error}")
                 self.state.set('ado_available_area_paths', [])
+            self.state.set('ado_area_paths_project', ado_project)
+            self.state.set('ado_area_path_choice', PLACEHOLDER)
             self.clear_action()
             st.rerun()
 
+        st.markdown("##### 📁 Area Path do Board no Azure DevOps")
+        st.caption(
+            f"Opcional — se deixar em **\"{PLACEHOLDER}\"**, uso a raiz do projeto "
+            f"(**{ado_project}**). Preciso do Area Path exato do board certo pra encontrar os "
+            "Work Items dele, então escolha aqui se o board que você quer usar fica numa Area "
+            "diferente da raiz."
+        )
+
         available_area_paths = self.state.get('ado_available_area_paths') or []
-        if available_area_paths and self.state.get('ado_area_paths_project') == ado_project:
-            default_area_path = area_path if area_path in available_area_paths else available_area_paths[0]
-            sub_area_path = st.selectbox(
-                "Area Path do Board",
-                options=available_area_paths,
-                index=available_area_paths.index(default_area_path),
-                help="Lista vem direto do Azure DevOps — todos os Area Paths que existem no projeto selecionado.",
-                disabled=self.state.get('is_processing'),
-                key="ado_area_path_select",
-            )
-            self.state.set('ado_area_path', sub_area_path)
-            area_path = sub_area_path
+        area_path_options = [PLACEHOLDER] + available_area_paths
+        current_area_choice = self.state.get('ado_area_path_choice') or PLACEHOLDER
+        if current_area_choice not in area_path_options:
+            current_area_choice = PLACEHOLDER
+        area_path_choice = st.selectbox(
+            "Area Path do Board",
+            options=area_path_options,
+            index=area_path_options.index(current_area_choice),
+            help="Lista vem direto do Azure DevOps — todos os Area Paths que existem no projeto selecionado.",
+            disabled=self.state.get('is_processing'),
+            key="ado_area_path_select",
+        )
+        self.state.set('ado_area_path_choice', area_path_choice)
+        area_path = ado_project if area_path_choice == PLACEHOLDER else area_path_choice
+        self.state.set('ado_area_path', area_path)
 
         with st.container(key="azure_blue_btn_fetch_wi"):
             st.button(
@@ -1531,9 +1541,8 @@ class UserInterface:
                 self.state.set('ado_board_items', items)
                 # Nova busca -> reseta a seleção de "quais entram no matching"
                 # pra não arrastar uma seleção antiga de um board diferente.
-                self.state.set('ado_wi_for_matching_labels', None)
-                if 'ado_wi_for_matching_select' in st.session_state:
-                    del st.session_state['ado_wi_for_matching_select']
+                self.state.set('ado_wi_matching_selected_ids', [])
+                self.state.set('ado_wi_matching_picker_gen', 0)
                 if not items:
                     st.warning("Nenhum Work Item encontrado nesse Area Path (além de Test Cases).")
             except AzureDevOpsError as error:
@@ -1552,29 +1561,56 @@ class UserInterface:
             st.info("Nenhum Caso de Teste foi gerado ainda nesta análise.")
         else:
             st.divider()
-            st.markdown("### 🤖 Sugestão automática de vínculos (IA via n8n)")
+            st.markdown("### 🤖 Sugestão automática de vínculos com IA")
             st.caption(
                 "Envia os Work Items selecionados abaixo e os Casos de Teste gerados pro n8n, "
                 "que devolve uma sugestão de quais casos se relacionam a quais Work Items. Você "
                 "pode ajustar tudo manualmente depois, antes de confirmar."
             )
 
+            WI_PLACEHOLDER = "---"
             wi_labels = {
                 f"{item['id']} - {item['title']} ({item['type']}, {item['state']})": item
                 for item in board_items
             }
-            stored_selection = self.state.get('ado_wi_for_matching_labels')
-            default_labels = stored_selection if stored_selection is not None else list(wi_labels.keys())
-            selected_labels = st.multiselect(
-                "🎯 Work Items considerados na análise da IA",
-                options=list(wi_labels.keys()),
-                default=default_labels,
+            selected_ids = self.state.get('ado_wi_matching_selected_ids') or []
+            available_labels = [label for label, item in wi_labels.items() if item['id'] not in selected_ids]
+
+            picker_gen = self.state.get('ado_wi_matching_picker_gen', 0)
+            pick = st.selectbox(
+                "🎯 Adicionar Work Item à análise da IA",
+                options=[WI_PLACEHOLDER] + available_labels,
+                index=0,
                 disabled=self.state.get('is_processing'),
-                key="ado_wi_for_matching_select",
-                help="Por padrão, todos entram na análise. Desmarque os que não fazem sentido pra reduzir o escopo.",
+                key=f"ado_wi_matching_picker_{picker_gen}",
+                help="Escolha um Work Item por vez — ele sai dessa lista e entra na seleção abaixo.",
             )
-            self.state.set('ado_wi_for_matching_labels', selected_labels)
-            selected_board_items = [wi_labels[label] for label in selected_labels]
+            if pick != WI_PLACEHOLDER:
+                picked_item = wi_labels[pick]
+                if picked_item['id'] not in selected_ids:
+                    selected_ids = selected_ids + [picked_item['id']]
+                    self.state.set('ado_wi_matching_selected_ids', selected_ids)
+                self.state.set('ado_wi_matching_picker_gen', picker_gen + 1)
+                st.rerun()
+
+            if selected_ids:
+                st.caption(f"**{len(selected_ids)} Work Item(s) selecionado(s) para a análise:**")
+                for wid in list(selected_ids):
+                    item = next((it for it in board_items if it['id'] == wid), None)
+                    if not item:
+                        continue
+                    c1, c2 = st.columns([11, 1])
+                    with c1:
+                        st.write(f"✅ {item['id']} - {item['title']} ({item['type']}, {item['state']})")
+                    with c2:
+                        if st.button("🗑️", key=f"remove_wi_match_{wid}", disabled=self.state.get('is_processing'), help="Remover da seleção"):
+                            selected_ids = [i for i in selected_ids if i != wid]
+                            self.state.set('ado_wi_matching_selected_ids', selected_ids)
+                            st.rerun()
+            else:
+                st.caption("Nenhum Work Item selecionado ainda — escolha acima.")
+
+            selected_board_items = [it for it in board_items if it['id'] in selected_ids]
 
             with st.container(key="azure_blue_btn_suggest"):
                 st.button(
@@ -1588,7 +1624,7 @@ class UserInterface:
             if not selected_board_items:
                 st.caption("Selecione ao menos 1 Work Item acima para habilitar a sugestão da IA.")
             if self.state.get('current_action') == 'suggest_ado_links' and not self.state.get('show_interrupt_modal'):
-                self._suggest_ado_links(selected_board_items, test_cases)
+                self._suggest_ado_links(ado_client, selected_board_items, test_cases)
                 self.clear_action()
                 st.rerun()
 
@@ -1596,6 +1632,18 @@ class UserInterface:
             if suggest_msg:
                 level, text = suggest_msg
                 {"success": st.success, "warning": st.warning, "error": st.error}.get(level, st.info)(text)
+
+            duplicate_titles = self.state.get('ado_duplicate_case_titles') or []
+            if duplicate_titles:
+                with st.expander(f"🔁 {len(duplicate_titles)} Caso(s) considerados duplicados (não serão criados/vinculados)"):
+                    st.caption(
+                        "Esses casos pareceram muito parecidos com Casos de Teste que já existem no "
+                        "Work Item correspondente no Azure DevOps. Se algum desses NÃO for realmente "
+                        "duplicado, você pode vinculá-lo manualmente na revisão abaixo — só ele não vai "
+                        "aparecer pré-selecionado."
+                    )
+                    for t in duplicate_titles:
+                        st.write(f"- {t}")
 
             st.divider()
             st.markdown("### ✏️ Revisar e confirmar vínculos")
@@ -1605,10 +1653,17 @@ class UserInterface:
                 "não geram Suite no Azure DevOps."
             )
 
+            ignored_ids = [item['id'] for item in board_items if item['id'] not in selected_ids]
+            if ignored_ids:
+                st.caption(
+                    f"ℹ️ {len(ignored_ids)} Work Item(s) do board foram ignorados nesta análise "
+                    f"(não selecionados): {', '.join(str(i) for i in ignored_ids)}."
+                )
+
             links = dict(self.state.get('ado_wi_case_links') or {})
             case_titles = [tc.get('titulo', f'Caso #{i}') for i, tc in enumerate(test_cases, start=1)]
 
-            for item in board_items:
+            for item in selected_board_items:
                 wid_key = str(item['id'])
                 widget_key = f"ado_wi_multiselect_{item['id']}"
                 # O Streamlit só respeita "default" na primeiríssima renderização
@@ -1722,9 +1777,29 @@ class UserInterface:
         st.divider()
         self._render_step7_back_and_new("main")
 
-    def _suggest_ado_links(self, board_items: list, test_cases: list):
+    def _suggest_ado_links(self, ado_client, board_items: list, test_cases: list):
+        # Busca, pra cada Work Item, quais Casos de Teste JÁ estão vinculados
+        # a ele no Azure DevOps — isso vai como contexto pro n8n, pra IA
+        # evitar sugerir um caso novo que já é essencialmente o que já existe.
+        existing_by_wid = {}
+        try:
+            with st.spinner("Verificando Casos de Teste já existentes nos Work Items..."):
+                for item in board_items:
+                    try:
+                        existing_by_wid[item["id"]] = ado_client.get_existing_test_case_titles(item["id"])
+                    except AzureDevOpsError:
+                        existing_by_wid[item["id"]] = []
+        except Exception:
+            existing_by_wid = {item["id"]: [] for item in board_items}
+
         payload_items = [
-            {"id": item["id"], "title": item["title"], "type": item["type"], "state": item["state"]}
+            {
+                "id": item["id"],
+                "title": item["title"],
+                "type": item["type"],
+                "state": item["state"],
+                "casos_existentes": existing_by_wid.get(item["id"], []),
+            }
             for item in board_items
         ]
         payload_cases = [
@@ -1795,6 +1870,31 @@ class UserInterface:
                     deduped_links[wid_key] = kept
             links = deduped_links
 
+            # Rede de segurança #2: remove sugestões de casos muito
+            # parecidos com um Caso de Teste QUE JÁ EXISTE naquele Work Item
+            # no Azure DevOps (buscado no início desta função). Evita duplicar
+            # cobertura de teste que já foi feita antes.
+            SIMILARITY_THRESHOLD = 0.80
+            duplicate_case_titles = set()
+            final_links = {}
+            for wid_key, casos in links.items():
+                existentes = existing_by_wid.get(int(wid_key), [])
+                kept = []
+                for c in casos:
+                    c_norm = c.strip().lower()
+                    is_dup = any(
+                        difflib.SequenceMatcher(None, c_norm, e.strip().lower()).ratio() >= SIMILARITY_THRESHOLD
+                        for e in existentes
+                    )
+                    if is_dup:
+                        duplicate_case_titles.add(c)
+                    else:
+                        kept.append(c)
+                if kept:
+                    final_links[wid_key] = kept
+            links = final_links
+            self.state.set('ado_duplicate_case_titles', sorted(duplicate_case_titles))
+
             self.state.set('ado_wi_case_links', links)
 
             # Força a atualização visual dos multiselects: como eles já foram
@@ -1819,6 +1919,13 @@ class UserInterface:
                     msg[0],
                     msg[1] + f" ({duplicates_removed} vínculo(s) duplicado(s) — mesmo caso em vários Work "
                     "Items — foram reduzidos a 1 vínculo por padrão; adicione manualmente na revisão abaixo se for exceção real.)",
+                )
+            if duplicate_case_titles:
+                msg = (
+                    msg[0],
+                    msg[1] + f" ⚠️ {len(duplicate_case_titles)} caso(s) parecem duplicar Casos de Teste que JÁ "
+                    "existem no Work Item correspondente no Azure DevOps — não serão vinculados nem criados "
+                    "(veja a lista abaixo).",
                 )
             self.state.set('ado_suggest_message', msg)
         except ValueError as error:
@@ -1845,9 +1952,21 @@ class UserInterface:
 
         # 1) Garante que TODOS os Casos de Teste gerados existem no Azure DevOps,
         # vinculados a algum Work Item ou não — casos sem vínculo são criados
-        # normalmente, só não entram em nenhuma Suite depois.
+        # normalmente, só não entram em nenhuma Suite depois. Casos marcados
+        # como duplicados de algo que já existe no Azure DevOps (checagem
+        # feita em _suggest_ado_links) são pulados — não sobem pro Azure.
         # As criações são independentes entre si, então rodam em paralelo.
-        cases_to_create = [tc for tc in test_cases if tc.get('titulo') not in case_ids]
+        duplicate_titles = set(self.state.get('ado_duplicate_case_titles') or [])
+        skipped_as_duplicate = [tc.get('titulo') for tc in test_cases if tc.get('titulo') in duplicate_titles]
+        if skipped_as_duplicate:
+            log.append(
+                f"🔁 {len(skipped_as_duplicate)} Caso(s) não foram criados por parecerem duplicados de "
+                f"algo já existente no Azure DevOps: {', '.join(skipped_as_duplicate)}"
+            )
+        cases_to_create = [
+            tc for tc in test_cases
+            if tc.get('titulo') not in case_ids and tc.get('titulo') not in duplicate_titles
+        ]
         if cases_to_create:
             total = len(cases_to_create)
             done = 0
