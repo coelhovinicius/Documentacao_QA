@@ -46,6 +46,7 @@ class SessionState:
         'ado_case_links': {},
         'ado_full_push_log': [],
         'show_ado_confirm_modal': False,
+        'show_about_page': False,
         'ado_confirm_modal_params': None,
         'ado_test_plan_name': '',
         'ado_tc_initial_state': 'Ready',

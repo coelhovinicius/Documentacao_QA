@@ -292,6 +292,11 @@ class UserInterface:
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
+            st.divider()
+            if st.button("ℹ️ Sobre o app", use_container_width=True, key="btn_about_sidebar", disabled=self.state.get('is_processing')):
+                self.state.set('show_about_page', True)
+                st.rerun()
+
         img_b64 = ""
         if Path(LOGO_PATH).exists():
             try:
@@ -2111,6 +2116,119 @@ class UserInterface:
         st.rerun()
 
 
+    @staticmethod
+    def _flatten_html(html: str) -> str:
+        """
+        Remove a indentação de cada linha antes de mandar pro st.markdown.
+        Sem isso, linhas com 4+ espaços à esquerda são interpretadas pelo
+        parser de Markdown como bloco de código — mesmo com
+        unsafe_allow_html=True — e o SVG aparece como texto bruto na tela
+        em vez de ser renderizado como imagem.
+        """
+        return "\n".join(line.strip() for line in html.strip().split("\n"))
+
+    def _about_page(self):
+        st.subheader("ℹ️ Sobre o App")
+        st.caption(
+            "Uma visão geral de como o QA Automation funciona, do envio do documento até a "
+            "integração com o Azure DevOps."
+        )
+
+        if st.button("← Voltar", key="btn_about_back"):
+            self.state.set('show_about_page', False)
+            st.rerun()
+
+        st.markdown("#### 🧭 Arquitetura geral")
+        st.caption(
+            "O time de QA usa o app, que aciona o n8n (onde a IA gera o conteúdo) e depois "
+            "integra tudo direto no Azure DevOps."
+        )
+        st.markdown(self._flatten_html(self._svg_architecture_diagram()), unsafe_allow_html=True)
+
+        st.divider()
+
+        st.markdown("#### 📋 Os 7 passos do app")
+        st.caption("Do upload do documento até a integração automática com o Azure DevOps.")
+        st.markdown(self._flatten_html(self._svg_steps_diagram()), unsafe_allow_html=True)
+
+        st.divider()
+        if st.button("← Voltar", key="btn_about_back_bottom"):
+            self.state.set('show_about_page', False)
+            st.rerun()
+
+    @staticmethod
+    def _svg_architecture_diagram() -> str:
+        box = "fill='#ffffff' stroke='#d8d8d8' stroke-width='1'"
+        title_style = "font-family:sans-serif;font-size:15px;font-weight:600;fill:#2d2d2d"
+        sub_style = "font-family:sans-serif;font-size:12px;fill:#7a7a7a"
+        arrow = "stroke='#F15A24' stroke-width='2' marker-end='url(#arch_arrow)'"
+
+        def node(y, title, sub):
+            return f"""
+            <rect x="230" y="{y}" width="220" height="56" rx="8" {box} />
+            <text x="340" y="{y+24}" text-anchor="middle" style="{title_style}">{title}</text>
+            <text x="340" y="{y+44}" text-anchor="middle" style="{sub_style}">{sub}</text>
+            """
+
+        return f"""
+        <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
+        <svg width="100%" viewBox="0 0 680 484" style="max-width:520px;display:block;margin:0 auto;">
+            <defs>
+                <marker id="arch_arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M2 1L8 5L2 9" fill="none" stroke="#F15A24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </marker>
+            </defs>
+            {node(40, "Usuário", "Time de QA")}
+            <line x1="340" y1="96" x2="340" y2="156" {arrow} />
+            {node(156, "App QA Automation", "Streamlit")}
+            <line x1="340" y1="212" x2="340" y2="272" {arrow} />
+            {node(272, "n8n + IA", "Gera conteúdo com IA")}
+            <line x1="340" y1="328" x2="340" y2="388" {arrow} />
+            {node(388, "Azure DevOps", "Board e Test Plans")}
+        </svg>
+        </div>
+        """
+
+    @staticmethod
+    def _svg_steps_diagram() -> str:
+        box = "fill='#ffffff' stroke='#d8d8d8' stroke-width='1'"
+        title_style = "font-family:sans-serif;font-size:14px;font-weight:600;fill:#2d2d2d"
+        sub_style = "font-family:sans-serif;font-size:11px;fill:#7a7a7a"
+        arrow = "stroke='#F15A24' stroke-width='2' marker-end='url(#steps_arrow)'"
+
+        def node(x, y, w, title, sub):
+            cx = x + w / 2
+            return f"""
+            <rect x="{x}" y="{y}" width="{w}" height="56" rx="8" {box} />
+            <text x="{cx}" y="{y+24}" text-anchor="middle" style="{title_style}">{title}</text>
+            <text x="{cx}" y="{y+44}" text-anchor="middle" style="{sub_style}">{sub}</text>
+            """
+
+        return f"""
+        <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
+        <svg width="100%" viewBox="0 0 680 346" style="max-width:680px;display:block;margin:0 auto;">
+            <defs>
+                <marker id="steps_arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M2 1L8 5L2 9" fill="none" stroke="#F15A24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </marker>
+            </defs>
+            {node(40, 90, 135, "1. Upload", "Setup inicial")}
+            {node(195, 90, 135, "2. Dúvidas", "Perguntas da IA")}
+            {node(350, 90, 135, "3. Matriz", "Matriz gerada")}
+            {node(505, 90, 135, "4. Casos", "Geração por IA")}
+            <line x1="175" y1="118" x2="195" y2="118" {arrow} />
+            <line x1="330" y1="118" x2="350" y2="118" {arrow} />
+            <line x1="485" y1="118" x2="505" y2="118" {arrow} />
+            <path d="M572.5 146 L572.5 195 L135.5 195 L135.5 250" fill="none" {arrow} />
+            {node(43, 250, 185, "5. Planos", "Organiza em suítes")}
+            {node(248, 250, 185, "6. Download", "CSV e PDF prontos")}
+            {node(453, 250, 185, "7. Azure DevOps", "Integração automática")}
+            <line x1="228" y1="278" x2="248" y2="278" {arrow} />
+            <line x1="433" y1="278" x2="453" y2="278" {arrow} />
+        </svg>
+        </div>
+        """
+
     def run(self):
         if not require_login():
             return
@@ -2135,14 +2253,18 @@ class UserInterface:
                 unsafe_allow_html=True
             )
 
-        self._progress()
-        self._processing_banner()
-
         if self.state.get('show_interrupt_modal'):
             confirm_interrupt_modal()
             
         if self.state.get('show_new_analysis_modal'):
             confirm_new_analysis_modal()
+
+        if self.state.get('show_about_page'):
+            self._about_page()
+            return
+
+        self._progress()
+        self._processing_banner()
 
         step = self.state.get('step')
         if step == 1:
