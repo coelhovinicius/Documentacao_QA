@@ -5,8 +5,11 @@ import time
 import bcrypt
 import streamlit as st
 
+from qa_testgen.infrastructure.access_control_client import AccessControlClient
+
 SESSION_AUTH_KEY = "authenticated"
 SESSION_USER_KEY = "auth_user"
+PENDING_USERNAME_KEY = "_access_pending_username"
 
 QUERY_PARAM_NAME = "auth"
 
@@ -96,13 +99,136 @@ def _validate_token(raw: str):
     return username
 
 
+def _grant_session(username: str):
+    st.session_state[SESSION_AUTH_KEY] = True
+    st.session_state[SESSION_USER_KEY] = username
+    st.query_params[QUERY_PARAM_NAME] = _make_token(username)
+    st.session_state.pop(PENDING_USERNAME_KEY, None)
+
+
+# --------------------------------------------------------------------------- #
+# Controle de acesso — aprovação de login (via n8n)
+# --------------------------------------------------------------------------- #
+def is_approver(config, username: str) -> bool:
+    """O dono do app (config.owner_username) é sempre aprovador implícito."""
+    if not username:
+        return False
+    if username == config.owner_username:
+        return True
+    try:
+        return username in AccessControlClient(config).list_approvers()
+    except Exception:
+        return False
+
+
+def render_pending_approvals_panel(config):
+    """Painel de solicitações pendentes — só visível pra quem é aprovador."""
+    username = st.session_state.get(SESSION_USER_KEY, "")
+    if not is_approver(config, username):
+        st.error("❌ Você não tem permissão para aprovar acessos.")
+        return
+
+    st.subheader("🔔 Solicitações Pendentes de Acesso")
+    client = AccessControlClient(config)
+    try:
+        pending = client.list_pending()
+    except Exception as error:
+        st.error(f"❌ Não foi possível carregar as solicitações: {error}")
+        return
+
+    if not pending:
+        st.success("✅ Nenhuma solicitação pendente no momento.")
+        return
+
+    for req in pending:
+        req_user = req.get("username", "")
+        requested_at = req.get("requested_at", "")
+        with st.container(border=True):
+            st.write(f"**{req_user}** — solicitado em {requested_at}")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("✅ Aprovar", key=f"approve_{req_user}", use_container_width=True, type="primary"):
+                    try:
+                        client.decide(req_user, True, username)
+                        st.success(f"{req_user} aprovado.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"❌ {error}")
+            with c2:
+                if st.button("🚫 Negar", key=f"deny_{req_user}", use_container_width=True):
+                    try:
+                        client.decide(req_user, False, username)
+                        st.warning(f"{req_user} negado.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"❌ {error}")
+
+
+def render_admin_panel(config):
+    """Cadastro de aprovadores — restrito ao dono do app (config.owner_username)."""
+    username = st.session_state.get(SESSION_USER_KEY, "")
+    if username != config.owner_username:
+        st.error("❌ Acesso restrito ao administrador do app.")
+        return
+
+    st.subheader("🛡️ Administração — Aprovadores de Acesso")
+    st.caption(
+        "Pessoas cadastradas aqui podem aprovar ou negar solicitações de login de outros "
+        "usuários, além de você. Você (dono do app) já é sempre um aprovador, não precisa "
+        "se cadastrar."
+    )
+
+    client = AccessControlClient(config)
+    try:
+        approvers = client.list_approvers()
+    except Exception as error:
+        st.error(f"❌ Não foi possível carregar os aprovadores: {error}")
+        return
+
+    if approvers:
+        st.write("**Aprovadores atuais:**")
+        for a in approvers:
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                st.write(f"- {a}")
+            with c2:
+                if st.button("Remover", key=f"remove_approver_{a}"):
+                    try:
+                        client.remove_approver(a)
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"❌ {error}")
+    else:
+        st.caption("Nenhum aprovador cadastrado além de você.")
+
+    st.divider()
+    known_users = sorted(u for u in _get_users() if u != config.owner_username)
+    with st.form("add_approver_form", clear_on_submit=True):
+        if known_users:
+            new_username = st.selectbox("Usuário a cadastrar como aprovador", options=known_users)
+        else:
+            new_username = st.text_input("Usuário a cadastrar como aprovador")
+        submitted = st.form_submit_button("➕ Adicionar Aprovador", type="primary")
+        if submitted and new_username and new_username.strip():
+            new_username = new_username.strip()
+            if new_username not in _get_users():
+                st.error("❌ Esse nome de usuário não existe nas credenciais configuradas (`secrets.toml`).")
+            else:
+                try:
+                    client.add_approver(new_username)
+                    st.success(f"{new_username} adicionado como aprovador.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"❌ {error}")
+
+
 # --------------------------------------------------------------------------- #
 # API pública
 # --------------------------------------------------------------------------- #
-def require_login() -> bool:
+def require_login(config) -> bool:
     """
     Retorna True se autenticado (app pode prosseguir).
-    Retorna False se a tela de login foi exibida (o chamador deve parar a execução).
+    Retorna False se a tela de login/espera foi exibida (o chamador deve parar a execução).
     """
     if st.session_state.get(SESSION_AUTH_KEY):
         return True
@@ -126,11 +252,16 @@ def require_login() -> bool:
         # Token inválido/expirado: limpa da URL pra não ficar um lixo ali.
         del st.query_params[QUERY_PARAM_NAME]
 
-    _render_login_form()
+    pending_username = st.session_state.get(PENDING_USERNAME_KEY)
+    if pending_username:
+        _render_waiting_screen(config, pending_username)
+        return False
+
+    _render_login_form(config)
     return False
 
 
-def _render_login_form():
+def _render_login_form(config):
     st.markdown(
         """
         <style>
@@ -143,7 +274,7 @@ def _render_login_form():
 
     _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        st.markdown("## 🧪 QA Automation – DevOps")
+        st.markdown("## 🧪 QA Automation – Azure DevOps")
         st.caption("Acesso restrito. Informe suas credenciais para continuar.")
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Usuário")
@@ -153,12 +284,67 @@ def _render_login_form():
         if submitted:
             username = username.strip()
             if _check_credentials(username, password):
-                st.session_state[SESSION_AUTH_KEY] = True
-                st.session_state[SESSION_USER_KEY] = username
-                st.query_params[QUERY_PARAM_NAME] = _make_token(username)
-                st.rerun()
+                if username == config.owner_username:
+                    _grant_session(username)
+                    st.rerun()
+                else:
+                    try:
+                        client = AccessControlClient(config)
+                        status = client.check_status(username)
+                        if status == "approved":
+                            client.consume(username)
+                            _grant_session(username)
+                            st.rerun()
+                        else:
+                            if status in ("none", "denied", "consumed"):
+                                client.create_request(username)
+                            st.session_state[PENDING_USERNAME_KEY] = username
+                            st.rerun()
+                    except Exception as error:
+                        st.error(f"❌ Não foi possível verificar a aprovação de acesso: {error}")
             else:
                 st.error("❌ Usuário ou senha inválidos.")
+
+
+def _render_waiting_screen(config, username: str):
+    st.markdown(
+        """
+        <style>
+            [data-testid="stSidebar"] {display: none;}
+            [data-testid="stToolbar"] {visibility: hidden;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    _, col, _ = st.columns([1, 1.2, 1])
+    with col:
+        st.markdown("## ⏳ Aguardando aprovação")
+        st.info(
+            f"Sua solicitação de acesso como **{username}** foi enviada. Um administrador "
+            "precisa aprovar antes que você possa entrar. Isso não é automático — clique em "
+            "\"Verificar novamente\" depois que alguém tiver aprovado."
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 Verificar novamente", use_container_width=True, type="primary"):
+                try:
+                    client = AccessControlClient(config)
+                    status = client.check_status(username)
+                    if status == "approved":
+                        client.consume(username)
+                        _grant_session(username)
+                        st.rerun()
+                    elif status == "denied":
+                        st.error("❌ Sua solicitação de acesso foi negada.")
+                    else:
+                        st.info("Ainda aguardando aprovação.")
+                except Exception as error:
+                    st.error(f"❌ Erro ao verificar status: {error}")
+        with c2:
+            if st.button("← Cancelar", use_container_width=True):
+                st.session_state.pop(PENDING_USERNAME_KEY, None)
+                st.rerun()
 
 
 def logout():

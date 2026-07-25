@@ -33,7 +33,10 @@ from qa_testgen.ui.dialogs import (
     confirm_step_deletion_modal,
     confirm_new_analysis_modal,
 )
-from qa_testgen.ui.auth import require_login, render_logout_control
+from qa_testgen.ui.auth import (
+    require_login, render_logout_control, is_approver,
+    render_pending_approvals_panel, render_admin_panel, SESSION_USER_KEY,
+)
 
 # Liga/desliga a seção de integração direta com o Azure DevOps no Passo 6.
 # Coloque True quando quiser reativar a integração.
@@ -295,7 +298,23 @@ class UserInterface:
             st.divider()
             if st.button("ℹ️ Sobre o app", use_container_width=True, key="btn_about_sidebar", disabled=self.state.get('is_processing')):
                 self.state.set('show_about_page', True)
+                self.state.set('show_pending_approvals_page', False)
+                self.state.set('show_admin_page', False)
                 st.rerun()
+
+            current_username = st.session_state.get(SESSION_USER_KEY, "")
+            if is_approver(self.config, current_username):
+                if st.button("🔔 Solicitações Pendentes", use_container_width=True, key="btn_pending_sidebar", disabled=self.state.get('is_processing')):
+                    self.state.set('show_pending_approvals_page', True)
+                    self.state.set('show_about_page', False)
+                    self.state.set('show_admin_page', False)
+                    st.rerun()
+            if current_username == self.config.owner_username:
+                if st.button("🛡️ Administração", use_container_width=True, key="btn_admin_sidebar", disabled=self.state.get('is_processing')):
+                    self.state.set('show_admin_page', True)
+                    self.state.set('show_about_page', False)
+                    self.state.set('show_pending_approvals_page', False)
+                    st.rerun()
 
         img_b64 = ""
         if Path(LOGO_PATH).exists():
@@ -1330,38 +1349,108 @@ class UserInterface:
             "Organização, Projeto e Area Path vêm direto do Azure DevOps — nada aqui é digitado livremente."
         )
 
-        if not self.config.azure_devops_pat:
-            st.error("`AZURE_DEVOPS_PAT` não está configurado no `secrets.toml` — não é possível continuar.")
+        st.markdown("##### 🔑 Seu Personal Access Token (PAT)")
+        st.caption(
+            "Use o **seu próprio** PAT do Azure DevOps aqui — não é mais um token único compartilhado "
+            "por todo mundo. Isso garante que as ações feitas no Azure DevOps (criar Test Cases, Test "
+            "Plans, vínculos) fiquem registradas em seu nome, não no de outra pessoa. O token não é "
+            "salvo em nenhum lugar — vale só para esta sessão."
+        )
+        with st.expander("❓ Como criar meu próprio PAT no Azure DevOps"):
+            st.markdown(
+                """
+1. Acesse `https://dev.azure.com/{sua-organização}/_usersSettings/tokens`
+   (troque `{sua-organização}` pelo nome real, ex.: `refuturiza`)
+2. Clique em **"+ New Token"**
+3. Dê um nome (ex.: `qa-testgen-<seu-usuário>`)
+4. Em **Organization**, escolha a organização certa (ex.: `refuturiza`) — ou
+   **"All accessible organizations"** se você usa mais de uma
+5. Em **Expiration**, escolha um prazo (ex.: 90 dias) — anote a data pra
+   lembrar de renovar depois
+6. Em **Scopes**, clique em **"Show all scopes"** e marque:
+   - **Work Items** → Read & Write
+   - **Test Management** → Read & Write
+7. Clique em **Create**, e **copie o token imediatamente** — o Azure DevOps
+   só mostra ele uma vez; se perder, precisa criar outro
+8. Cole o token no campo abaixo
+                """
+            )
+        user_pat = st.text_input(
+            "Personal Access Token (PAT)",
+            type="password",
+            value=self.state.get('ado_user_pat', ''),
+            disabled=self.state.get('is_processing'),
+            key="ado_user_pat_input",
+            help="Nunca é salvo em disco — fica só na memória desta sessão.",
+        )
+        self.state.set('ado_user_pat', user_pat)
+
+        if not user_pat:
+            st.info("Informe seu PAT acima para continuar.")
             st.divider()
             self._render_step7_back_and_new("no_pat")
             return
 
         # 1) Organizações — busca automática (é só 1 chamada rápida, ou nem
         # isso quando cai no fallback abaixo), então não precisa de um botão
-        # manual só pra isso. Busca uma vez por sessão.
+        # manual só pra isso. Busca uma vez por sessão, e de novo sempre que
+        # o PAT digitado mudar.
+        if self.state.get('ado_last_validated_pat') != user_pat:
+            self.state.set('ado_orgs_fetch_done', False)
+            self.state.set('ado_pat_validated', None)
+
         if not self.state.get('ado_orgs_fetch_done'):
-            probe_org = AzureDevOpsClient("", "", self.config.azure_devops_pat)
+            probe_org = AzureDevOpsClient("", "", user_pat)
             try:
                 with st.spinner("Carregando organizações acessíveis a este PAT..."):
                     orgs = probe_org.list_accessible_organizations()
                 self.state.set('ado_accessible_orgs', orgs)
                 self.state.set('ado_orgs_fetch_error', None)
+                self.state.set('ado_pat_validated', True)
             except Exception as error:
                 # Esse endpoint específico (app.vssps.visualstudio.com) só
                 # funciona com PATs criados com escopo "All accessible
                 # organizations". Um PAT restrito a uma única organização
-                # recebe 401 aqui — não significa que o PAT esteja errado
-                # para o resto da integração. Cai pro fallback abaixo.
+                # também recebe 401 aqui — igual a um PAT inválido de
+                # verdade. Pra diferenciar os dois casos, tenta uma chamada
+                # ORG-SCOPED de verdade (list_projects) contra a organização
+                # padrão configurada — só essa chamada confirma se o PAT é
+                # válido ou não.
                 self.state.set('ado_accessible_orgs', [])
                 self.state.set('ado_orgs_fetch_error', str(error))
+                fallback_org = self.config.azure_devops_org
+                pat_ok = False
+                if fallback_org:
+                    try:
+                        with st.spinner(f"Validando PAT em '{fallback_org}'..."):
+                            AzureDevOpsClient(fallback_org, "", user_pat).list_projects()
+                        pat_ok = True
+                    except Exception:
+                        pat_ok = False
+                self.state.set('ado_pat_validated', pat_ok)
             self.state.set('ado_orgs_fetch_done', True)
+            self.state.set('ado_last_validated_pat', user_pat)
+
+        if not self.state.get('ado_pat_validated'):
+            st.error(
+                "❌ Não foi possível validar esse PAT. Confira se ele está correto, não "
+                "expirou, e tem os escopos **Work Items (Read & Write)** e **Test Management "
+                "(Read & Write)**."
+            )
+            fetch_error = self.state.get('ado_orgs_fetch_error')
+            if fetch_error:
+                st.caption(f"Detalhe do erro: {fetch_error}")
+            st.divider()
+            self._render_step7_back_and_new("invalid_pat")
+            return
 
         orgs = self.state.get('ado_accessible_orgs') or []
 
-        if not orgs and self.config.azure_devops_org and self.state.get('ado_orgs_fetch_error'):
-            # Fallback: não conseguimos listar dinamicamente (provavelmente
-            # PAT restrito a uma única org), mas há uma organização padrão
-            # configurada — usa ela como única opção válida do dropdown.
+        if not orgs and self.config.azure_devops_org:
+            # Fallback: não conseguimos listar dinamicamente (PAT restrito a
+            # uma única organização, já validado acima como funcional), mas
+            # há uma organização padrão configurada — usa ela como única
+            # opção válida do dropdown.
             orgs = [self.config.azure_devops_org]
             st.caption(
                 f"ℹ️ Não foi possível listar organizações dinamicamente (PAT provavelmente restrito "
@@ -1370,10 +1459,7 @@ class UserInterface:
             )
 
         if not orgs:
-            st.warning("Nenhuma organização encontrada para o PAT configurado. Confira o token no `secrets.toml`.")
-            fetch_error = self.state.get('ado_orgs_fetch_error')
-            if fetch_error:
-                st.caption(f"Detalhe do erro: {fetch_error}")
+            st.warning("Nenhuma organização encontrada para o PAT informado.")
             if st.button("🔄 Tentar novamente", disabled=self.state.get('is_processing'), key="btn_retry_orgs"):
                 self.state.set('ado_orgs_fetch_done', False)
                 st.rerun()
@@ -1414,7 +1500,7 @@ class UserInterface:
                 args=("fetch_projects",),
             )
         if self.state.get('current_action') == 'fetch_projects' and not self.state.get('show_interrupt_modal'):
-            probe_proj = AzureDevOpsClient(ado_org, "", self.config.azure_devops_pat)
+            probe_proj = AzureDevOpsClient(ado_org, "", user_pat)
             try:
                 with st.spinner(f"Buscando projetos em '{ado_org}'..."):
                     projects = probe_proj.list_projects()
@@ -1467,7 +1553,7 @@ class UserInterface:
             self._render_step7_back_and_new("no_project_selected")
             return
 
-        ado_client = AzureDevOpsClient(ado_org, ado_project, self.config.azure_devops_pat)
+        ado_client = AzureDevOpsClient(ado_org, ado_project, user_pat)
 
         if not ado_client.is_configured():
             st.info(
@@ -1547,7 +1633,8 @@ class UserInterface:
                 # Nova busca -> reseta a seleção de "quais entram no matching"
                 # pra não arrastar uma seleção antiga de um board diferente.
                 self.state.set('ado_wi_matching_selected_ids', [])
-                self.state.set('ado_wi_matching_picker_gen', 0)
+                if 'ado_wi_matching_multiselect' in st.session_state:
+                    del st.session_state['ado_wi_matching_multiselect']
                 if not items:
                     st.warning("Nenhum Work Item encontrado nesse Area Path (além de Test Cases).")
             except AzureDevOpsError as error:
@@ -1573,49 +1660,29 @@ class UserInterface:
                 "pode ajustar tudo manualmente depois, antes de confirmar."
             )
 
-            WI_PLACEHOLDER = "---"
             wi_labels = {
                 f"{item['id']} - {item['title']} ({item['type']}, {item['state']})": item
                 for item in board_items
             }
             selected_ids = self.state.get('ado_wi_matching_selected_ids') or []
-            available_labels = [label for label, item in wi_labels.items() if item['id'] not in selected_ids]
+            label_by_id = {item['id']: label for label, item in wi_labels.items()}
+            current_labels = [label_by_id[wid] for wid in selected_ids if wid in label_by_id]
 
-            picker_gen = self.state.get('ado_wi_matching_picker_gen', 0)
-            pick = st.selectbox(
-                "🎯 Adicionar Work Item à análise da IA",
-                options=[WI_PLACEHOLDER] + available_labels,
-                index=0,
+            selected_labels = st.multiselect(
+                "🎯 Work Items considerados na análise da IA",
+                options=list(wi_labels.keys()),
+                default=current_labels,
                 disabled=self.state.get('is_processing'),
-                key=f"ado_wi_matching_picker_{picker_gen}",
-                help="Escolha um Work Item por vez — ele sai dessa lista e entra na seleção abaixo.",
+                key="ado_wi_matching_multiselect",
+                help="Clique em quantos quiser na lista — não precisa segurar Ctrl/Shift, o campo já aceita múltipla seleção.",
             )
-            if pick != WI_PLACEHOLDER:
-                picked_item = wi_labels[pick]
-                if picked_item['id'] not in selected_ids:
-                    selected_ids = selected_ids + [picked_item['id']]
-                    self.state.set('ado_wi_matching_selected_ids', selected_ids)
-                self.state.set('ado_wi_matching_picker_gen', picker_gen + 1)
-                st.rerun()
+            selected_ids = [wi_labels[label]['id'] for label in selected_labels]
+            self.state.set('ado_wi_matching_selected_ids', selected_ids)
 
-            if selected_ids:
-                st.caption(f"**{len(selected_ids)} Work Item(s) selecionado(s) para a análise:**")
-                for wid in list(selected_ids):
-                    item = next((it for it in board_items if it['id'] == wid), None)
-                    if not item:
-                        continue
-                    c1, c2 = st.columns([11, 1])
-                    with c1:
-                        st.write(f"✅ {item['id']} - {item['title']} ({item['type']}, {item['state']})")
-                    with c2:
-                        if st.button("🗑️", key=f"remove_wi_match_{wid}", disabled=self.state.get('is_processing'), help="Remover da seleção"):
-                            selected_ids = [i for i in selected_ids if i != wid]
-                            self.state.set('ado_wi_matching_selected_ids', selected_ids)
-                            st.rerun()
-            else:
+            if not selected_labels:
                 st.caption("Nenhum Work Item selecionado ainda — escolha acima.")
 
-            selected_board_items = [it for it in board_items if it['id'] in selected_ids]
+            selected_board_items = [wi_labels[label] for label in selected_labels]
 
             with st.container(key="azure_blue_btn_suggest"):
                 st.button(
@@ -2230,7 +2297,7 @@ class UserInterface:
         """
 
     def run(self):
-        if not require_login():
+        if not require_login(self.config):
             return
 
         self._inject_ui_styles()
@@ -2261,6 +2328,20 @@ class UserInterface:
 
         if self.state.get('show_about_page'):
             self._about_page()
+            return
+
+        if self.state.get('show_pending_approvals_page'):
+            if st.button("← Voltar", key="btn_pending_back"):
+                self.state.set('show_pending_approvals_page', False)
+                st.rerun()
+            render_pending_approvals_panel(self.config)
+            return
+
+        if self.state.get('show_admin_page'):
+            if st.button("← Voltar", key="btn_admin_back"):
+                self.state.set('show_admin_page', False)
+                st.rerun()
+            render_admin_panel(self.config)
             return
 
         self._progress()

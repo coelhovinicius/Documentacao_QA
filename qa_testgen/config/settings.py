@@ -26,11 +26,19 @@ class AppConfiguration:
             'N8N_WEBHOOK_URL_MATCHING',
             'http://localhost:5678/webhook/qa-testgen-matching'
         )
+        self.webhook_access_control = self._get(
+            'N8N_WEBHOOK_URL_ACCESS_CONTROL',
+            'http://localhost:5678/webhook/qa-testgen-access-control'
+        )
         self.api_key = self._get('N8N_API_KEY', '')
 
         self.azure_devops_org = self._get('AZURE_DEVOPS_ORG', '')
         self.azure_devops_project = self._get('AZURE_DEVOPS_PROJECT', '')
         self.azure_devops_pat = self._get('AZURE_DEVOPS_PAT', '')
+
+        # Dono do app — esse usuário nunca precisa de aprovação pra logar, e é
+        # sempre um aprovador implícito (não precisa ser cadastrado à parte).
+        self.owner_username = self._get('APP_OWNER_USERNAME', 'admin')
 
     def _get(self, key: str, default: str) -> str:
         value = os.getenv(key)
