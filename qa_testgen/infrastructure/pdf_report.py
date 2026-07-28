@@ -364,18 +364,23 @@ class PdfReportGenerator:
         ambiente: str,
         status_geral: str,
         escopo_proposito: str,
-        matriz: list,
-        test_plans: list,
-        test_cases: list,
-        resultados_por_caso: dict,
+        casos: list,
         evidencias_por_caso: dict,
         conclusao: str,
         proximos_passos: str = "",
+        matriz: list = None,
         author_name: str = "",
     ) -> bytes:
         """
-        resultados_por_caso: {titulo_do_caso: "Passed"|"Failed"|... (outcome bruto do Azure DevOps)}
+        casos: [{"titulo": str, "outcome": str (bruto do Azure DevOps),
+                  "suite_name": str}, ...] — vem direto do Azure DevOps
+                  (Test Points), é a fonte de verdade pra esse relatório,
+                  não depende de nada ter sido gerado nesta sessão do app.
         evidencias_por_caso: {titulo_do_caso: [(nome_arquivo, bytes_da_imagem), ...]}
+        matriz: opcional — só existe se este projeto foi gerado nesta
+                mesma sessão do app (a Matriz nunca é enviada pro Azure
+                DevOps, então não tem como "buscar de lá" quando o
+                relatório é gerado de forma independente).
         """
         buffer = io.BytesIO()
         styles = cls._styles()
@@ -392,13 +397,7 @@ class PdfReportGenerator:
         )
         pw = doc.width
         story = []
-
-        tc_numbers = {tc.get('titulo', ''): idx for idx, tc in enumerate(test_cases or [], start=1)}
-        coverage_by_mc_id = {}
-        for tc in test_cases or []:
-            tc_label = f"TC-{tc_numbers.get(tc.get('titulo', ''), 0):02d}"
-            for mc_id in (tc.get('requisitos_relacionados') or []):
-                coverage_by_mc_id.setdefault(str(mc_id), []).append(tc_label)
+        casos = casos or []
 
         # ---- Capa / cabeçalho de identificação ----
         story.append(Spacer(1, 0.4 * cm))
@@ -434,18 +433,20 @@ class PdfReportGenerator:
 
         story.append(PageBreak())
 
-        # ---- Casos de Teste (com resultado) ----
+        # ---- Casos de Teste (com resultado) — vem direto do Azure DevOps ----
         story.append(Paragraph("2. Casos de Teste", styles['section']))
-        for idx, tc in enumerate(test_cases or [], start=1):
-            titulo = tc.get('titulo', f'Caso #{idx}')
-            pre = tc.get('pre_condicoes', '—')
-            outcome_raw = resultados_por_caso.get(titulo, '')
+        if not casos:
+            story.append(Paragraph(
+                "Nenhum Caso de Teste encontrado neste Test Plan no Azure DevOps.", styles['body']
+            ))
+        for idx, caso in enumerate(casos, start=1):
+            titulo = caso.get('titulo', f'Caso #{idx}')
+            suite_name = caso.get('suite_name', '—')
+            outcome_raw = caso.get('outcome', '')
             outcome_label = cls._OUTCOME_LABELS.get(outcome_raw, outcome_raw or 'Não Executado')
 
             hdr = Table(
-                [[
-                    Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['tc_title']),
-                ]],
+                [[Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['tc_title'])]],
                 colWidths=[pw],
             )
             hdr.setStyle(TableStyle([
@@ -456,10 +457,10 @@ class PdfReportGenerator:
             ]))
             info_row = Table(
                 [[
-                    Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(cls._esc(pre), styles['cell']),
+                    Paragraph("<b>Suíte:</b>", styles['cell']), Paragraph(cls._esc(suite_name), styles['cell']),
                     Paragraph("<b>Resultado:</b>", styles['cell']), cls._status_badge(styles, outcome_label),
                 ]],
-                colWidths=[2.6 * cm, pw * 0.42, 2.2 * cm, pw - 2.6 * cm - pw * 0.42 - 2.2 * cm],
+                colWidths=[2.2 * cm, pw * 0.42, 2.2 * cm, pw - 2.2 * cm - pw * 0.42 - 2.2 * cm],
             )
             info_row.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA_CLARO),
@@ -473,11 +474,45 @@ class PdfReportGenerator:
 
         story.append(PageBreak())
 
+        # ---- Planos e Suítes — agrupamento dos casos acima, direto do Azure DevOps ----
+        story.append(Paragraph("3. Planos e Suítes de Teste", styles['section']))
+        suites_order = []
+        cases_by_suite = {}
+        for caso in casos:
+            suite_name = caso.get('suite_name', '—')
+            if suite_name not in cases_by_suite:
+                cases_by_suite[suite_name] = []
+                suites_order.append(suite_name)
+            cases_by_suite[suite_name].append(caso.get('titulo', ''))
+
+        if not suites_order:
+            story.append(Paragraph("Nenhuma Suíte encontrada neste Test Plan.", styles['body']))
+        for suite_name in suites_order:
+            titles = cases_by_suite[suite_name]
+            data = [[Paragraph("<b>Suíte</b>", styles['cell_head']), Paragraph("<b>Casos de Teste</b>", styles['cell_head'])]]
+            data.append([
+                Paragraph(cls._esc(suite_name), styles['cell']),
+                Paragraph(cls._esc(", ".join(titles)), styles['cell']),
+            ])
+            table = Table(data, colWidths=[4 * cm, pw - 4 * cm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), COR_LARANJA),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 10))
+
+        story.append(PageBreak())
+
         # ---- Evidências ----
-        story.append(Paragraph("3. Evidências dos Cenários de Teste", styles['section']))
+        story.append(Paragraph("4. Evidências dos Cenários de Teste", styles['section']))
         any_evidence = False
-        for idx, tc in enumerate(test_cases or [], start=1):
-            titulo = tc.get('titulo', f'Caso #{idx}')
+        for idx, caso in enumerate(casos, start=1):
+            titulo = caso.get('titulo', f'Caso #{idx}')
             imgs = evidencias_por_caso.get(titulo) or []
             if not imgs:
                 continue
@@ -503,7 +538,7 @@ class PdfReportGenerator:
         story.append(PageBreak())
 
         # ---- Matriz de Cobertura ----
-        story.append(Paragraph("4. Matriz de Cobertura de Testes", styles['section']))
+        story.append(Paragraph("5. Matriz de Cobertura de Testes", styles['section']))
         if matriz:
             hcols = ["id", "funcionalidade", "requisito", "cenario", "categoria", "prioridade", "criticidade"]
             labels = ["ID", "Funcionalidade", "Requisito", "Cenário", "Categoria", "Prioridade", "Criticidade"]
@@ -523,12 +558,17 @@ class PdfReportGenerator:
             ]))
             story.append(table)
         else:
-            story.append(Paragraph("Nenhuma entrada na Matriz.", styles['body']))
+            story.append(Paragraph(
+                "Matriz de Cobertura não disponível para este relatório — ela só existe quando o "
+                "projeto foi gerado nesta mesma sessão do app (a Matriz não é enviada ao Azure DevOps, "
+                "então não pode ser recuperada de lá quando o relatório é gerado de forma independente).",
+                styles['body'],
+            ))
 
         story.append(PageBreak())
 
         # ---- Conclusão e Governança ----
-        story.append(Paragraph("5. Conclusão e Governança", styles['section']))
+        story.append(Paragraph("6. Conclusão e Governança", styles['section']))
         story.append(Paragraph(cls._esc(conclusao or '—').replace(chr(10), '<br/>'), styles['body']))
         if proximos_passos and proximos_passos.strip():
             story.append(Spacer(1, 10))

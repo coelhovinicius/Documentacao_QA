@@ -62,6 +62,7 @@ class SessionState:
         'show_about_page': False,
         'show_pending_approvals_page': False,
         'show_admin_page': False,
+        'show_execution_report_page': False,
         'ado_confirm_modal_params': None,
         'ado_test_plan_name': '',
         'ado_tc_initial_state': 'Ready',

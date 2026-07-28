@@ -370,14 +370,14 @@ class AzureDevOpsClient:
     def get_test_plan_execution_summary(self, plan_id: int) -> dict:
         """
         Varre todas as Suites de um Test Plan e retorna, por Caso de Teste:
-        o último resultado de execução (outcome) e a referência de
-        run/result (usada depois para buscar anexos/evidências).
+        o último resultado de execução (outcome), a Suíte a que pertence, e
+        a referência de run/result (usada depois para buscar anexos/evidências).
 
         Retorno:
         {
             "points": [
                 {"case_id": int, "case_title": str, "outcome": str,
-                 "run_id": int|None, "result_id": int|None},
+                 "suite_name": str, "run_id": int|None, "result_id": int|None},
                 ...
             ],
             "warnings": [str, ...],   # avisos de itens pulados por formato inesperado
@@ -389,9 +389,13 @@ class AzureDevOpsClient:
         suites_url = f"{self._base_url()}/testplan/Plans/{plan_id}/suites?api-version={API_VERSION}"
         response = self.session.get(suites_url, headers=self.headers_json, timeout=60)
         suites_data = self._handle_response(response, f"Listar Suites do Test Plan {plan_id}")
-        suite_ids = [s.get("id") for s in suites_data.get("value", []) if s.get("id")]
+        suites = [
+            {"id": s.get("id"), "name": s.get("name", f"Suíte {s.get('id')}")}
+            for s in suites_data.get("value", []) if s.get("id")
+        ]
 
-        for suite_id in suite_ids:
+        for suite in suites:
+            suite_id, suite_name = suite["id"], suite["name"]
             tp_url = (
                 f"{self._base_url()}/testplan/Plans/{plan_id}/Suites/{suite_id}"
                 f"/TestPoint?api-version={API_VERSION}"
@@ -431,6 +435,7 @@ class AzureDevOpsClient:
                             "case_id": int(case_id),
                             "case_title": case_title,
                             "outcome": outcome,
+                            "suite_name": suite_name,
                             "run_id": int(run_id) if run_id else None,
                             "result_id": int(result_id) if result_id else None,
                         })

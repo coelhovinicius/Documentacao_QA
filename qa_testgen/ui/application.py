@@ -345,6 +345,7 @@ class UserInterface:
                 self.state.set('show_about_page', True)
                 self.state.set('show_pending_approvals_page', False)
                 self.state.set('show_admin_page', False)
+                self.state.set('show_execution_report_page', False)
                 st.rerun()
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
@@ -353,12 +354,21 @@ class UserInterface:
                     self.state.set('show_pending_approvals_page', True)
                     self.state.set('show_about_page', False)
                     self.state.set('show_admin_page', False)
+                    self.state.set('show_execution_report_page', False)
+                    st.rerun()
+            if self._get_permission_cached("execution_report"):
+                if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
+                    self.state.set('show_execution_report_page', True)
+                    self.state.set('show_about_page', False)
+                    self.state.set('show_pending_approvals_page', False)
+                    self.state.set('show_admin_page', False)
                     st.rerun()
             if current_username == self.config.owner_username:
                 if st.button("🛡️ Administração", use_container_width=True, key="btn_admin_sidebar", disabled=self.state.get('is_processing')):
                     self.state.set('show_admin_page', True)
                     self.state.set('show_about_page', False)
                     self.state.set('show_pending_approvals_page', False)
+                    self.state.set('show_execution_report_page', False)
                     st.rerun()
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
@@ -505,8 +515,6 @@ class UserInterface:
         ]
         if self._get_permission_cached("azure_devops"):
             steps.append((7, "🔗 Azure DevOps"))
-        if self._get_permission_cached("execution_report"):
-            steps.append((8, "📊 Relatório"))
 
         current_step = self.state.get('step')
         max_step = self.state.get('max_step', current_step)
@@ -518,14 +526,7 @@ class UserInterface:
             for col, (i, label) in zip(cols, steps):
                 with col:
                     is_current = i == current_step
-                    if i == 8:
-                        # Relatório de Testes não depende de terminar o
-                        # assistente sequencial (consulta dados que já
-                        # existem no Azure DevOps) — só da permissão, que já
-                        # filtrou se esse botão aparece ou não.
-                        is_accessible = not is_processing
-                    else:
-                        is_accessible = self.can_access_step(i, current_step, max_step, completed_steps, is_processing)
+                    is_accessible = self.can_access_step(i, current_step, max_step, completed_steps, is_processing)
 
                     if is_current:
                         st.markdown(
@@ -1960,19 +1961,23 @@ class UserInterface:
         st.divider()
         self._render_step7_back_and_new("main")
 
-    def step_8(self):
-        st.subheader("Passo 8 – Relatório de Testes (execução)")
+    def _execution_report_page(self):
+        st.subheader("📊 Relatório de Testes (execução)")
+        st.caption(
+            "Documenta o que já foi EXECUTADO no Azure DevOps — não depende de terminar o "
+            "assistente de geração, só busca dados que já existem lá."
+        )
+
+        if st.button("← Voltar", key="btn_report_back_top"):
+            self.state.set('show_execution_report_page', False)
+            st.rerun()
 
         if not self._get_permission_cached("execution_report"):
             st.error("❌ Você não tem permissão para acessar o Relatório de Testes.")
-            st.divider()
-            self._render_step7_back_and_new("no_permission_s8", back_step=1)
             return
 
         conn = self._setup_azure_devops_connection()
         if conn is None:
-            st.divider()
-            self._render_step7_back_and_new("incomplete_setup_s8", back_step=7)
             return
         ado_client, ado_org, ado_project, area_path = conn
 
@@ -1980,7 +1985,9 @@ class UserInterface:
         self._render_execution_report_section(ado_client)
 
         st.divider()
-        self._render_step7_back_and_new("main_s8", back_step=7)
+        if st.button("← Voltar", key="btn_report_back_bottom"):
+            self.state.set('show_execution_report_page', False)
+            st.rerun()
 
     def _render_execution_report_section(self, ado_client):
         st.markdown("### 📊 Relatório de Testes (execução)")
@@ -2168,26 +2175,23 @@ class UserInterface:
     def _generate_execution_report(self, ado_client, plan: dict, contexto: str, ambiente: str,
                                      escopo_proposito: str, conclusao: str, proximos_passos: str):
         warnings = []
-        resultados_por_caso = {}
         evidencias_por_caso = {}
-
-        test_cases = self.state.get('test_cases') or []
-        case_ids = dict(self.state.get('ado_test_case_ids') or {})  # titulo -> id no Azure DevOps
-        id_to_titulo = {v: k for k, v in case_ids.items()}
+        casos = []  # [{"titulo", "outcome", "suite_name"}] — direto do Azure DevOps
 
         try:
-            with st.spinner(f"Buscando resultados de execução do Test Plan '{plan['name']}'..."):
+            with st.spinner(f"Buscando Casos de Teste e resultados do Test Plan '{plan['name']}'..."):
                 summary = ado_client.get_test_plan_execution_summary(plan["id"])
             warnings.extend(summary.get("warnings", []))
 
             outcomes_seen = set()
             for point in summary.get("points", []):
-                case_id = point.get("case_id")
-                titulo = id_to_titulo.get(case_id) or point.get("case_title")
-                if not titulo:
-                    continue
+                titulo = point.get("case_title") or f"Caso #{point.get('case_id')}"
                 outcome = point.get("outcome", "Not Run")
-                resultados_por_caso[titulo] = outcome
+                casos.append({
+                    "titulo": titulo,
+                    "outcome": outcome,
+                    "suite_name": point.get("suite_name", "—"),
+                })
                 outcomes_seen.add(outcome)
 
                 run_id, result_id = point.get("run_id"), point.get("result_id")
@@ -2215,6 +2219,21 @@ class UserInterface:
             else:
                 status_geral = "Pendente"
 
+            # A Matriz de Cobertura nunca é enviada pro Azure DevOps, então
+            # só existe se ESTA sessão gerou o mesmo projeto que está sendo
+            # reportado. Confirma isso batendo pelo menos um título de caso
+            # em comum antes de incluir — evita mostrar a Matriz errada de
+            # um projeto diferente.
+            session_matriz = self.state.get('matriz') or []
+            session_case_titles = {tc.get('titulo', '') for tc in (self.state.get('test_cases') or [])}
+            azure_case_titles = {c['titulo'] for c in casos}
+            matriz_to_use = session_matriz if (session_matriz and session_case_titles & azure_case_titles) else []
+            if session_matriz and not matriz_to_use:
+                warnings.append(
+                    "A Matriz de Cobertura desta sessão parece ser de um projeto diferente do Test "
+                    "Plan selecionado — não foi incluída no relatório."
+                )
+
             with st.spinner("Gerando o PDF do Relatório de Testes..."):
                 pdf_bytes = PdfReportGenerator.generate_execution_report(
                     project_name=self.state.get('project_name') or plan['name'],
@@ -2222,13 +2241,11 @@ class UserInterface:
                     ambiente=ambiente,
                     status_geral=status_geral,
                     escopo_proposito=escopo_proposito,
-                    matriz=self.state.get('matriz') or [],
-                    test_plans=self.state.get('test_plans') or [],
-                    test_cases=test_cases,
-                    resultados_por_caso=resultados_por_caso,
+                    casos=casos,
                     evidencias_por_caso=evidencias_por_caso,
                     conclusao=conclusao,
                     proximos_passos=proximos_passos,
+                    matriz=matriz_to_use,
                     author_name=self.state.get('author_name', ''),
                 )
             self.state.set('report_pdf_bytes', pdf_bytes)
@@ -2736,6 +2753,10 @@ class UserInterface:
             render_admin_panel(self.config)
             return
 
+        if self.state.get('show_execution_report_page'):
+            self._execution_report_page()
+            return
+
         self._progress()
         self._processing_banner()
 
@@ -2754,5 +2775,3 @@ class UserInterface:
             self.step_6()
         elif step == 7:
             self.step_7()
-        elif step == 8:
-            self.step_8()
