@@ -1,3 +1,4 @@
+import base64
 import json
 import requests
 
@@ -210,3 +211,61 @@ class WebhookClient:
         response.raise_for_status()
         data = self._parse(response)
         return {"vinculos": self._extract_required_list(data, "vinculos")}
+
+    def interpret_image(self, image_bytes: bytes, mime_type: str, context_text: str,
+                         project: str, source_file: str = "", location: str = "") -> str:
+        """
+        Envia uma imagem (bytes) pro workflow de interpretação visual e
+        retorna a descrição gerada pela IA (string). Levanta exceção normal
+        (requests/ValueError) em caso de falha — quem chama decide como
+        tratar (ex.: pular essa imagem e seguir com as demais).
+        """
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        response = requests.post(
+            self.config.webhook_image_interpretation,
+            json={
+                "image_base64": image_b64,
+                "mime_type": mime_type,
+                "context_text": context_text,
+                "nome_projeto": project,
+                "source_file": source_file,
+                "location": location,
+            },
+            headers=self.headers,
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = self._parse(response)
+        descricao = data.get("descricao", "").strip() if isinstance(data, dict) else ""
+        if not descricao:
+            raise ValueError("A IA não retornou nenhuma descrição para a imagem.")
+        return descricao
+
+    def trigger_execution_report_narrative(self, nome_projeto: str, nome_plano: str,
+                                            resumo_resultados: str, matriz: list) -> dict:
+        """
+        Pede pra IA sugerir os textos narrativos do Relatório de Testes
+        (Contexto, Escopo e Propósito, Conclusão, Próximos Passos), com
+        base no resumo de resultados de execução e na Matriz de Cobertura.
+        Retorna um dict com essas 4 chaves — o usuário revisa/edita antes
+        de gerar o PDF, nunca é usado direto sem confirmação.
+        """
+        response = requests.post(
+            self.config.webhook_execution_report_narrative,
+            json={
+                "nome_projeto": nome_projeto,
+                "nome_plano": nome_plano,
+                "resumo_resultados": resumo_resultados,
+                "matriz_cobertura": json.dumps(matriz, ensure_ascii=False),
+            },
+            headers=self.headers,
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = self._parse(response)
+        return {
+            "contexto": data.get("contexto", ""),
+            "escopo_proposito": data.get("escopo_proposito", ""),
+            "conclusao": data.get("conclusao", ""),
+            "proximos_passos": data.get("proximos_passos", ""),
+        }

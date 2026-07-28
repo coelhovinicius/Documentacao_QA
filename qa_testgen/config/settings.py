@@ -30,6 +30,14 @@ class AppConfiguration:
             'N8N_WEBHOOK_URL_ACCESS_CONTROL',
             'http://localhost:5678/webhook/qa-testgen-access-control'
         )
+        self.webhook_image_interpretation = self._get(
+            'N8N_WEBHOOK_URL_IMAGE_INTERPRETATION',
+            'http://localhost:5678/webhook/qa-testgen-image-interpretation'
+        )
+        self.webhook_execution_report_narrative = self._get(
+            'N8N_WEBHOOK_URL_EXECUTION_REPORT_NARRATIVE',
+            'http://localhost:5678/webhook/qa-testgen-execution-report-narrative'
+        )
         self.api_key = self._get('N8N_API_KEY', '')
 
         self.azure_devops_org = self._get('AZURE_DEVOPS_ORG', '')

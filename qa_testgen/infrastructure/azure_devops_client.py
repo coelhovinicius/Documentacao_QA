@@ -249,33 +249,41 @@ class AzureDevOpsClient:
     # ------------------------------------------------------------------ #
     # Test Plans
     # ------------------------------------------------------------------ #
-    def list_test_plan_names(self) -> list:
-        """
-        Lista os nomes de todos os Test Plans já existentes no projeto —
-        usado para checar duplicidade antes de criar um novo.
-        """
-        names = []
+    def list_test_plans(self) -> list:
+        """Lista os Test Plans do projeto como [{'id':..., 'name':...}]."""
+        plans = []
         url = f"{self._base_url()}/testplan/plans?api-version={API_VERSION}"
         while url:
             response = self.session.get(url, headers=self.headers_json, timeout=60)
             data = self._handle_response(response, "Listar Test Plans existentes")
             for plan in data.get("value", []):
-                name = plan.get("name")
-                if name:
-                    names.append(name)
+                if plan.get("name"):
+                    plans.append({"id": plan.get("id"), "name": plan.get("name")})
             continuation = response.headers.get("x-ms-continuationtoken")
             if continuation:
                 url = f"{self._base_url()}/testplan/plans?continuationToken={continuation}&api-version={API_VERSION}"
             else:
                 url = None
-        return names
+        return plans
 
     def test_plan_name_exists(self, name: str) -> bool:
         """Checagem case-insensitive de nome duplicado de Test Plan no projeto."""
         target = (name or "").strip().lower()
         if not target:
             return False
-        return any(existing.strip().lower() == target for existing in self.list_test_plan_names())
+        return any(p["name"].strip().lower() == target for p in self.list_test_plans())
+
+    def get_profile_display_name(self) -> str:
+        """
+        Retorna o nome de exibição do dono deste PAT, via API de perfil do
+        Azure DevOps (mesmo endpoint usado para listar organizações
+        acessíveis). Usado para preencher "gerado por" automaticamente nos
+        relatórios PDF, sem precisar digitar.
+        """
+        url = "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1"
+        response = self.session.get(url, headers=self.headers_json, timeout=30)
+        data = self._handle_response(response, "Buscar perfil do usuário do PAT")
+        return data.get("displayName", "") or ""
 
     def create_test_plan(self, nome: str, descricao: str = "") -> dict:
         """Cria um Test Plan e retorna {'id':, 'root_suite_id':}."""
@@ -346,6 +354,118 @@ class AzureDevOpsClient:
             f"https://dev.azure.com/{quote(self.organization, safe='')}"
             f"/{quote(self.project, safe='')}/_testPlans/execute?planId={plan_id}"
         )
+
+    # ------------------------------------------------------------------ #
+    # Resultados de execução e evidências (Relatório de Testes)
+    #
+    # ATENÇÃO: essa é uma área da API do Azure DevOps que usamos bem menos
+    # que a de Work Items/Test Cases — não tive como validar contra uma
+    # instância real. A lógica segue a documentação pública da API de Test
+    # Plans/Test Points/Test Runs, mas os nomes de campo variam um pouco
+    # entre versões/processos — por isso tudo aqui é defensivo (tenta vários
+    # nomes de campo possíveis, nunca derruba o relatório inteiro se um
+    # caso específico vier em formato inesperado, só pula ele e registra
+    # um aviso).
+    # ------------------------------------------------------------------ #
+    def get_test_plan_execution_summary(self, plan_id: int) -> dict:
+        """
+        Varre todas as Suites de um Test Plan e retorna, por Caso de Teste:
+        o último resultado de execução (outcome) e a referência de
+        run/result (usada depois para buscar anexos/evidências).
+
+        Retorno:
+        {
+            "points": [
+                {"case_id": int, "case_title": str, "outcome": str,
+                 "run_id": int|None, "result_id": int|None},
+                ...
+            ],
+            "warnings": [str, ...],   # avisos de itens pulados por formato inesperado
+        }
+        """
+        points = []
+        warnings = []
+
+        suites_url = f"{self._base_url()}/testplan/Plans/{plan_id}/suites?api-version={API_VERSION}"
+        response = self.session.get(suites_url, headers=self.headers_json, timeout=60)
+        suites_data = self._handle_response(response, f"Listar Suites do Test Plan {plan_id}")
+        suite_ids = [s.get("id") for s in suites_data.get("value", []) if s.get("id")]
+
+        for suite_id in suite_ids:
+            tp_url = (
+                f"{self._base_url()}/testplan/Plans/{plan_id}/Suites/{suite_id}"
+                f"/TestPoint?api-version={API_VERSION}"
+            )
+            try:
+                tp_response = self.session.get(tp_url, headers=self.headers_json, timeout=60)
+                tp_data = self._handle_response(tp_response, f"Listar Test Points da Suite {suite_id}")
+            except AzureDevOpsError as error:
+                warnings.append(f"Não foi possível ler pontos de teste da Suite {suite_id}: {error}")
+                continue
+
+            for point in tp_data.get("value", []):
+                try:
+                    case_ref = point.get("testCaseReference") or point.get("testCase") or {}
+                    case_id = case_ref.get("id") or (point.get("testCase") or {}).get("id")
+                    case_title = case_ref.get("name") or (point.get("testCase") or {}).get("name") or ""
+
+                    results = point.get("results") or {}
+                    outcome = (
+                        results.get("outcome")
+                        or point.get("outcome")
+                        or "Not Run"
+                    )
+                    run_id = (
+                        results.get("lastTestRunId")
+                        or point.get("lastTestRunId")
+                        or results.get("runId")
+                    )
+                    result_id = (
+                        results.get("lastResultId")
+                        or point.get("lastResultId")
+                        or results.get("resultId")
+                    )
+
+                    if case_id is not None:
+                        points.append({
+                            "case_id": int(case_id),
+                            "case_title": case_title,
+                            "outcome": outcome,
+                            "run_id": int(run_id) if run_id else None,
+                            "result_id": int(result_id) if result_id else None,
+                        })
+                except Exception as error:
+                    warnings.append(f"Ponto de teste em formato inesperado na Suite {suite_id}, pulado: {error}")
+
+        return {"points": points, "warnings": warnings}
+
+    def get_test_result_attachments(self, run_id: int, result_id: int) -> list:
+        """
+        Lista os anexos (evidências) de um resultado de teste específico.
+        Retorna [{'id':..., 'fileName':...}].
+        """
+        url = (
+            f"{self._base_url()}/test/Runs/{run_id}/Results/{result_id}"
+            f"/attachments?api-version={API_VERSION}"
+        )
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Listar anexos do resultado {result_id} (run {run_id})")
+        return [
+            {"id": a.get("id"), "fileName": a.get("fileName", "")}
+            for a in data.get("value", [])
+            if a.get("id")
+        ]
+
+    def download_test_result_attachment(self, run_id: int, result_id: int, attachment_id: int) -> bytes:
+        """Baixa o conteúdo bruto (bytes) de um anexo de resultado de teste."""
+        url = (
+            f"{self._base_url()}/test/Runs/{run_id}/Results/{result_id}"
+            f"/attachments/{attachment_id}?api-version={API_VERSION}"
+        )
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        if response.status_code >= 400:
+            raise AzureDevOpsError(f"Falha ao baixar anexo {attachment_id}: HTTP {response.status_code}")
+        return response.content
 
     # ------------------------------------------------------------------ #
     # Work Items existentes (para vincular Test Cases a eles)

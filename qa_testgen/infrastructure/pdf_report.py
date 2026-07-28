@@ -7,7 +7,10 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.lib.enums import TA_LEFT
-from reportlab.platypus import Paragraph, Spacer, Table, TableStyle, PageBreak, HRFlowable, KeepTogether, SimpleDocTemplate
+from reportlab.platypus import (
+    Paragraph, Spacer, Table, TableStyle, PageBreak, HRFlowable,
+    KeepTogether, SimpleDocTemplate, Image as RLImage,
+)
 
 from qa_testgen.config import TZ_BR, LOGO_PATH, COR_LARANJA, COR_CINZA_ESC, COR_CINZA_MED, COR_LARANJA_CLARO, COR_AZUL_CLARO, COR_CINZA_LIN, COR_BRANCO
 
@@ -66,7 +69,7 @@ class PdfReportGenerator:
         }
 
     @staticmethod
-    def _on_page(canvas, doc, project_name):
+    def _on_page(canvas, doc, project_name, author_name=""):
         canvas.saveState()
         w, h = A4
         canvas.setFillColor(COR_BRANCO)
@@ -84,7 +87,10 @@ class PdfReportGenerator:
         canvas.line(0, h - 52, w, h - 52)
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(COR_CINZA_MED)
-        canvas.drawString(18, 20, "Refuturiza – Gerado automaticamente pelo QA TestGen")
+        footer_left = "Refuturiza – Gerado automaticamente pelo QA TestGen"
+        if author_name:
+            footer_left += f" | Gerado por {PdfReportGenerator._esc(author_name)}"
+        canvas.drawString(18, 20, footer_left)
         canvas.drawRightString(w - 18, 20, f"Página {doc.page}")
         canvas.setStrokeColor(COR_LARANJA)
         canvas.setLineWidth(0.8)
@@ -92,10 +98,10 @@ class PdfReportGenerator:
         canvas.restoreState()
 
     @classmethod
-    def generate(cls, project_name: str, matriz: list, test_plans: list, test_cases: list) -> bytes:
+    def generate(cls, project_name: str, matriz: list, test_plans: list, test_cases: list, author_name: str = "") -> bytes:
         buffer = io.BytesIO()
         styles = cls._styles()
-        on_page = lambda canvas, doc: cls._on_page(canvas, doc, project_name)
+        on_page = lambda canvas, doc: cls._on_page(canvas, doc, project_name, author_name)
         doc = SimpleDocTemplate(
             buffer,
             pagesize=A4,
@@ -316,6 +322,218 @@ class PdfReportGenerator:
             story.append(KeepTogether([hdr, pre_t]))
             story.append(st_t)
             story.append(Spacer(1, 14))
+
+        doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+        return buffer.getvalue()
+
+    # ------------------------------------------------------------------ #
+    # Relatório de Testes (execução) — diferente da Documentação QA:
+    # documenta o que foi EXECUTADO no Azure DevOps, não o que foi planejado.
+    # ------------------------------------------------------------------ #
+    _STATUS_COLORS = {
+        'aprovado': (colors.HexColor('#1E8449'), colors.HexColor('#EAFAF1')),
+        'reprovado': (colors.HexColor('#C0392B'), colors.HexColor('#FDECEA')),
+        'pendente': (colors.HexColor('#7A7A7A'), colors.HexColor('#F0F0F0')),
+    }
+    _OUTCOME_LABELS = {
+        'Passed': 'Aprovado', 'Failed': 'Reprovado', 'Blocked': 'Bloqueado',
+        'NotApplicable': 'Não Aplicável', 'Not Run': 'Não Executado',
+        'Paused': 'Pausado', 'InProgress': 'Em Andamento', 'Ready': 'Pronto para Execução',
+    }
+
+    @classmethod
+    def _status_badge(cls, styles, value: str):
+        key = (value or '').strip().lower()
+        fg, bg = cls._STATUS_COLORS.get(key, (COR_CINZA_MED, COR_CINZA_LIN))
+        t = Table([[Paragraph(f"<b>{cls._esc(value or '—')}</b>", styles['cell'])]], colWidths=[3.2 * cm])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), bg),
+            ('TEXTCOLOR', (0, 0), (-1, -1), fg),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ]))
+        return t
+
+    @classmethod
+    def generate_execution_report(
+        cls,
+        project_name: str,
+        contexto: str,
+        ambiente: str,
+        status_geral: str,
+        escopo_proposito: str,
+        matriz: list,
+        test_plans: list,
+        test_cases: list,
+        resultados_por_caso: dict,
+        evidencias_por_caso: dict,
+        conclusao: str,
+        proximos_passos: str = "",
+        author_name: str = "",
+    ) -> bytes:
+        """
+        resultados_por_caso: {titulo_do_caso: "Passed"|"Failed"|... (outcome bruto do Azure DevOps)}
+        evidencias_por_caso: {titulo_do_caso: [(nome_arquivo, bytes_da_imagem), ...]}
+        """
+        buffer = io.BytesIO()
+        styles = cls._styles()
+        on_page = lambda canvas, doc: cls._on_page(canvas, doc, project_name, author_name)
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            leftMargin=1.8 * cm,
+            rightMargin=1.8 * cm,
+            topMargin=3.2 * cm,
+            bottomMargin=2.0 * cm,
+            title=f"Relatório de Testes – {project_name}",
+            author=author_name or "Refuturiza QA TestGen",
+        )
+        pw = doc.width
+        story = []
+
+        tc_numbers = {tc.get('titulo', ''): idx for idx, tc in enumerate(test_cases or [], start=1)}
+        coverage_by_mc_id = {}
+        for tc in test_cases or []:
+            tc_label = f"TC-{tc_numbers.get(tc.get('titulo', ''), 0):02d}"
+            for mc_id in (tc.get('requisitos_relacionados') or []):
+                coverage_by_mc_id.setdefault(str(mc_id), []).append(tc_label)
+
+        # ---- Capa / cabeçalho de identificação ----
+        story.append(Spacer(1, 0.4 * cm))
+        story.append(Paragraph("Relatório de Testes", styles['title']))
+        story.append(Paragraph(
+            f"Gerado em {datetime.now(TZ_BR).strftime('%d/%m/%Y às %H:%M')}"
+            + (f" por <b>{cls._esc(author_name)}</b>" if author_name else ""),
+            styles['subtitle'],
+        ))
+        story.append(HRFlowable(width="100%", thickness=2, color=COR_LARANJA, spaceAfter=14))
+
+        info_data = [
+            [Paragraph("<b>Projeto</b>", styles['cell']), Paragraph(cls._esc(project_name), styles['cell'])],
+            [Paragraph("<b>Contexto</b>", styles['cell']), Paragraph(cls._esc(contexto or '—'), styles['cell'])],
+            [Paragraph("<b>Ambiente</b>", styles['cell']), Paragraph(cls._esc(ambiente or '—'), styles['cell'])],
+            [Paragraph("<b>Status</b>", styles['cell']), cls._status_badge(styles, status_geral)],
+        ]
+        info_t = Table(info_data, colWidths=[3.5 * cm, pw - 3.5 * cm])
+        info_t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA_CLARO),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#EAD9CE')),
+        ]))
+        story.append(info_t)
+        story.append(Spacer(1, 16))
+
+        # ---- Escopo e Propósito ----
+        story.append(Paragraph("1. Escopo e Propósito", styles['section']))
+        story.append(Paragraph(cls._esc(escopo_proposito or '—').replace(chr(10), '<br/>'), styles['body']))
+
+        story.append(PageBreak())
+
+        # ---- Casos de Teste (com resultado) ----
+        story.append(Paragraph("2. Casos de Teste", styles['section']))
+        for idx, tc in enumerate(test_cases or [], start=1):
+            titulo = tc.get('titulo', f'Caso #{idx}')
+            pre = tc.get('pre_condicoes', '—')
+            outcome_raw = resultados_por_caso.get(titulo, '')
+            outcome_label = cls._OUTCOME_LABELS.get(outcome_raw, outcome_raw or 'Não Executado')
+
+            hdr = Table(
+                [[
+                    Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['tc_title']),
+                ]],
+                colWidths=[pw],
+            )
+            hdr.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            info_row = Table(
+                [[
+                    Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(cls._esc(pre), styles['cell']),
+                    Paragraph("<b>Resultado:</b>", styles['cell']), cls._status_badge(styles, outcome_label),
+                ]],
+                colWidths=[2.6 * cm, pw * 0.42, 2.2 * cm, pw - 2.6 * cm - pw * 0.42 - 2.2 * cm],
+            )
+            info_row.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA_CLARO),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            story.append(KeepTogether([hdr, info_row]))
+            story.append(Spacer(1, 10))
+
+        story.append(PageBreak())
+
+        # ---- Evidências ----
+        story.append(Paragraph("3. Evidências dos Cenários de Teste", styles['section']))
+        any_evidence = False
+        for idx, tc in enumerate(test_cases or [], start=1):
+            titulo = tc.get('titulo', f'Caso #{idx}')
+            imgs = evidencias_por_caso.get(titulo) or []
+            if not imgs:
+                continue
+            any_evidence = True
+            story.append(Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['subsection']))
+            for filename, img_bytes in imgs:
+                try:
+                    img_buf = io.BytesIO(img_bytes)
+                    rl_img = RLImage(img_buf)
+                    max_w = pw
+                    max_h = 9 * cm
+                    ratio = min(max_w / rl_img.imageWidth, max_h / rl_img.imageHeight, 1.0)
+                    rl_img.drawWidth = rl_img.imageWidth * ratio
+                    rl_img.drawHeight = rl_img.imageHeight * ratio
+                    story.append(rl_img)
+                    story.append(Paragraph(cls._esc(filename), styles['cell']))
+                    story.append(Spacer(1, 10))
+                except Exception:
+                    story.append(Paragraph(f"⚠ Não foi possível incorporar a evidência '{cls._esc(filename)}'.", styles['cell']))
+        if not any_evidence:
+            story.append(Paragraph("Nenhuma evidência (anexo) encontrada nos resultados de execução no Azure DevOps.", styles['body']))
+
+        story.append(PageBreak())
+
+        # ---- Matriz de Cobertura ----
+        story.append(Paragraph("4. Matriz de Cobertura de Testes", styles['section']))
+        if matriz:
+            hcols = ["id", "funcionalidade", "requisito", "cenario", "categoria", "prioridade", "criticidade"]
+            labels = ["ID", "Funcionalidade", "Requisito", "Cenário", "Categoria", "Prioridade", "Criticidade"]
+            widths = [1.6 * cm, 3.4 * cm, 2.2 * cm, 5.2 * cm, 3 * cm, 2.2 * cm, 2.4 * cm]
+            data = [[Paragraph(label, styles['cell_head']) for label in labels]]
+            for row in matriz:
+                data.append([Paragraph(cls._esc(row.get(col, '') or ''), styles['cell']) for col in hcols])
+            table = Table(data, colWidths=widths, repeatRows=1)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), COR_LARANJA),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [COR_BRANCO, COR_CINZA_LIN]),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]))
+            story.append(table)
+        else:
+            story.append(Paragraph("Nenhuma entrada na Matriz.", styles['body']))
+
+        story.append(PageBreak())
+
+        # ---- Conclusão e Governança ----
+        story.append(Paragraph("5. Conclusão e Governança", styles['section']))
+        story.append(Paragraph(cls._esc(conclusao or '—').replace(chr(10), '<br/>'), styles['body']))
+        if proximos_passos and proximos_passos.strip():
+            story.append(Spacer(1, 10))
+            story.append(Paragraph("Próximos Passos e Sugestões", styles['subsection']))
+            story.append(Paragraph(cls._esc(proximos_passos).replace(chr(10), '<br/>'), styles['body']))
 
         doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
         return buffer.getvalue()

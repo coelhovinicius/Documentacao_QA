@@ -67,3 +67,20 @@ class AccessControlClient:
         num login futuro sem uma nova solicitação/aprovação.
         """
         self._call("consume", username=username)
+
+    # ------------------------------------------------------------------ #
+    # Permissões granulares (ex.: 'azure_devops', 'execution_report') —
+    # diferente da lista de aprovadores (quem pode aprovar login de outros),
+    # essas controlam quem pode acessar áreas específicas do app.
+    # ------------------------------------------------------------------ #
+    def list_permission(self, permission: str) -> list:
+        data = self._call("list_permission", permission=permission)
+        return data.get("users", [])
+
+    def grant_permission(self, username: str, permission: str) -> list:
+        data = self._call("grant_permission", username=username, permission=permission)
+        return data.get("users", [])
+
+    def revoke_permission(self, username: str, permission: str) -> list:
+        data = self._call("revoke_permission", username=username, permission=permission)
+        return data.get("users", [])

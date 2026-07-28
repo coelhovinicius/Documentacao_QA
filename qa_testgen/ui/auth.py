@@ -121,6 +121,23 @@ def is_approver(config, username: str) -> bool:
         return False
 
 
+def has_permission(config, username: str, permission: str) -> bool:
+    """
+    Checa se `username` tem uma permissão granular específica (ex.:
+    'azure_devops', 'execution_report'). O dono do app sempre tem todas.
+    Em caso de falha ao consultar o n8n, nega por padrão (mais seguro do
+    que liberar acesso silenciosamente se a checagem falhar).
+    """
+    if not username:
+        return False
+    if username == config.owner_username:
+        return True
+    try:
+        return username in AccessControlClient(config).list_permission(permission)
+    except Exception:
+        return False
+
+
 def render_pending_approvals_panel(config):
     """Painel de solicitações pendentes — só visível pra quem é aprovador."""
     username = st.session_state.get(SESSION_USER_KEY, "")
@@ -217,6 +234,62 @@ def render_admin_panel(config):
                 try:
                     client.add_approver(new_username)
                     st.success(f"{new_username} adicionado como aprovador.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"❌ {error}")
+
+    st.divider()
+    _render_permission_management(config, client, "azure_devops", "🔗 Acesso à Integração com Azure DevOps (Passo 7)")
+
+    st.divider()
+    _render_permission_management(config, client, "execution_report", "📊 Acesso ao Relatório de Testes (Passo 8)")
+
+
+def _render_permission_management(config, client, permission: str, title: str):
+    """
+    Bloco reutilizável de cadastro/remoção pra uma permissão granular
+    específica — usado tanto pra Azure DevOps quanto pro Relatório de Testes.
+    """
+    st.subheader(title)
+    st.caption(
+        "Além de você (dono do app, que sempre tem acesso), essas pessoas também podem acessar essa área."
+    )
+    try:
+        authorized = client.list_permission(permission)
+    except Exception as error:
+        st.error(f"❌ Não foi possível carregar a lista: {error}")
+        return
+
+    if authorized:
+        for a in authorized:
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                st.write(f"- {a}")
+            with c2:
+                if st.button("Remover", key=f"remove_perm_{permission}_{a}"):
+                    try:
+                        client.revoke_permission(a, permission)
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"❌ {error}")
+    else:
+        st.caption("Ninguém além de você tem acesso ainda.")
+
+    known_users = sorted(u for u in _get_users() if u != config.owner_username)
+    with st.form(f"add_perm_form_{permission}", clear_on_submit=True):
+        if known_users:
+            new_username = st.selectbox("Usuário a autorizar", options=known_users, key=f"perm_select_{permission}")
+        else:
+            new_username = st.text_input("Usuário a autorizar", key=f"perm_input_{permission}")
+        submitted = st.form_submit_button("➕ Autorizar", type="primary", key=f"perm_submit_{permission}")
+        if submitted and new_username and new_username.strip():
+            new_username = new_username.strip()
+            if new_username not in _get_users():
+                st.error("❌ Esse nome de usuário não existe nas credenciais configuradas (`secrets.toml`).")
+            else:
+                try:
+                    client.grant_permission(new_username, permission)
+                    st.success(f"{new_username} autorizado.")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ {error}")

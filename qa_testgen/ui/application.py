@@ -1,6 +1,7 @@
 import os
 import base64
 import difflib
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -34,7 +35,7 @@ from qa_testgen.ui.dialogs import (
     confirm_new_analysis_modal,
 )
 from qa_testgen.ui.auth import (
-    require_login, render_logout_control, is_approver,
+    require_login, render_logout_control, is_approver, has_permission,
     render_pending_approvals_panel, render_admin_panel, SESSION_USER_KEY,
 )
 
@@ -153,12 +154,34 @@ class UserInterface:
         else:
             st.error(f"❌ Fatal Error: {error}")
 
+    def _get_permission_cached(self, permission: str) -> bool:
+        """
+        Checa uma permissão granular (ex.: 'azure_devops', 'execution_report')
+        via n8n, mas só uma vez por sessão — resultado fica em cache. Sem
+        isso, cada renderização da barra de progresso faria uma chamada de
+        rede, reintroduzindo o mesmo tipo de lentidão que já corrigimos
+        antes (algo rodando sem necessidade em toda interação).
+        Se o admin conceder/revogar acesso enquanto alguém já está logado,
+        essa pessoa só vê a mudança no próximo login — troca aceitável pelo
+        ganho de performance.
+        """
+        cache_key = f'_perm_cache_{permission}'
+        if self.state.get(cache_key) is None:
+            username = st.session_state.get(SESSION_USER_KEY, "")
+            self.state.set(cache_key, has_permission(self.config, username, permission))
+        return bool(self.state.get(cache_key))
+
     def _force_sidebar_collapsed(self):
         """
-        Recolhe a sidebar automaticamente a cada rerun (troca de tela, upload,
-        clique em botão etc.), mesmo que o usuário a tenha aberto manualmente
-        no rerun anterior. `initial_sidebar_state="collapsed"` só vale para o
-        primeiro carregamento da página, então isso complementa via JS.
+        Recolhe a sidebar automaticamente quando o PASSO muda (navegação
+        entre telas), não em toda interação — isso evita injetar um iframe
+        com JS (componente caro: cria/destrói um documento HTML próprio) em
+        toda troca de dropdown, clique de botão etc., que era a causa real
+        da lentidão sentida nas transições do app inteiro.
+
+        `initial_sidebar_state="collapsed"` cuida do primeiro carregamento;
+        isso aqui cobre só a recolhida ao trocar de passo, que é quando a
+        sidebar realisticamente ficaria aberta sem querer.
 
         Usa retry porque no momento em que este script roda, a sidebar pode
         ainda não estar montada no DOM (condição de corrida do rerun).
@@ -263,15 +286,26 @@ class UserInterface:
             unsafe_allow_html=True,
         )
 
+    @staticmethod
+    @st.cache_data(show_spinner=False)
+    def _load_logo_b64(path_str: str) -> str:
+        """
+        Lê e codifica o logo em base64 uma única vez (cache do Streamlit,
+        compartilhado entre sessões) — antes isso rodava do zero em toda
+        renderização (2x por vez: sidebar + cabeçalho principal), lendo o
+        arquivo do disco sem necessidade.
+        """
+        if not Path(path_str).exists():
+            return ""
+        try:
+            with open(path_str, 'rb') as f:
+                return base64.b64encode(f.read()).decode('utf-8')
+        except Exception:
+            return ""
+
     def _header(self):
         with st.sidebar:
-            sidebar_logo_b64 = ""
-            if Path(LOGO_PATH).exists():
-                try:
-                    with open(LOGO_PATH, 'rb') as f:
-                        sidebar_logo_b64 = base64.b64encode(f.read()).decode('utf-8')
-                except Exception:
-                    pass
+            sidebar_logo_b64 = self._load_logo_b64(str(LOGO_PATH))
             if sidebar_logo_b64:
                 st.markdown(
                     f"""
@@ -295,6 +329,17 @@ class UserInterface:
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
+            if st.button("🏠 Início", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_home_sidebar"):
+                # Diferente de "Nova Análise": só navega pro Passo 1, sem
+                # apagar nada — tudo que já foi preenchido continua lá, e
+                # dá pra voltar a qualquer passo já feito normalmente.
+                if self._has_editing_in_progress():
+                    confirm_navigate_away_modal(1)
+                else:
+                    clear_widget_states()
+                    self._set_step(1)
+                    st.rerun()
+
             st.divider()
             if st.button("ℹ️ Sobre o app", use_container_width=True, key="btn_about_sidebar", disabled=self.state.get('is_processing')):
                 self.state.set('show_about_page', True)
@@ -316,13 +361,7 @@ class UserInterface:
                     self.state.set('show_pending_approvals_page', False)
                     st.rerun()
 
-        img_b64 = ""
-        if Path(LOGO_PATH).exists():
-            try:
-                with open(LOGO_PATH, 'rb') as f:
-                    img_b64 = base64.b64encode(f.read()).decode('utf-8')
-            except Exception:
-                pass
+        img_b64 = self._load_logo_b64(str(LOGO_PATH))
 
         st.markdown(
             f"""
@@ -381,6 +420,9 @@ class UserInterface:
             'generate_plans': 'Gerando os Planos de Teste',
             'build_artifacts': 'Construindo os artefatos finais',
             'fetch_wi': 'Buscando Work Items do Board no Azure DevOps',
+            'fetch_report_plans': 'Buscando Test Plans do projeto',
+            'generate_execution_report': 'Buscando resultados de execução e gerando o Relatório de Testes',
+            'suggest_report_narrative': 'Analisando resultados e gerando sugestão de texto com IA',
             'fetch_orgs': 'Carregando organizações acessíveis a este PAT',
             'fetch_projects': 'Buscando projetos da organização selecionada',
             'fetch_area_paths': 'Buscando Area Paths do projeto selecionado',
@@ -457,18 +499,33 @@ class UserInterface:
                 st.rerun()
 
     def _progress(self):
-        labels = ["📄 Upload", "💬 Dúvidas", "📊 Matriz", "📋 Casos", "📁 Planos", "⬇️ Download", "🔗 Azure DevOps"]
+        steps = [
+            (1, "📄 Upload"), (2, "💬 Dúvidas"), (3, "📊 Matriz"), (4, "📋 Casos"),
+            (5, "📁 Planos"), (6, "⬇️ Download"),
+        ]
+        if self._get_permission_cached("azure_devops"):
+            steps.append((7, "🔗 Azure DevOps"))
+        if self._get_permission_cached("execution_report"):
+            steps.append((8, "📊 Relatório"))
+
         current_step = self.state.get('step')
         max_step = self.state.get('max_step', current_step)
         completed_steps = set(self.state.get('completed_steps') or [])
         is_processing = self.state.get('is_processing')
 
         with st.container():
-            cols = st.columns(7)
-            for i, (col, label) in enumerate(zip(cols, labels), start=1):
+            cols = st.columns(len(steps))
+            for col, (i, label) in zip(cols, steps):
                 with col:
                     is_current = i == current_step
-                    is_accessible = self.can_access_step(i, current_step, max_step, completed_steps, is_processing)
+                    if i == 8:
+                        # Relatório de Testes não depende de terminar o
+                        # assistente sequencial (consulta dados que já
+                        # existem no Azure DevOps) — só da permissão, que já
+                        # filtrou se esse botão aparece ou não.
+                        is_accessible = not is_processing
+                    else:
+                        is_accessible = self.can_access_step(i, current_step, max_step, completed_steps, is_processing)
 
                     if is_current:
                         st.markdown(
@@ -1280,17 +1337,43 @@ class UserInterface:
             )
 
         st.divider()
+        author_name = st.text_input(
+            "Nome de quem está gerando este relatório",
+            value=self.state.get('author_name', ''),
+            key="author_name_input",
+            help="Aparece no rodapé do PDF. Se você já validou seu PAT no Passo 7 antes, isso é preenchido automaticamente.",
+        )
+        self.state.set('author_name', author_name)
+
+        st.divider()
         col_pdf, col_azure = st.columns(2)
         with col_pdf:
             st.markdown("### 📑 Documentação Técnica – PDF Report")
             st.caption("Relatório completo: Matriz de Cobertura, Planos de Teste e Casos de Teste.")
-            with st.spinner("Gerando binários do PDF… Aguarde um momento..."):
-                pdf_bytes = PdfReportGenerator.generate(
-                    project,
-                    self.state.get('matriz'),
-                    self.state.get('test_plans'),
-                    self.state.get('test_cases'),
-                )
+            # Gerar PDF é um trabalho relativamente pesado (várias tabelas,
+            # ReportLab) — antes rodava de novo em TODA interação nessa tela
+            # (até digitar uma letra no campo de nome já disparava tudo de
+            # novo). Agora só regenera se o conteúdo realmente mudou.
+            fingerprint = hashlib.md5(
+                json.dumps(
+                    [project, self.state.get('matriz'), self.state.get('test_plans'),
+                     self.state.get('test_cases'), author_name],
+                    sort_keys=True, default=str,
+                ).encode('utf-8')
+            ).hexdigest()
+            if self.state.get('pdf_report_fingerprint') != fingerprint:
+                with st.spinner("Gerando binários do PDF… Aguarde um momento..."):
+                    pdf_bytes = PdfReportGenerator.generate(
+                        project,
+                        self.state.get('matriz'),
+                        self.state.get('test_plans'),
+                        self.state.get('test_cases'),
+                        author_name=author_name,
+                    )
+                self.state.set('pdf_report_bytes', pdf_bytes)
+                self.state.set('pdf_report_fingerprint', fingerprint)
+            else:
+                pdf_bytes = self.state.get('pdf_report_bytes')
             st.download_button(
                 "⬇️ Baixar Documentação Técnica (PDF)",
                 data=pdf_bytes,
@@ -1318,14 +1401,14 @@ class UserInterface:
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
-    def _render_step7_back_and_new(self, key_suffix: str):
+    def _render_step7_back_and_new(self, key_suffix: str, back_step: int = 6):
         c1, c2 = st.columns(2)
         with c1:
             if st.button(
                 "← Voltar", use_container_width=True,
                 disabled=self.state.get('is_processing'), key=f"btn_back_step7_{key_suffix}",
             ):
-                self._set_step(6)
+                self._set_step(back_step)
                 st.rerun()
         with c2:
             if st.button(
@@ -1335,15 +1418,19 @@ class UserInterface:
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
-    def step_7(self):
-        st.subheader("Passo 7 – Integração com Azure DevOps")
+    def _setup_azure_devops_connection(self):
+        """
+        Renderiza PAT + Organização + Projeto + Area Path — compartilhado
+        entre o Passo 7 (Integração) e o Passo 8 (Relatório de Testes), já
+        que os dois precisam da mesma conexão com o Azure DevOps. Como só
+        um step roda por vez, reaproveitar as mesmas widget keys aqui é
+        seguro (nunca os dois renderizam na mesma execução do script).
 
-        if not AZURE_DEVOPS_INTEGRATION_ENABLED:
-            st.info("🛠️ Em breve! Essa integração está temporariamente desativada.")
-            st.divider()
-            self._render_step7_back_and_new("disabled")
-            return
-
+        Retorna (ado_client, ado_org, ado_project, area_path) quando tudo
+        está pronto, ou None se ainda falta algo — nesse caso, a mensagem
+        já foi mostrada, e quem chamou só precisa dar `return` (o botão
+        Voltar/Nova Análise fica por conta de quem chamou).
+        """
         st.markdown("#### 🔧 Configuração do Azure DevOps")
         st.caption(
             "Organização, Projeto e Area Path vêm direto do Azure DevOps — nada aqui é digitado livremente."
@@ -1387,9 +1474,7 @@ class UserInterface:
 
         if not user_pat:
             st.info("Informe seu PAT acima para continuar.")
-            st.divider()
-            self._render_step7_back_and_new("no_pat")
-            return
+            return None
 
         # 1) Organizações — busca automática (é só 1 chamada rápida, ou nem
         # isso quando cai no fallback abaixo), então não precisa de um botão
@@ -1431,6 +1516,18 @@ class UserInterface:
             self.state.set('ado_orgs_fetch_done', True)
             self.state.set('ado_last_validated_pat', user_pat)
 
+            # Aproveita o PAT já validado pra preencher automaticamente o
+            # nome de quem está gerando os relatórios (não sobrescreve se a
+            # pessoa já digitou um nome manualmente antes, no Passo 6).
+            if self.state.get('ado_pat_validated') and not self.state.get('author_name'):
+                try:
+                    probe_name = AzureDevOpsClient("", "", user_pat)
+                    display_name = probe_name.get_profile_display_name()
+                    if display_name:
+                        self.state.set('author_name', display_name)
+                except Exception:
+                    pass  # não crítico — a pessoa sempre pode digitar manualmente no Passo 6
+
         if not self.state.get('ado_pat_validated'):
             st.error(
                 "❌ Não foi possível validar esse PAT. Confira se ele está correto, não "
@@ -1440,9 +1537,7 @@ class UserInterface:
             fetch_error = self.state.get('ado_orgs_fetch_error')
             if fetch_error:
                 st.caption(f"Detalhe do erro: {fetch_error}")
-            st.divider()
-            self._render_step7_back_and_new("invalid_pat")
-            return
+            return None
 
         orgs = self.state.get('ado_accessible_orgs') or []
 
@@ -1463,9 +1558,7 @@ class UserInterface:
             if st.button("🔄 Tentar novamente", disabled=self.state.get('is_processing'), key="btn_retry_orgs"):
                 self.state.set('ado_orgs_fetch_done', False)
                 st.rerun()
-            st.divider()
-            self._render_step7_back_and_new("no_orgs_yet")
-            return
+            return None
 
         previous_org = self.state.get('ado_org_override')
         default_org = previous_org if previous_org in orgs else (
@@ -1520,9 +1613,7 @@ class UserInterface:
         if not projects or self.state.get('ado_projects_org') != ado_org:
             # Ainda não buscou projetos desta organização — a tela para por
             # aqui de propósito: só Organização + botão ficam visíveis.
-            st.divider()
-            self._render_step7_back_and_new("no_projects_yet")
-            return
+            return None
 
         PLACEHOLDER = "---"
         project_options = [PLACEHOLDER] + projects
@@ -1549,9 +1640,7 @@ class UserInterface:
         if not ado_project:
             # Nenhum projeto real escolhido ainda (ainda em "---") — não
             # revela Area Path/Work Items até o usuário escolher de verdade.
-            st.divider()
-            self._render_step7_back_and_new("no_project_selected")
-            return
+            return None
 
         ado_client = AzureDevOpsClient(ado_org, ado_project, user_pat)
 
@@ -1560,9 +1649,7 @@ class UserInterface:
                 "Preencha Organização e Projeto acima. Além disso, `AZURE_DEVOPS_PAT` precisa "
                 "estar configurado no `secrets.toml` (não é editável nesta tela, por segurança)."
             )
-            st.divider()
-            self._render_step7_back_and_new("unconfigured")
-            return
+            return None
 
         st.divider()
 
@@ -1615,6 +1702,30 @@ class UserInterface:
         self.state.set('ado_area_path_choice', area_path_choice)
         area_path = ado_project if area_path_choice == PLACEHOLDER else area_path_choice
         self.state.set('ado_area_path', area_path)
+
+        return ado_client, ado_org, ado_project, area_path
+
+    def step_7(self):
+        st.subheader("Passo 7 – Integração com Azure DevOps")
+
+        if not self._get_permission_cached("azure_devops"):
+            st.error("❌ Você não tem permissão para acessar a integração com o Azure DevOps.")
+            st.divider()
+            self._render_step7_back_and_new("no_permission")
+            return
+
+        if not AZURE_DEVOPS_INTEGRATION_ENABLED:
+            st.info("🛠️ Em breve! Essa integração está temporariamente desativada.")
+            st.divider()
+            self._render_step7_back_and_new("disabled")
+            return
+
+        conn = self._setup_azure_devops_connection()
+        if conn is None:
+            st.divider()
+            self._render_step7_back_and_new("incomplete_setup")
+            return
+        ado_client, ado_org, ado_project, area_path = conn
 
         with st.container(key="azure_blue_btn_fetch_wi"):
             st.button(
@@ -1848,6 +1959,287 @@ class UserInterface:
 
         st.divider()
         self._render_step7_back_and_new("main")
+
+    def step_8(self):
+        st.subheader("Passo 8 – Relatório de Testes (execução)")
+
+        if not self._get_permission_cached("execution_report"):
+            st.error("❌ Você não tem permissão para acessar o Relatório de Testes.")
+            st.divider()
+            self._render_step7_back_and_new("no_permission_s8", back_step=1)
+            return
+
+        conn = self._setup_azure_devops_connection()
+        if conn is None:
+            st.divider()
+            self._render_step7_back_and_new("incomplete_setup_s8", back_step=7)
+            return
+        ado_client, ado_org, ado_project, area_path = conn
+
+        st.divider()
+        self._render_execution_report_section(ado_client)
+
+        st.divider()
+        self._render_step7_back_and_new("main_s8", back_step=7)
+
+    def _render_execution_report_section(self, ado_client):
+        st.markdown("### 📊 Relatório de Testes (execução)")
+        st.caption(
+            "Documenta o que foi EXECUTADO no Azure DevOps (diferente do PDF do Passo 6, que "
+            "documenta o que foi planejado). Busca o Test Plan escolhido, os resultados de "
+            "execução e as evidências (anexos) direto do Azure DevOps."
+        )
+
+        with st.container(key="azure_blue_btn_fetch_report_plans"):
+            st.button(
+                "🔍 Buscar Test Plans deste Projeto",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_report_plans",
+                on_click=self.trigger_action,
+                args=("fetch_report_plans",),
+            )
+        if self.state.get('current_action') == 'fetch_report_plans' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Buscando Test Plans..."):
+                    plans = ado_client.list_test_plans()
+                self.state.set('report_available_plans', plans)
+                if not plans:
+                    st.warning("Nenhum Test Plan encontrado neste projeto.")
+            except AzureDevOpsError as error:
+                st.error(f"❌ {error}")
+                self.state.set('report_available_plans', [])
+            except Exception as error:
+                st.error(f"❌ Erro inesperado: {error}")
+                self.state.set('report_available_plans', [])
+            self.clear_action()
+            st.rerun()
+
+        available_plans = self.state.get('report_available_plans') or []
+        if not available_plans:
+            return
+
+        plan_labels = {f"{p['id']} - {p['name']}": p for p in available_plans}
+        chosen_label = st.selectbox(
+            "Test Plan a reportar",
+            options=list(plan_labels.keys()),
+            disabled=self.state.get('is_processing'),
+            key="report_plan_select",
+        )
+        chosen_plan = plan_labels[chosen_label]
+
+        with st.container(key="azure_blue_btn_suggest_narrative"):
+            st.button(
+                "🤖 Sugerir Contexto/Escopo/Conclusão com IA",
+                disabled=self.state.get('is_processing'),
+                key="btn_suggest_report_narrative",
+                on_click=self.trigger_action,
+                args=("suggest_report_narrative",),
+                help="A IA analisa os resultados desse Test Plan e sugere os textos abaixo — você revisa e edita antes de gerar o PDF.",
+            )
+        if self.state.get('current_action') == 'suggest_report_narrative' and not self.state.get('show_interrupt_modal'):
+            self._suggest_report_narrative(ado_client, chosen_plan)
+
+        st.caption("Os campos abaixo já vêm com sugestão da IA (se você clicou no botão acima) — revise e edite livremente antes de gerar o PDF.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            contexto = st.text_input(
+                "Contexto",
+                value=self.state.get('report_contexto', ''),
+                key="report_contexto_input",
+                help="Ex.: 'Testes de regressão pós-deploy da Sprint 14'",
+            )
+        with col2:
+            ambiente_opts = ["Homologação", "Produção"]
+            ambiente_default = 0
+            plan_name_lower = chosen_plan["name"].lower()
+            if "prod" in plan_name_lower:
+                ambiente_default = 1
+            ambiente = st.selectbox(
+                "Ambiente",
+                options=ambiente_opts,
+                index=ambiente_default,
+                disabled=self.state.get('is_processing'),
+                key="report_ambiente_select",
+                help="Pré-selecionado por um palpite a partir do nome do Test Plan — confirme antes de gerar.",
+            )
+        self.state.set('report_contexto', contexto)
+
+        escopo_proposito = st.text_area(
+            "Escopo e Propósito",
+            value=self.state.get('report_escopo', ''),
+            key="report_escopo_input",
+            help="Explique brevemente o escopo e o propósito dos testes executados.",
+            height=100,
+        )
+        self.state.set('report_escopo', escopo_proposito)
+
+        conclusao = st.text_area(
+            "Conclusão",
+            value=self.state.get('report_conclusao', ''),
+            key="report_conclusao_input",
+            height=100,
+        )
+        self.state.set('report_conclusao', conclusao)
+
+        proximos_passos = st.text_area(
+            "Próximos Passos e Sugestões (opcional)",
+            value=self.state.get('report_proximos', ''),
+            key="report_proximos_input",
+            height=80,
+        )
+        self.state.set('report_proximos', proximos_passos)
+
+        with st.container(key="azure_blue_btn_generate_report"):
+            st.button(
+                "📊 Buscar Resultados e Gerar Relatório",
+                type="primary",
+                use_container_width=True,
+                disabled=self.state.get('is_processing') or not contexto or not escopo_proposito or not conclusao,
+                key="btn_generate_execution_report",
+                on_click=self.trigger_action,
+                args=("generate_execution_report",),
+            )
+        if not (contexto and escopo_proposito and conclusao):
+            st.caption("Preencha Contexto, Escopo e Propósito, e Conclusão para habilitar a geração.")
+
+        if self.state.get('current_action') == 'generate_execution_report' and not self.state.get('show_interrupt_modal'):
+            self._generate_execution_report(ado_client, chosen_plan, contexto, ambiente, escopo_proposito, conclusao, proximos_passos)
+
+        report_bytes = self.state.get('report_pdf_bytes')
+        if report_bytes:
+            safe_name = (self.state.get('project_name') or 'projeto').replace(' ', '_')
+            st.download_button(
+                "⬇️ Baixar Relatório de Testes (PDF)",
+                data=report_bytes,
+                file_name=f"Relatorio_Testes_{safe_name}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+            )
+            for warn in self.state.get('report_warnings') or []:
+                st.caption(f"ℹ️ {warn}")
+
+    def _suggest_report_narrative(self, ado_client, plan: dict):
+        try:
+            with st.spinner("Analisando resultados do Test Plan para sugerir os textos..."):
+                summary = ado_client.get_test_plan_execution_summary(plan["id"])
+                points = summary.get("points", [])
+                total = len(points)
+                passed = sum(1 for p in points if p.get("outcome") == "Passed")
+                failed = sum(1 for p in points if p.get("outcome") == "Failed")
+                outros = total - passed - failed
+                resumo_resultados = (
+                    f"{total} casos de teste no Test Plan '{plan['name']}'. "
+                    f"{passed} aprovados, {failed} reprovados, {outros} em outro status "
+                    "(bloqueado/não executado/não aplicável)."
+                )
+
+                resp = self.client.trigger_execution_report_narrative(
+                    nome_projeto=self.state.get('project_name') or plan['name'],
+                    nome_plano=plan['name'],
+                    resumo_resultados=resumo_resultados,
+                    matriz=self.state.get('matriz') or [],
+                )
+
+            contexto = resp.get('contexto', '')
+            escopo = resp.get('escopo_proposito', '')
+            conclusao = resp.get('conclusao', '')
+            proximos = resp.get('proximos_passos', '')
+
+            self.state.set('report_contexto', contexto)
+            self.state.set('report_escopo', escopo)
+            self.state.set('report_conclusao', conclusao)
+            self.state.set('report_proximos', proximos)
+
+            # Streamlit só respeita "value=" na primeira renderização do
+            # widget — depois disso, precisa sobrescrever o session_state
+            # do próprio widget diretamente pra sugestão da IA aparecer.
+            st.session_state['report_contexto_input'] = contexto
+            st.session_state['report_escopo_input'] = escopo
+            st.session_state['report_conclusao_input'] = conclusao
+            st.session_state['report_proximos_input'] = proximos
+        except Exception as error:
+            st.error(f"❌ Não foi possível gerar a sugestão da IA: {error}")
+
+        self.clear_action()
+        st.rerun()
+
+    def _generate_execution_report(self, ado_client, plan: dict, contexto: str, ambiente: str,
+                                     escopo_proposito: str, conclusao: str, proximos_passos: str):
+        warnings = []
+        resultados_por_caso = {}
+        evidencias_por_caso = {}
+
+        test_cases = self.state.get('test_cases') or []
+        case_ids = dict(self.state.get('ado_test_case_ids') or {})  # titulo -> id no Azure DevOps
+        id_to_titulo = {v: k for k, v in case_ids.items()}
+
+        try:
+            with st.spinner(f"Buscando resultados de execução do Test Plan '{plan['name']}'..."):
+                summary = ado_client.get_test_plan_execution_summary(plan["id"])
+            warnings.extend(summary.get("warnings", []))
+
+            outcomes_seen = set()
+            for point in summary.get("points", []):
+                case_id = point.get("case_id")
+                titulo = id_to_titulo.get(case_id) or point.get("case_title")
+                if not titulo:
+                    continue
+                outcome = point.get("outcome", "Not Run")
+                resultados_por_caso[titulo] = outcome
+                outcomes_seen.add(outcome)
+
+                run_id, result_id = point.get("run_id"), point.get("result_id")
+                if run_id and result_id:
+                    try:
+                        attachments = ado_client.get_test_result_attachments(run_id, result_id)
+                        imgs = []
+                        for att in attachments:
+                            try:
+                                content = ado_client.download_test_result_attachment(run_id, result_id, att["id"])
+                                imgs.append((att.get("fileName", "evidencia"), content))
+                            except Exception as error:
+                                warnings.append(f"Falha ao baixar evidência de '{titulo}': {error}")
+                        if imgs:
+                            evidencias_por_caso[titulo] = imgs
+                    except Exception as error:
+                        warnings.append(f"Falha ao listar evidências de '{titulo}': {error}")
+
+            # Status geral: Reprovado se qualquer caso falhou; Aprovado se
+            # todos passaram; Pendente se não há execução suficiente ainda.
+            if "Failed" in outcomes_seen:
+                status_geral = "Reprovado"
+            elif outcomes_seen and outcomes_seen.issubset({"Passed", "NotApplicable"}):
+                status_geral = "Aprovado"
+            else:
+                status_geral = "Pendente"
+
+            with st.spinner("Gerando o PDF do Relatório de Testes..."):
+                pdf_bytes = PdfReportGenerator.generate_execution_report(
+                    project_name=self.state.get('project_name') or plan['name'],
+                    contexto=contexto,
+                    ambiente=ambiente,
+                    status_geral=status_geral,
+                    escopo_proposito=escopo_proposito,
+                    matriz=self.state.get('matriz') or [],
+                    test_plans=self.state.get('test_plans') or [],
+                    test_cases=test_cases,
+                    resultados_por_caso=resultados_por_caso,
+                    evidencias_por_caso=evidencias_por_caso,
+                    conclusao=conclusao,
+                    proximos_passos=proximos_passos,
+                    author_name=self.state.get('author_name', ''),
+                )
+            self.state.set('report_pdf_bytes', pdf_bytes)
+            self.state.set('report_warnings', warnings)
+        except AzureDevOpsError as error:
+            st.error(f"❌ {error}")
+        except Exception as error:
+            st.error(f"❌ Erro inesperado ao gerar o relatório: {error}")
+
+        self.clear_action()
+        st.rerun()
 
     def _suggest_ado_links(self, ado_client, board_items: list, test_cases: list):
         # Busca, pra cada Work Item, quais Casos de Teste JÁ estão vinculados
@@ -2301,7 +2693,6 @@ class UserInterface:
             return
 
         self._inject_ui_styles()
-        self._force_sidebar_collapsed()
         self._header()
         render_logout_control()
         
@@ -2309,6 +2700,7 @@ class UserInterface:
         current_step = self.state.get('step')
         if current_step != self.state.get('last_viewed_step'):
             self.state.set('last_viewed_step', current_step)
+            self._force_sidebar_collapsed()
             st.markdown(
                 """
                 <svg onload="
@@ -2362,3 +2754,5 @@ class UserInterface:
             self.step_6()
         elif step == 7:
             self.step_7()
+        elif step == 8:
+            self.step_8()
