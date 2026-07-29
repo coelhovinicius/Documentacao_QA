@@ -36,7 +36,7 @@ from qa_testgen.ui.dialogs import (
 )
 from qa_testgen.ui.auth import (
     require_login, render_logout_control, is_approver, has_permission,
-    render_pending_approvals_panel, render_admin_panel, SESSION_USER_KEY,
+    render_admin_panel, SESSION_USER_KEY,
 )
 
 # Liga/desliga a seção de integração direta com o Azure DevOps no Passo 6.
@@ -343,26 +343,16 @@ class UserInterface:
             st.divider()
             if st.button("ℹ️ Sobre o app", use_container_width=True, key="btn_about_sidebar", disabled=self.state.get('is_processing')):
                 self.state.set('show_about_page', True)
-                self.state.set('show_pending_approvals_page', False)
                 self.state.set('show_admin_page', False)
                 self.state.set('show_execution_report_page', False)
                 self.state.set('show_wi_generation_page', False)
                 st.rerun()
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
-            if is_approver(self.config, current_username):
-                if st.button("🔔 Solicitações Pendentes", use_container_width=True, key="btn_pending_sidebar", disabled=self.state.get('is_processing')):
-                    self.state.set('show_pending_approvals_page', True)
-                    self.state.set('show_about_page', False)
-                    self.state.set('show_admin_page', False)
-                    self.state.set('show_execution_report_page', False)
-                    self.state.set('show_wi_generation_page', False)
-                    st.rerun()
             if self._get_permission_cached("azure_devops"):
                 if st.button("🎯 Gerar a partir de Work Items", use_container_width=True, key="btn_wigen_sidebar", disabled=self.state.get('is_processing')):
                     self.state.set('show_wi_generation_page', True)
                     self.state.set('show_about_page', False)
-                    self.state.set('show_pending_approvals_page', False)
                     self.state.set('show_admin_page', False)
                     self.state.set('show_execution_report_page', False)
                     st.rerun()
@@ -370,15 +360,18 @@ class UserInterface:
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
                     self.state.set('show_execution_report_page', True)
                     self.state.set('show_about_page', False)
-                    self.state.set('show_pending_approvals_page', False)
                     self.state.set('show_admin_page', False)
                     self.state.set('show_wi_generation_page', False)
                     st.rerun()
-            if current_username == self.config.owner_username:
+            if is_approver(self.config, current_username):
+                # "Administração" agora fica visível pra qualquer aprovador,
+                # não só pro dono — a página em si mostra Solicitações
+                # Pendentes pra todo mundo, mas só o dono vê o cadastro de
+                # aprovadores/permissões (isso é decidido dentro da própria
+                # página, não aqui).
                 if st.button("🛡️ Administração", use_container_width=True, key="btn_admin_sidebar", disabled=self.state.get('is_processing')):
                     self.state.set('show_admin_page', True)
                     self.state.set('show_about_page', False)
-                    self.state.set('show_pending_approvals_page', False)
                     self.state.set('show_execution_report_page', False)
                     self.state.set('show_wi_generation_page', False)
                     st.rerun()
@@ -797,6 +790,35 @@ class UserInterface:
                 st.error("Não foi possível extrair texto.")
                 self.clear_action()
             else:
+                # Extrai imagens relevantes do corpo dos documentos (ignora
+                # cabeçalho/rodapé, ícones pequenos e logos repetidos) e
+                # interpreta cada uma via IA, inserindo a descrição de volta
+                # no texto, na posição em que a imagem apareceu — assim a
+                # IA de análise/geração "vê" o conteúdo visual também.
+                img_result = DocumentProcessor.extract_images_with_context(uploaded)
+                images = img_result["images"]
+                for warn in img_result["warnings"]:
+                    st.caption(f"ℹ️ {warn}")
+
+                if images:
+                    text += "\n\n===== DESCRIÇÕES DE IMAGENS DO DOCUMENTO (geradas por IA) =====\n"
+                    progress = st.progress(0, text=f"Interpretando imagens do documento... (0/{len(images)})")
+                    for idx, img in enumerate(images, start=1):
+                        try:
+                            descricao = self.client.interpret_image(
+                                img["bytes"], img["mime"], img["context"], project,
+                                source_file=img["source_file"], location=img["location"],
+                            )
+                            text += (
+                                f"\n[IMAGEM — {img['source_file']}, {img['location']}]: {descricao}\n"
+                            )
+                        except Exception as error:
+                            st.caption(
+                                f"⚠️ Não foi possível interpretar uma imagem de {img['source_file']} "
+                                f"({img['location']}), pulada: {error}"
+                            )
+                        progress.progress(idx / len(images), text=f"Interpretando imagens do documento... ({idx}/{len(images)})")
+
                 self._run_analysis(text, project)
 
     def _run_analysis(self, text: str, project: str):
@@ -2874,13 +2896,6 @@ class UserInterface:
 
         if self.state.get('show_about_page'):
             self._about_page()
-            return
-
-        if self.state.get('show_pending_approvals_page'):
-            if st.button("← Voltar", key="btn_pending_back"):
-                self.state.set('show_pending_approvals_page', False)
-                st.rerun()
-            render_pending_approvals_panel(self.config)
             return
 
         if self.state.get('show_admin_page'):

@@ -60,7 +60,6 @@ class SessionState:
         'ado_full_push_log': [],
         'show_ado_confirm_modal': False,
         'show_about_page': False,
-        'show_pending_approvals_page': False,
         'show_admin_page': False,
         'show_execution_report_page': False,
         'show_wi_generation_page': False,

@@ -182,12 +182,19 @@ def render_pending_approvals_panel(config):
 
 
 def render_admin_panel(config):
-    """Cadastro de aprovadores — restrito ao dono do app (config.owner_username)."""
+    """
+    Solicitações Pendentes fica visível pra qualquer aprovador (dono do app
+    incluso). O resto (cadastro de aprovadores, permissões granulares) é
+    restrito ao dono do app (config.owner_username).
+    """
     username = st.session_state.get(SESSION_USER_KEY, "")
+
+    render_pending_approvals_panel(config)
+
     if username != config.owner_username:
-        st.error("❌ Acesso restrito ao administrador do app.")
         return
 
+    st.divider()
     st.subheader("🛡️ Administração — Aprovadores de Acesso")
     st.caption(
         "Pessoas cadastradas aqui podem aprovar ou negar solicitações de login de outros "
