@@ -2194,21 +2194,14 @@ class UserInterface:
                 })
                 outcomes_seen.add(outcome)
 
-                run_id, result_id = point.get("run_id"), point.get("result_id")
-                if run_id and result_id:
+                case_id = point.get("case_id")
+                if case_id:
                     try:
-                        attachments = ado_client.get_test_result_attachments(run_id, result_id)
-                        imgs = []
-                        for att in attachments:
-                            try:
-                                content = ado_client.download_test_result_attachment(run_id, result_id, att["id"])
-                                imgs.append((att.get("fileName", "evidencia"), content))
-                            except Exception as error:
-                                warnings.append(f"Falha ao baixar evidência de '{titulo}': {error}")
+                        imgs = ado_client.get_test_case_step_images(case_id)
                         if imgs:
                             evidencias_por_caso[titulo] = imgs
                     except Exception as error:
-                        warnings.append(f"Falha ao listar evidências de '{titulo}': {error}")
+                        warnings.append(f"Falha ao buscar imagens dos steps de '{titulo}': {error}")
 
             # Status geral: Reprovado se qualquer caso falhou; Aprovado se
             # todos passaram; Pendente se não há execução suficiente ainda.

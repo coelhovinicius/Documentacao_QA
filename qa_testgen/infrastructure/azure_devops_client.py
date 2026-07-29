@@ -1,5 +1,6 @@
 import base64
 import html
+import re
 import xml.sax.saxutils as saxutils
 from urllib.parse import quote
 
@@ -444,33 +445,42 @@ class AzureDevOpsClient:
 
         return {"points": points, "warnings": warnings}
 
-    def get_test_result_attachments(self, run_id: int, result_id: int) -> list:
+    def get_test_case_step_images(self, case_id: int) -> list:
         """
-        Lista os anexos (evidências) de um resultado de teste específico.
-        Retorna [{'id':..., 'fileName':...}].
-        """
-        url = (
-            f"{self._base_url()}/test/Runs/{run_id}/Results/{result_id}"
-            f"/attachments?api-version={API_VERSION}"
-        )
-        response = self.session.get(url, headers=self.headers_json, timeout=60)
-        data = self._handle_response(response, f"Listar anexos do resultado {result_id} (run {run_id})")
-        return [
-            {"id": a.get("id"), "fileName": a.get("fileName", "")}
-            for a in data.get("value", [])
-            if a.get("id")
-        ]
+        Busca as imagens anexadas DENTRO dos Steps de um Caso de Teste (não
+        de um resultado de execução — são imagens coladas na definição do
+        próprio step, na tela de edição de Steps do Test Plan).
 
-    def download_test_result_attachment(self, run_id: int, result_id: int, attachment_id: int) -> bytes:
-        """Baixa o conteúdo bruto (bytes) de um anexo de resultado de teste."""
+        Como funciona: o campo 'Microsoft.VSTS.TCM.Steps' guarda os passos
+        como um XML/HTML; quando alguém cola uma imagem num step, o Azure
+        DevOps sobe ela como um anexo do work item do Caso de Teste, e
+        insere uma tag <img src="..."> apontando pra esse anexo dentro do
+        conteúdo do step. Aqui a gente lê esse campo, acha todas as tags
+        <img>, e baixa cada uma.
+
+        Retorna [(nome_arquivo, bytes), ...].
+        """
         url = (
-            f"{self._base_url()}/test/Runs/{run_id}/Results/{result_id}"
-            f"/attachments/{attachment_id}?api-version={API_VERSION}"
+            f"{self._base_url()}/wit/workitems/{case_id}"
+            f"?fields=Microsoft.VSTS.TCM.Steps&api-version={API_VERSION}"
         )
         response = self.session.get(url, headers=self.headers_json, timeout=60)
-        if response.status_code >= 400:
-            raise AzureDevOpsError(f"Falha ao baixar anexo {attachment_id}: HTTP {response.status_code}")
-        return response.content
+        data = self._handle_response(response, f"Buscar steps do Caso de Teste {case_id}")
+        steps_content = data.get("fields", {}).get("Microsoft.VSTS.TCM.Steps", "") or ""
+
+        img_urls = re.findall(r'<img[^>]+src="([^"]+)"', steps_content)
+
+        images = []
+        for img_url in img_urls:
+            try:
+                # A URL já vem completa (absoluta) embutida no HTML do step.
+                img_response = self.session.get(img_url, headers=self.headers_json, timeout=60)
+                if img_response.status_code == 200 and img_response.content:
+                    filename = (img_url.split('/')[-1].split('?')[0] or f"evidencia_{case_id}.png")
+                    images.append((filename, img_response.content))
+            except Exception:
+                continue  # uma imagem falhando não deve derrubar as outras
+        return images
 
     # ------------------------------------------------------------------ #
     # Work Items existentes (para vincular Test Cases a eles)
