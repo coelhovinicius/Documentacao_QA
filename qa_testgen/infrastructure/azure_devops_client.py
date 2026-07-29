@@ -445,7 +445,7 @@ class AzureDevOpsClient:
 
         return {"points": points, "warnings": warnings}
 
-    def get_test_case_step_images(self, case_id: int) -> list:
+    def get_test_case_step_images(self, case_id: int) -> tuple:
         """
         Busca as imagens anexadas DENTRO dos Steps de um Caso de Teste (não
         de um resultado de execução — são imagens coladas na definição do
@@ -454,12 +454,21 @@ class AzureDevOpsClient:
         Como funciona: o campo 'Microsoft.VSTS.TCM.Steps' guarda os passos
         como um XML/HTML; quando alguém cola uma imagem num step, o Azure
         DevOps sobe ela como um anexo do work item do Caso de Teste, e
-        insere uma tag <img src="..."> apontando pra esse anexo dentro do
-        conteúdo do step. Aqui a gente lê esse campo, acha todas as tags
-        <img>, e baixa cada uma.
+        insere uma tag <img> apontando pra esse anexo dentro do conteúdo
+        do step. Aqui a gente lê esse campo, acha as referências de
+        imagem, e baixa cada uma.
 
-        Retorna [(nome_arquivo, bytes), ...].
+        Retorna (imagens, avisos):
+          imagens: [(nome_arquivo, bytes), ...]
+          avisos: [str, ...] — diagnóstico do que aconteceu em cada etapa,
+                   mesmo quando nada dá errado tecnicamente (ex.: "nenhuma
+                   tag de imagem encontrada") — importante porque essa é
+                   uma área da API que nunca testei contra uma instância
+                   real, então esses avisos são o que permite ajustar o
+                   código certo na próxima tentativa, em vez de só "não
+                   apareceu nada" sem pista nenhuma do motivo.
         """
+        warnings = []
         url = (
             f"{self._base_url()}/wit/workitems/{case_id}"
             f"?fields=Microsoft.VSTS.TCM.Steps&api-version={API_VERSION}"
@@ -468,19 +477,42 @@ class AzureDevOpsClient:
         data = self._handle_response(response, f"Buscar steps do Caso de Teste {case_id}")
         steps_content = data.get("fields", {}).get("Microsoft.VSTS.TCM.Steps", "") or ""
 
+        if not steps_content:
+            warnings.append(f"Caso {case_id}: campo de Steps veio vazio (nada pra procurar imagem).")
+            return [], warnings
+
+        # Tenta alguns padrões diferentes de como a URL da imagem pode
+        # aparecer dentro do HTML/XML do step — não tenho como confirmar
+        # qual é o formato exato sem ver um exemplo real.
         img_urls = re.findall(r'<img[^>]+src="([^"]+)"', steps_content)
+        if not img_urls:
+            img_urls = re.findall(r"<img[^>]+src='([^']+)'", steps_content)
+
+        if not img_urls:
+            preview = steps_content[:300].replace("\n", " ")
+            warnings.append(
+                f"Caso {case_id}: nenhuma tag <img> encontrada no conteúdo dos Steps "
+                f"(tamanho do campo: {len(steps_content)} caracteres). Início do conteúdo, "
+                f"pra conferência: {preview!r}"
+            )
+            return [], warnings
 
         images = []
         for img_url in img_urls:
             try:
-                # A URL já vem completa (absoluta) embutida no HTML do step.
                 img_response = self.session.get(img_url, headers=self.headers_json, timeout=60)
                 if img_response.status_code == 200 and img_response.content:
                     filename = (img_url.split('/')[-1].split('?')[0] or f"evidencia_{case_id}.png")
                     images.append((filename, img_response.content))
-            except Exception:
-                continue  # uma imagem falhando não deve derrubar as outras
-        return images
+                else:
+                    warnings.append(
+                        f"Caso {case_id}: falha ao baixar imagem ({img_url[:80]}...) — "
+                        f"HTTP {img_response.status_code}."
+                    )
+            except Exception as error:
+                warnings.append(f"Caso {case_id}: erro ao baixar imagem ({img_url[:80]}...): {error}")
+
+        return images, warnings
 
     # ------------------------------------------------------------------ #
     # Work Items existentes (para vincular Test Cases a eles)
@@ -563,6 +595,54 @@ class AzureDevOpsClient:
                 "state": state,
             })
         return items
+
+    @staticmethod
+    def _strip_html(raw_html: str) -> str:
+        """Remove tags HTML e decodifica entidades — os campos de Descrição
+        e Critérios de Aceite do Azure DevOps vêm como HTML."""
+        if not raw_html:
+            return ""
+        text = re.sub(r'<br\s*/?>', '\n', raw_html)
+        text = re.sub(r'</p>', '\n', text)
+        text = re.sub(r'<li[^>]*>', '- ', text)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = html.unescape(text)
+        return "\n".join(line.strip() for line in text.split("\n")).strip()
+
+    def get_work_items_full_details(self, ids: list) -> list:
+        """
+        Busca Descrição e Critérios de Aceite completos de uma lista
+        específica de Work Items (não é chamado pra o board inteiro, só
+        pros que a pessoa selecionou) — usado para gerar a especificação
+        funcional a partir de Work Items, no lugar de um documento
+        enviado. Campos de origem variam por tipo de processo/template;
+        busca os mais comuns e ignora graciosamente o que não existir.
+        """
+        if not ids:
+            return []
+        ids_str = ",".join(str(i) for i in ids)
+        fields = (
+            "System.Id,System.Title,System.WorkItemType,System.Description,"
+            "Microsoft.VSTS.Common.AcceptanceCriteria"
+        )
+        url = (
+            f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}"
+            f"&api-version={API_VERSION}"
+        )
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Buscar detalhes completos dos Work Items selecionados")
+
+        results = []
+        for wi in data.get("value", []):
+            f = wi.get("fields", {})
+            results.append({
+                "id": wi.get("id"),
+                "title": f.get("System.Title", ""),
+                "type": f.get("System.WorkItemType", ""),
+                "description": self._strip_html(f.get("System.Description", "") or ""),
+                "acceptance_criteria": self._strip_html(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", "") or ""),
+            })
+        return results
 
     def get_existing_test_case_titles(self, work_item_id: int) -> list:
         """

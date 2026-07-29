@@ -346,6 +346,7 @@ class UserInterface:
                 self.state.set('show_pending_approvals_page', False)
                 self.state.set('show_admin_page', False)
                 self.state.set('show_execution_report_page', False)
+                self.state.set('show_wi_generation_page', False)
                 st.rerun()
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
@@ -355,6 +356,15 @@ class UserInterface:
                     self.state.set('show_about_page', False)
                     self.state.set('show_admin_page', False)
                     self.state.set('show_execution_report_page', False)
+                    self.state.set('show_wi_generation_page', False)
+                    st.rerun()
+            if self._get_permission_cached("azure_devops"):
+                if st.button("🎯 Gerar a partir de Work Items", use_container_width=True, key="btn_wigen_sidebar", disabled=self.state.get('is_processing')):
+                    self.state.set('show_wi_generation_page', True)
+                    self.state.set('show_about_page', False)
+                    self.state.set('show_pending_approvals_page', False)
+                    self.state.set('show_admin_page', False)
+                    self.state.set('show_execution_report_page', False)
                     st.rerun()
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
@@ -362,6 +372,7 @@ class UserInterface:
                     self.state.set('show_about_page', False)
                     self.state.set('show_pending_approvals_page', False)
                     self.state.set('show_admin_page', False)
+                    self.state.set('show_wi_generation_page', False)
                     st.rerun()
             if current_username == self.config.owner_username:
                 if st.button("🛡️ Administração", use_container_width=True, key="btn_admin_sidebar", disabled=self.state.get('is_processing')):
@@ -369,6 +380,7 @@ class UserInterface:
                     self.state.set('show_about_page', False)
                     self.state.set('show_pending_approvals_page', False)
                     self.state.set('show_execution_report_page', False)
+                    self.state.set('show_wi_generation_page', False)
                     st.rerun()
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
@@ -785,18 +797,26 @@ class UserInterface:
                 st.error("Não foi possível extrair texto.")
                 self.clear_action()
             else:
-                with st.spinner("Aguarde enquanto a análise é processada… Isso pode levar alguns minutos..."):
-                    try:
-                        resp = self.client.trigger_analysis(text, project)
-                        self.state.set('doc_text', text)
-                        self.state.set('project_name', project)
-                        self.state.set('questions', resp.get('duvidas') or [])
-                        self._set_step(2, allow_during_processing=True)
-                        self.clear_action()
-                        st.rerun()
-                    except Exception as error:
-                        self._err(error)
-                        self.clear_action()
+                self._run_analysis(text, project)
+
+    def _run_analysis(self, text: str, project: str):
+        """
+        Roda a análise de IA (mesma do Passo 1) e navega pro Passo 2 se der
+        certo. Reutilizado tanto pelo Passo 1 (documento enviado) quanto
+        pela geração a partir de Work Items do Azure DevOps.
+        """
+        with st.spinner("Aguarde enquanto a análise é processada… Isso pode levar alguns minutos..."):
+            try:
+                resp = self.client.trigger_analysis(text, project)
+                self.state.set('doc_text', text)
+                self.state.set('project_name', project)
+                self.state.set('questions', resp.get('duvidas') or [])
+                self._set_step(2, allow_during_processing=True)
+                self.clear_action()
+                st.rerun()
+            except Exception as error:
+                self._err(error)
+                self.clear_action()
 
     def step_2(self):
         st.subheader("Passo 2 – Resolução de Conflitos e Ambiguidade")
@@ -1989,6 +2009,129 @@ class UserInterface:
             self.state.set('show_execution_report_page', False)
             st.rerun()
 
+    def _wi_generation_page(self):
+        st.subheader("🎯 Gerar Casos de Teste a partir de Work Items")
+        st.caption(
+            "Escolhe Work Items existentes no Azure DevOps pra usar como especificação, no lugar "
+            "de enviar um documento — a Descrição e os Critérios de Aceite de cada um viram o "
+            "texto de entrada, e o resto do processo segue igual ao Passo 1 (Dúvidas → Matriz → "
+            "Casos → Planos)."
+        )
+
+        if st.button("← Voltar", key="btn_wigen_back_top"):
+            self.state.set('show_wi_generation_page', False)
+            st.rerun()
+
+        if not self._get_permission_cached("azure_devops"):
+            st.error("❌ Você não tem permissão para acessar Work Items do Azure DevOps.")
+            return
+
+        conn = self._setup_azure_devops_connection()
+        if conn is None:
+            return
+        ado_client, ado_org, ado_project, area_path = conn
+
+        st.divider()
+        with st.container(key="azure_blue_btn_fetch_wi_gen"):
+            st.button(
+                "🔄 Buscar Work Items do Board",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_wi_gen",
+                on_click=self.trigger_action,
+                args=("fetch_wi_gen",),
+            )
+
+        if self.state.get('current_action') == 'fetch_wi_gen' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Buscando Work Items..."):
+                    items = ado_client.fetch_work_items_by_area_path(area_path)
+                self.state.set('wigen_board_items', items)
+                self.state.set('wigen_selected_ids', [])
+                if 'wigen_multiselect' in st.session_state:
+                    del st.session_state['wigen_multiselect']
+                if not items:
+                    st.warning("Nenhum Work Item encontrado nesse Area Path.")
+            except AzureDevOpsError as error:
+                st.error(f"❌ {error}")
+                self.state.set('wigen_board_items', [])
+            except Exception as error:
+                st.error(f"❌ Erro inesperado: {error}")
+                self.state.set('wigen_board_items', [])
+            self.clear_action()
+            st.rerun()
+
+        board_items = self.state.get('wigen_board_items') or []
+        if not board_items:
+            return
+
+        wi_labels = {
+            f"{item['id']} - {item['title']} ({item['type']}, {item['state']})": item
+            for item in board_items
+        }
+        selected_ids = self.state.get('wigen_selected_ids') or []
+        label_by_id = {item['id']: label for label, item in wi_labels.items()}
+        current_labels = [label_by_id[wid] for wid in selected_ids if wid in label_by_id]
+
+        selected_labels = st.multiselect(
+            "🎯 Work Items para usar como especificação",
+            options=list(wi_labels.keys()),
+            default=current_labels,
+            disabled=self.state.get('is_processing'),
+            key="wigen_multiselect",
+            help="Selecione quantos quiser — clique em vários seguidos, sem precisar segurar Ctrl/Shift.",
+        )
+        selected_ids = [wi_labels[label]['id'] for label in selected_labels]
+        self.state.set('wigen_selected_ids', selected_ids)
+
+        if not selected_labels:
+            st.caption("Nenhum Work Item selecionado ainda — escolha acima.")
+            return
+
+        project_name = st.text_input(
+            "Nome do Test Plan *",
+            value=self.state.get('project_name') or ado_project,
+            key="wigen_project_name_input",
+            disabled=self.state.get('is_processing'),
+        )
+
+        with st.container(key="azure_blue_btn_confirm_wigen"):
+            st.button(
+                "✅ Confirmar e Gerar Especificação",
+                type="primary",
+                use_container_width=True,
+                disabled=self.state.get('is_processing') or not project_name.strip(),
+                key="btn_confirm_wigen",
+                on_click=self.trigger_action,
+                args=("confirm_wigen",),
+            )
+
+        if self.state.get('current_action') == 'confirm_wigen' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner(f"Buscando detalhes completos de {len(selected_ids)} Work Item(s)..."):
+                    details = ado_client.get_work_items_full_details(selected_ids)
+                if not details:
+                    st.error("❌ Não foi possível buscar os detalhes dos Work Items selecionados.")
+                    self.clear_action()
+                else:
+                    text_parts = []
+                    for wi in details:
+                        part = f"===== WORK ITEM {wi['id']} - {wi['title']} ({wi['type']}) =====\n"
+                        if wi.get('description'):
+                            part += f"Descrição:\n{wi['description']}\n"
+                        if wi.get('acceptance_criteria'):
+                            part += f"\nCritérios de Aceite:\n{wi['acceptance_criteria']}\n"
+                        if not wi.get('description') and not wi.get('acceptance_criteria'):
+                            part += "(Sem descrição ou critérios de aceite preenchidos neste Work Item)\n"
+                        part += f"===== FIM DO WORK ITEM {wi['id']} ====="
+                        text_parts.append(part)
+                    text = "\n\n".join(text_parts)
+
+                    self.state.set('show_wi_generation_page', False)
+                    self._run_analysis(text, project_name.strip())
+            except Exception as error:
+                st.error(f"❌ Erro ao buscar detalhes dos Work Items: {error}")
+                self.clear_action()
+
     def _render_execution_report_section(self, ado_client):
         st.markdown("### 📊 Relatório de Testes (execução)")
         st.caption(
@@ -2197,9 +2340,10 @@ class UserInterface:
                 case_id = point.get("case_id")
                 if case_id:
                     try:
-                        imgs = ado_client.get_test_case_step_images(case_id)
+                        imgs, img_warnings = ado_client.get_test_case_step_images(case_id)
                         if imgs:
                             evidencias_por_caso[titulo] = imgs
+                        warnings.extend(img_warnings)
                     except Exception as error:
                         warnings.append(f"Falha ao buscar imagens dos steps de '{titulo}': {error}")
 
@@ -2748,6 +2892,10 @@ class UserInterface:
 
         if self.state.get('show_execution_report_page'):
             self._execution_report_page()
+            return
+
+        if self.state.get('show_wi_generation_page'):
+            self._wi_generation_page()
             return
 
         self._progress()
