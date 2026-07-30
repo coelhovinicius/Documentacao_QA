@@ -84,3 +84,25 @@ class AccessControlClient:
     def revoke_permission(self, username: str, permission: str) -> list:
         data = self._call("revoke_permission", username=username, permission=permission)
         return data.get("users", [])
+
+    # ------------------------------------------------------------------ #
+    # Logs de auditoria — últimos 500 eventos, mais antigos são
+    # descartados automaticamente do lado do n8n.
+    # ------------------------------------------------------------------ #
+    def log_action(self, username: str, action_name: str, location: str, details: str = "") -> None:
+        """
+        Registra um evento de auditoria. Nunca deve derrubar a ação do
+        usuário se falhar — quem chama deve envolver isso num try/except
+        silencioso (logging é um "nice to have", não pode travar o app).
+        """
+        self._call(
+            "log_action",
+            username=username,
+            action_name=action_name,
+            location=location,
+            details=details,
+        )
+
+    def list_logs(self) -> list:
+        data = self._call("list_logs")
+        return data.get("logs", [])

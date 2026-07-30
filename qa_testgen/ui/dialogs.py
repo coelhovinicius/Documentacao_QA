@@ -1,6 +1,6 @@
 import streamlit as st
 
-from qa_testgen.ui.auth import SESSION_AUTH_KEY, SESSION_USER_KEY
+from qa_testgen.ui.auth import SESSION_AUTH_KEY, SESSION_USER_KEY, log_action
 
 # Chaves que NÃO devem ser apagadas ao iniciar uma "Nova Análise":
 # autenticação e o componente interno que lê o cookie de sessão.
@@ -202,7 +202,7 @@ def confirm_interrupt_modal():
 
 
 @st.dialog("⚠️ Confirmar Nova Análise")
-def confirm_new_analysis_modal():
+def confirm_new_analysis_modal(config=None):
     st.markdown(
         "Todo o progresso atual, incluindo documentos anexados, matriz e casos gerados não exportados, "
         "será **perdido permanentemente**. Tem certeza que deseja iniciar uma nova análise?"
@@ -210,6 +210,10 @@ def confirm_new_analysis_modal():
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔄 Sim, Iniciar", use_container_width=True, type="primary", key="confirm_new_btn"):
+            if config is not None:
+                username = st.session_state.get(SESSION_USER_KEY, "")
+                project = st.session_state.get('project_name', '') or "(sem projeto)"
+                log_action(config, username, "Nova Análise", "Nova Análise", f"Reiniciou a análise (projeto anterior: '{project}')")
             for key in list(st.session_state.keys()):
                 if key not in _PRESERVE_ON_RESET:
                     del st.session_state[key]

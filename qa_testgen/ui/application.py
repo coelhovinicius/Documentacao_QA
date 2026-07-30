@@ -36,7 +36,7 @@ from qa_testgen.ui.dialogs import (
 )
 from qa_testgen.ui.auth import (
     require_login, render_logout_control, is_approver, has_permission,
-    render_admin_panel, SESSION_USER_KEY,
+    render_admin_panel, log_action, SESSION_USER_KEY,
 )
 
 # Liga/desliga a seção de integração direta com o Azure DevOps no Passo 6.
@@ -153,6 +153,10 @@ class UserInterface:
             st.error(f"❌ HTTP Exception: {error}")
         else:
             st.error(f"❌ Fatal Error: {error}")
+
+    def _log(self, action_name: str, location: str, details: str = ""):
+        username = st.session_state.get(SESSION_USER_KEY, "")
+        log_action(self.config, username, action_name, location, details)
 
     def _get_permission_cached(self, permission: str) -> bool:
         """
@@ -346,6 +350,7 @@ class UserInterface:
                 self.state.set('show_admin_page', False)
                 self.state.set('show_execution_report_page', False)
                 self.state.set('show_wi_generation_page', False)
+                self.state.set('show_wiql_generation_page', False)
                 st.rerun()
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
@@ -355,6 +360,14 @@ class UserInterface:
                     self.state.set('show_about_page', False)
                     self.state.set('show_admin_page', False)
                     self.state.set('show_execution_report_page', False)
+                    self.state.set('show_wiql_generation_page', False)
+                    st.rerun()
+                if st.button("🔎 Criar Query com IA", use_container_width=True, key="btn_wiql_sidebar", disabled=self.state.get('is_processing')):
+                    self.state.set('show_wiql_generation_page', True)
+                    self.state.set('show_about_page', False)
+                    self.state.set('show_admin_page', False)
+                    self.state.set('show_execution_report_page', False)
+                    self.state.set('show_wi_generation_page', False)
                     st.rerun()
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
@@ -362,6 +375,7 @@ class UserInterface:
                     self.state.set('show_about_page', False)
                     self.state.set('show_admin_page', False)
                     self.state.set('show_wi_generation_page', False)
+                    self.state.set('show_wiql_generation_page', False)
                     st.rerun()
             if is_approver(self.config, current_username):
                 # "Administração" agora fica visível pra qualquer aprovador,
@@ -374,6 +388,7 @@ class UserInterface:
                     self.state.set('show_about_page', False)
                     self.state.set('show_execution_report_page', False)
                     self.state.set('show_wi_generation_page', False)
+                    self.state.set('show_wiql_generation_page', False)
                     st.rerun()
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
@@ -1571,6 +1586,9 @@ class UserInterface:
                 except Exception:
                     pass  # não crítico — a pessoa sempre pode digitar manualmente no Passo 6
 
+            if self.state.get('ado_pat_validated'):
+                self._log("PAT Validado", "Azure DevOps", "PAT pessoal validado com sucesso")
+
         if not self.state.get('ado_pat_validated'):
             st.error(
                 "❌ Não foi possível validar esse PAT. Confira se ele está correto, não "
@@ -2148,11 +2166,173 @@ class UserInterface:
                         text_parts.append(part)
                     text = "\n\n".join(text_parts)
 
+                    self._log(
+                        "Gerar a partir de Work Items", "Gerar a partir de Work Items",
+                        f"Projeto '{project_name.strip()}' — {len(details)} Work Item(s): {', '.join(str(wi['id']) for wi in details)}",
+                    )
                     self.state.set('show_wi_generation_page', False)
                     self._run_analysis(text, project_name.strip())
             except Exception as error:
                 st.error(f"❌ Erro ao buscar detalhes dos Work Items: {error}")
                 self.clear_action()
+
+    def _wiql_generation_page(self):
+        st.subheader("🔎 Criar Query no Azure DevOps com IA")
+        st.caption(
+            "Descreve em português o que você quer consultar — a IA traduz pra WIQL (a "
+            "linguagem de query do Azure DevOps). Antes de criar qualquer coisa de verdade, "
+            "você vê um preview de quantos itens a query traria, pra confirmar que é isso mesmo."
+        )
+
+        if st.button("← Voltar", key="btn_wiql_back_top"):
+            self.state.set('show_wiql_generation_page', False)
+            st.rerun()
+
+        if not self._get_permission_cached("azure_devops"):
+            st.error("❌ Você não tem permissão para acessar o Azure DevOps.")
+            return
+
+        conn = self._setup_azure_devops_connection()
+        if conn is None:
+            return
+        ado_client, ado_org, ado_project, area_path = conn
+
+        st.divider()
+        descricao = st.text_area(
+            "O que você quer consultar?",
+            value=self.state.get('wiql_descricao', ''),
+            key="wiql_descricao_input",
+            height=100,
+            placeholder="Ex.: Bugs abertos atribuídos a mim, criados nos últimos 30 dias",
+            disabled=self.state.get('is_processing'),
+        )
+        self.state.set('wiql_descricao', descricao)
+
+        with st.container(key="azure_blue_btn_generate_wiql"):
+            st.button(
+                "🤖 Gerar Query com IA",
+                type="primary",
+                use_container_width=True,
+                disabled=self.state.get('is_processing') or not descricao.strip(),
+                key="btn_generate_wiql",
+                on_click=self.trigger_action,
+                args=("generate_wiql",),
+            )
+
+        if self.state.get('current_action') == 'generate_wiql' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Traduzindo sua descrição em uma query WIQL..."):
+                    resp = self.client.trigger_wiql_generation(descricao.strip(), self.state.get('project_name') or ado_project)
+                self.state.set('wiql_generated', resp)
+                self.state.set('wiql_preview_result', None)
+                st.session_state['wiql_titulo_input'] = resp.get('titulo_sugerido', '')
+                st.session_state['wiql_text_input'] = resp.get('wiql', '')
+            except Exception as error:
+                st.error(f"❌ Não foi possível gerar a query: {error}")
+            self.clear_action()
+            st.rerun()
+
+        generated = self.state.get('wiql_generated')
+        if not generated:
+            return
+
+        st.divider()
+        st.markdown("#### 📝 Revise antes de criar")
+        st.info(f"**O que a IA entendeu:** {generated.get('explicacao', '—')}")
+
+        titulo = st.text_input(
+            "Nome da query",
+            value=generated.get('titulo_sugerido', ''),
+            key="wiql_titulo_input",
+            disabled=self.state.get('is_processing'),
+        )
+        wiql_text = st.text_area(
+            "Query WIQL (pode editar à mão se quiser ajustar algo)",
+            value=generated.get('wiql', ''),
+            key="wiql_text_input",
+            height=150,
+            disabled=self.state.get('is_processing'),
+        )
+        folder = st.selectbox(
+            "Onde salvar",
+            options=["My Queries", "Shared Queries"],
+            key="wiql_folder_select",
+            disabled=self.state.get('is_processing'),
+            help="'My Queries' é pessoal, sempre funciona. 'Shared Queries' fica visível pro time todo, mas exige permissão de escrita nessa pasta compartilhada.",
+        )
+
+        with st.container(key="azure_blue_btn_preview_wiql"):
+            st.button(
+                "🔍 Testar Query (preview, não cria nada ainda)",
+                use_container_width=True,
+                disabled=self.state.get('is_processing') or not wiql_text.strip(),
+                key="btn_preview_wiql",
+                on_click=self.trigger_action,
+                args=("preview_wiql",),
+            )
+
+        if self.state.get('current_action') == 'preview_wiql' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Executando a query como teste..."):
+                    preview = ado_client.run_wiql_query(wiql_text.strip())
+                    ids_to_show = [item['id'] for item in preview['items'][:50]]
+                    preview['details'] = ado_client.get_work_items_basic_fields(ids_to_show) if ids_to_show else []
+                self.state.set('wiql_preview_result', preview)
+            except AzureDevOpsError as error:
+                st.error(f"❌ Erro na query: {error}")
+                self.state.set('wiql_preview_result', None)
+            except Exception as error:
+                st.error(f"❌ Erro inesperado: {error}")
+                self.state.set('wiql_preview_result', None)
+            self.clear_action()
+            st.rerun()
+
+        preview = self.state.get('wiql_preview_result')
+        if preview:
+            st.success(f"✅ Essa query traria **{preview['count']}** Work Item(s). Nada foi salvo no Azure DevOps ainda.")
+
+            details = preview.get('details') or []
+            if details:
+                rows = [
+                    {"ID": d["id"], "Título": d["title"], "Tipo": d["type"], "Estado": d["state"]}
+                    for d in details
+                ]
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+                if preview['count'] > len(details):
+                    st.caption(f"Mostrando os primeiros {len(details)} de {preview['count']} itens.")
+
+            with st.container(key="azure_blue_btn_confirm_wiql"):
+                st.button(
+                    "✅ Confirmar e Criar Query no Azure DevOps",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=self.state.get('is_processing') or not titulo.strip(),
+                    key="btn_confirm_wiql",
+                    on_click=self.trigger_action,
+                    args=("confirm_wiql",),
+                )
+
+            if self.state.get('current_action') == 'confirm_wiql' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner(f"Criando a query '{titulo.strip()}' no Azure DevOps..."):
+                        result = ado_client.create_shared_query(titulo.strip(), wiql_text.strip(), folder)
+                    self._log(
+                        "Criar Query WIQL", "Criar Query no Azure DevOps",
+                        f"Projeto '{ado_project}' — query '{titulo.strip()}' em '{folder}'",
+                    )
+                    st.success(f"🎉 Query criada com sucesso em '{folder}'!")
+                    if result.get('url'):
+                        st.markdown(f"[Abrir a query no Azure DevOps]({result['url']})")
+                    self.state.set('wiql_generated', None)
+                    self.state.set('wiql_preview_result', None)
+                    self.state.set('wiql_descricao', '')
+                except AzureDevOpsError as error:
+                    st.error(f"❌ Não foi possível criar a query: {error}")
+                except Exception as error:
+                    st.error(f"❌ Erro inesperado: {error}")
+                self.clear_action()
+        else:
+            st.caption("Testa a query acima antes de poder confirmar a criação.")
 
     def _render_execution_report_section(self, ado_client):
         st.markdown("### 📊 Relatório de Testes (execução)")
@@ -2409,6 +2589,7 @@ class UserInterface:
                 )
             self.state.set('report_pdf_bytes', pdf_bytes)
             self.state.set('report_warnings', warnings)
+            self._log("Gerar Relatório de Testes", "Relatório de Testes", f"Test Plan '{plan['name']}' — status: {status_geral}")
         except AzureDevOpsError as error:
             st.error(f"❌ {error}")
         except Exception as error:
@@ -2747,6 +2928,10 @@ class UserInterface:
         self.state.set('ado_case_links', case_links)
         log.append(f"\n🔗 Confira o Test Plan completo: {ado_client.test_plan_url(plan_id)}")
         self.state.set('ado_full_push_log', log)
+        self._log(
+            "Integração com Azure DevOps", "Passo 7",
+            f"Projeto '{project_name}' → Test Plan '{plan_name}' ({len(titled)} caso(s) de teste)",
+        )
         self.clear_action()
         st.rerun()
 
@@ -2892,7 +3077,7 @@ class UserInterface:
             confirm_interrupt_modal()
             
         if self.state.get('show_new_analysis_modal'):
-            confirm_new_analysis_modal()
+            confirm_new_analysis_modal(self.config)
 
         if self.state.get('show_about_page'):
             self._about_page()
@@ -2911,6 +3096,10 @@ class UserInterface:
 
         if self.state.get('show_wi_generation_page'):
             self._wi_generation_page()
+            return
+
+        if self.state.get('show_wiql_generation_page'):
+            self._wiql_generation_page()
             return
 
         self._progress()

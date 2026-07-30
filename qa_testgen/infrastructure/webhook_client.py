@@ -269,3 +269,24 @@ class WebhookClient:
             "conclusao": data.get("conclusao", ""),
             "proximos_passos": data.get("proximos_passos", ""),
         }
+
+    def trigger_wiql_generation(self, descricao: str, nome_projeto: str) -> dict:
+        """
+        Pede pra IA traduzir uma descrição em linguagem natural numa query
+        WIQL válida do Azure DevOps. Retorna {"wiql", "titulo_sugerido",
+        "explicacao"} — SEMPRE revisado/testado (preview) antes de ser
+        salvo de verdade no Azure DevOps, nunca criado direto sem confirmação.
+        """
+        response = requests.post(
+            self.config.webhook_wiql_generation,
+            json={"descricao": descricao, "nome_projeto": nome_projeto},
+            headers=self.headers,
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = self._parse(response)
+        return {
+            "wiql": data.get("wiql", ""),
+            "titulo_sugerido": data.get("titulo_sugerido", ""),
+            "explicacao": data.get("explicacao", ""),
+        }

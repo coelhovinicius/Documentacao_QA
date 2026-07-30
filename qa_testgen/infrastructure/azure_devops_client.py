@@ -274,6 +274,74 @@ class AzureDevOpsClient:
             return False
         return any(p["name"].strip().lower() == target for p in self.list_test_plans())
 
+    # ------------------------------------------------------------------ #
+    # Queries WIQL — geração assistida por IA (descrição em linguagem
+    # natural → WIQL → confirmação → query salva no Azure DevOps).
+    # ------------------------------------------------------------------ #
+    def run_wiql_query(self, wiql: str) -> dict:
+        """
+        Executa uma query WIQL como TESTE (não salva nada) — usado pra
+        mostrar um preview de quantos/quais Work Items a query traria,
+        antes da pessoa confirmar e salvar de verdade.
+
+        Retorna {"count": int, "items": [{"id": int, "url": str}, ...]}.
+        Uma query mal formada faz essa chamada retornar erro HTTP 400 —
+        nesse caso, é a própria API do Azure DevOps que aponta o problema
+        de sintaxe, então a mensagem de erro tende a ser útil.
+        """
+        url = f"{self._base_url()}/wit/wiql?api-version={API_VERSION}"
+        response = self.session.post(url, headers=self.headers_json, json={"query": wiql}, timeout=60)
+        data = self._handle_response(response, "Executar query WIQL (teste)")
+        items = [
+            {"id": wi.get("id"), "url": wi.get("url", "")}
+            for wi in data.get("workItems", [])
+            if wi.get("id")
+        ]
+        return {"count": len(items), "items": items}
+
+    def get_work_items_basic_fields(self, ids: list) -> list:
+        """
+        Busca ID, Título, Tipo e Estado de uma lista de Work Items — usado
+        pra montar a tabela de preview da query WIQL (dados de verdade,
+        não só a contagem), sem salvar nada no Azure DevOps.
+        """
+        if not ids:
+            return []
+        results = []
+        # A API do Azure DevOps limita a 200 IDs por chamada de batch.
+        for i in range(0, len(ids), 200):
+            batch = ids[i:i + 200]
+            ids_str = ",".join(str(x) for x in batch)
+            fields = "System.Id,System.Title,System.WorkItemType,System.State"
+            url = f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}&api-version={API_VERSION}"
+            response = self.session.get(url, headers=self.headers_json, timeout=60)
+            data = self._handle_response(response, "Buscar dados dos Work Items retornados pela query")
+            for wi in data.get("value", []):
+                f = wi.get("fields", {})
+                results.append({
+                    "id": wi.get("id"),
+                    "title": f.get("System.Title", ""),
+                    "type": f.get("System.WorkItemType", ""),
+                    "state": f.get("System.State", ""),
+                })
+        return results
+
+    def create_shared_query(self, name: str, wiql: str, folder: str = "My Queries") -> dict:
+        """
+        Cria a query de verdade no Azure DevOps, dentro da pasta indicada
+        (por padrão 'My Queries' — pessoal, sempre permitido; 'Shared
+        Queries' requer permissão de escrita na pasta compartilhada do
+        projeto, nem toda conta tem).
+
+        Retorna {"id": str, "url": str} da query criada.
+        """
+        folder_encoded = quote(folder, safe='')
+        url = f"{self._base_url()}/wit/queries/{folder_encoded}?api-version={API_VERSION}"
+        body = {"name": name, "wiql": wiql, "isFolder": False}
+        response = self.session.post(url, headers=self.headers_json, json=body, timeout=60)
+        data = self._handle_response(response, f"Criar query '{name}' em '{folder}'")
+        return {"id": data.get("id", ""), "url": data.get("_links", {}).get("html", {}).get("href", "")}
+
     def get_profile_display_name(self) -> str:
         """
         Retorna o nome de exibição do dono deste PAT, via API de perfil do

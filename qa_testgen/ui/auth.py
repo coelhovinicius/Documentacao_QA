@@ -1,6 +1,7 @@
 import hmac
 import json
 import time
+from datetime import datetime
 
 import bcrypt
 import streamlit as st
@@ -99,11 +100,12 @@ def _validate_token(raw: str):
     return username
 
 
-def _grant_session(username: str):
+def _grant_session(config, username: str):
     st.session_state[SESSION_AUTH_KEY] = True
     st.session_state[SESSION_USER_KEY] = username
     st.query_params[QUERY_PARAM_NAME] = _make_token(username)
     st.session_state.pop(PENDING_USERNAME_KEY, None)
+    log_action(config, username, "Login", "Login", "Sessão iniciada com sucesso")
 
 
 # --------------------------------------------------------------------------- #
@@ -119,6 +121,18 @@ def is_approver(config, username: str) -> bool:
         return username in AccessControlClient(config).list_approvers()
     except Exception:
         return False
+
+
+def log_action(config, username: str, action_name: str, location: str, details: str = "") -> None:
+    """
+    Registra um evento de auditoria (visível só pro dono do app, na área
+    de Logs). Nunca lança exceção — se o log falhar (ex.: n8n fora do ar),
+    a ação do usuário continua normalmente, só o registro é perdido.
+    """
+    try:
+        AccessControlClient(config).log_action(username, action_name, location, details)
+    except Exception:
+        pass
 
 
 def has_permission(config, username: str, permission: str) -> bool:
@@ -167,6 +181,7 @@ def render_pending_approvals_panel(config):
                 if st.button("✅ Aprovar", key=f"approve_{req_user}", use_container_width=True, type="primary"):
                     try:
                         client.decide(req_user, True, username)
+                        log_action(config, username, "Aprovar Acesso", "Solicitações Pendentes", f"Aprovou o acesso de {req_user}")
                         st.success(f"{req_user} aprovado.")
                         st.rerun()
                     except Exception as error:
@@ -175,6 +190,7 @@ def render_pending_approvals_panel(config):
                 if st.button("🚫 Negar", key=f"deny_{req_user}", use_container_width=True):
                     try:
                         client.decide(req_user, False, username)
+                        log_action(config, username, "Negar Acesso", "Solicitações Pendentes", f"Negou o acesso de {req_user}")
                         st.warning(f"{req_user} negado.")
                         st.rerun()
                     except Exception as error:
@@ -219,6 +235,7 @@ def render_admin_panel(config):
                 if st.button("Remover", key=f"remove_approver_{a}"):
                     try:
                         client.remove_approver(a)
+                        log_action(config, username, "Remover Aprovador", "Administração", f"Removeu {a} da lista de aprovadores")
                         st.rerun()
                     except Exception as error:
                         st.error(f"❌ {error}")
@@ -240,6 +257,7 @@ def render_admin_panel(config):
             else:
                 try:
                     client.add_approver(new_username)
+                    log_action(config, username, "Adicionar Aprovador", "Administração", f"Adicionou {new_username} como aprovador")
                     st.success(f"{new_username} adicionado como aprovador.")
                     st.rerun()
                 except Exception as error:
@@ -250,6 +268,47 @@ def render_admin_panel(config):
 
     st.divider()
     _render_permission_management(config, client, "execution_report", "📊 Acesso ao Relatório de Testes (Passo 8)")
+
+    st.divider()
+    _render_audit_logs(config, client)
+
+
+def _render_audit_logs(config, client):
+    st.subheader("📜 Logs de Auditoria")
+    st.caption(
+        "Últimos 500 eventos registrados no app (mais recente primeiro). Eventos mais antigos "
+        "são descartados automaticamente."
+    )
+    try:
+        logs = client.list_logs()
+    except Exception as error:
+        st.error(f"❌ Não foi possível carregar os logs: {error}")
+        return
+
+    if not logs:
+        st.caption("Nenhum evento registrado ainda.")
+        return
+
+    usernames = sorted({log.get("username", "") for log in logs if log.get("username")})
+    filtro_usuario = st.selectbox("Filtrar por usuário", options=["Todos"] + usernames, key="log_filter_user")
+    logs_filtrados = logs if filtro_usuario == "Todos" else [l for l in logs if l.get("username") == filtro_usuario]
+
+    st.caption(f"{len(logs_filtrados)} evento(s)")
+    rows = []
+    for log in logs_filtrados:
+        ts = log.get("timestamp", "")
+        try:
+            ts_fmt = datetime.fromisoformat(ts.replace("Z", "+00:00")).strftime("%d/%m/%Y %H:%M:%S")
+        except Exception:
+            ts_fmt = ts
+        rows.append({
+            "Data/Hora": ts_fmt,
+            "Usuário": log.get("username", ""),
+            "Ação": log.get("action", ""),
+            "Local": log.get("location", ""),
+            "Detalhes": log.get("details", ""),
+        })
+    st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 def _render_permission_management(config, client, permission: str, title: str):
@@ -276,6 +335,10 @@ def _render_permission_management(config, client, permission: str, title: str):
                 if st.button("Remover", key=f"remove_perm_{permission}_{a}"):
                     try:
                         client.revoke_permission(a, permission)
+                        log_action(
+                            config, st.session_state.get(SESSION_USER_KEY, ""),
+                            "Revogar Permissão", "Administração", f"Revogou '{permission}' de {a}",
+                        )
                         st.rerun()
                     except Exception as error:
                         st.error(f"❌ {error}")
@@ -296,6 +359,10 @@ def _render_permission_management(config, client, permission: str, title: str):
             else:
                 try:
                     client.grant_permission(new_username, permission)
+                    log_action(
+                        config, st.session_state.get(SESSION_USER_KEY, ""),
+                        "Conceder Permissão", "Administração", f"Concedeu '{permission}' a {new_username}",
+                    )
                     st.success(f"{new_username} autorizado.")
                     st.rerun()
                 except Exception as error:
@@ -365,7 +432,7 @@ def _render_login_form(config):
             username = username.strip()
             if _check_credentials(username, password):
                 if username == config.owner_username:
-                    _grant_session(username)
+                    _grant_session(config, username)
                     st.rerun()
                 else:
                     try:
@@ -373,7 +440,7 @@ def _render_login_form(config):
                         status = client.check_status(username)
                         if status == "approved":
                             client.consume(username)
-                            _grant_session(username)
+                            _grant_session(config, username)
                             st.rerun()
                         else:
                             if status in ("none", "denied", "consumed"):
@@ -413,7 +480,7 @@ def _render_waiting_screen(config, username: str):
                     status = client.check_status(username)
                     if status == "approved":
                         client.consume(username)
-                        _grant_session(username)
+                        _grant_session(config, username)
                         st.rerun()
                     elif status == "denied":
                         st.error("❌ Sua solicitação de acesso foi negada.")
