@@ -242,11 +242,14 @@ class WebhookClient:
         return descricao
 
     def trigger_execution_report_narrative(self, nome_projeto: str, nome_plano: str,
-                                            resumo_resultados: str, matriz: list) -> dict:
+                                            resumo_resultados: str, matriz: list,
+                                            descricoes_work_items: str = "") -> dict:
         """
         Pede pra IA sugerir os textos narrativos do Relatório de Testes
         (Contexto, Escopo e Propósito, Conclusão, Próximos Passos), com
-        base no resumo de resultados de execução e na Matriz de Cobertura.
+        base no resumo de resultados de execução, na Matriz de Cobertura, e
+        nas descrições reais dos Work Items testados (excluindo Test
+        Plan/Suite/Case — usadas especificamente pra montar o Contexto).
         Retorna um dict com essas 4 chaves — o usuário revisa/edita antes
         de gerar o PDF, nunca é usado direto sem confirmação.
         """
@@ -257,6 +260,7 @@ class WebhookClient:
                 "nome_plano": nome_plano,
                 "resumo_resultados": resumo_resultados,
                 "matriz_cobertura": json.dumps(matriz, ensure_ascii=False),
+                "descricoes_work_items": descricoes_work_items,
             },
             headers=self.headers,
             timeout=120,

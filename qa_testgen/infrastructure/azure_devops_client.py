@@ -1,6 +1,7 @@
 import base64
 import html
 import re
+import unicodedata
 import xml.sax.saxutils as saxutils
 from urllib.parse import quote
 
@@ -513,72 +514,56 @@ class AzureDevOpsClient:
 
         return {"points": points, "warnings": warnings}
 
-    def get_test_case_step_images(self, case_id: int) -> tuple:
+    def get_test_case_attachments(self, case_id: int) -> tuple:
         """
-        Busca as imagens anexadas DENTRO dos Steps de um Caso de Teste (não
-        de um resultado de execução — são imagens coladas na definição do
-        próprio step, na tela de edição de Steps do Test Plan).
-
-        Como funciona: o campo 'Microsoft.VSTS.TCM.Steps' guarda os passos
-        como um XML/HTML; quando alguém cola uma imagem num step, o Azure
-        DevOps sobe ela como um anexo do work item do Caso de Teste, e
-        insere uma tag <img> apontando pra esse anexo dentro do conteúdo
-        do step. Aqui a gente lê esse campo, acha as referências de
-        imagem, e baixa cada uma.
+        Busca as imagens anexadas ao Work Item do Caso de Teste (anexos
+        "de verdade" do work item, associados aos Steps — não tags <img>
+        embutidas em texto). Filtra só .png/.jpg/.jpeg, ignorando outros
+        tipos de anexo que porventura existam no mesmo Work Item.
 
         Retorna (imagens, avisos):
           imagens: [(nome_arquivo, bytes), ...]
-          avisos: [str, ...] — diagnóstico do que aconteceu em cada etapa,
-                   mesmo quando nada dá errado tecnicamente (ex.: "nenhuma
-                   tag de imagem encontrada") — importante porque essa é
-                   uma área da API que nunca testei contra uma instância
-                   real, então esses avisos são o que permite ajustar o
-                   código certo na próxima tentativa, em vez de só "não
-                   apareceu nada" sem pista nenhuma do motivo.
+          avisos: [str, ...] — diagnóstico do que aconteceu em cada etapa.
         """
         warnings = []
-        url = (
-            f"{self._base_url()}/wit/workitems/{case_id}"
-            f"?fields=Microsoft.VSTS.TCM.Steps&api-version={API_VERSION}"
-        )
+        url = f"{self._base_url()}/wit/workitems/{case_id}?$expand=relations&api-version={API_VERSION}"
         response = self.session.get(url, headers=self.headers_json, timeout=60)
-        data = self._handle_response(response, f"Buscar steps do Caso de Teste {case_id}")
-        steps_content = data.get("fields", {}).get("Microsoft.VSTS.TCM.Steps", "") or ""
+        data = self._handle_response(response, f"Buscar anexos do Caso de Teste {case_id}")
+        relations = data.get("relations", []) or []
 
-        if not steps_content:
-            warnings.append(f"Caso {case_id}: campo de Steps veio vazio (nada pra procurar imagem).")
+        attachment_rels = [r for r in relations if r.get("rel") == "AttachedFile"]
+        if not attachment_rels:
+            warnings.append(f"Caso {case_id}: nenhum anexo encontrado no Work Item.")
             return [], warnings
 
-        # Tenta alguns padrões diferentes de como a URL da imagem pode
-        # aparecer dentro do HTML/XML do step — não tenho como confirmar
-        # qual é o formato exato sem ver um exemplo real.
-        img_urls = re.findall(r'<img[^>]+src="([^"]+)"', steps_content)
-        if not img_urls:
-            img_urls = re.findall(r"<img[^>]+src='([^']+)'", steps_content)
-
-        if not img_urls:
-            preview = steps_content[:300].replace("\n", " ")
-            warnings.append(
-                f"Caso {case_id}: nenhuma tag <img> encontrada no conteúdo dos Steps "
-                f"(tamanho do campo: {len(steps_content)} caracteres). Início do conteúdo, "
-                f"pra conferência: {preview!r}"
-            )
-            return [], warnings
-
+        image_exts = (".png", ".jpg", ".jpeg")
         images = []
-        for img_url in img_urls:
+        for rel in attachment_rels:
+            attrs = rel.get("attributes", {}) or {}
+            filename = attrs.get("name", "") or f"evidencia_{case_id}"
+            if not filename.lower().endswith(image_exts):
+                continue  # anexo de outro tipo (ex.: .docx, .pdf) — ignora
+
+            att_url = rel.get("url", "")
+            if not att_url:
+                continue
             try:
-                img_response = self.session.get(img_url, headers=self.headers_json, timeout=60)
+                img_response = self.session.get(att_url, headers=self.headers_json, timeout=60)
                 if img_response.status_code == 200 and img_response.content:
-                    filename = (img_url.split('/')[-1].split('?')[0] or f"evidencia_{case_id}.png")
                     images.append((filename, img_response.content))
                 else:
                     warnings.append(
-                        f"Caso {case_id}: falha ao baixar imagem ({img_url[:80]}...) — "
+                        f"Caso {case_id}: falha ao baixar anexo '{filename}' — "
                         f"HTTP {img_response.status_code}."
                     )
             except Exception as error:
-                warnings.append(f"Caso {case_id}: erro ao baixar imagem ({img_url[:80]}...): {error}")
+                warnings.append(f"Caso {case_id}: erro ao baixar anexo '{filename}': {error}")
+
+        if not images and attachment_rels:
+            warnings.append(
+                f"Caso {case_id}: {len(attachment_rels)} anexo(s) encontrados no Work Item, "
+                "mas nenhum era .png/.jpg/.jpeg."
+            )
 
         return images, warnings
 
@@ -767,3 +752,123 @@ class AzureDevOpsClient:
         url = f"{self._base_url()}/wit/workitems/{test_case_id}?api-version={API_VERSION}"
         response = self.session.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
         self._handle_response(response, f"Vincular Test Case {test_case_id} ao Work Item {work_item_id}")
+
+    # ------------------------------------------------------------------ #
+    # Status de QA por coluna do board (Kanban) — usado no Relatório de
+    # Testes, no lugar do outcome de execução do Test Point (que nem
+    # sempre reflete a realidade de como o time realmente trabalha).
+    # ------------------------------------------------------------------ #
+    _COLUNAS_APROVADO = {
+        "pronto para uat", "teste uat", "aguardando cab",
+        "aguardando subida em producao", "testes em producao", "finalizado",
+    }
+    _COLUNAS_CANCELADO = {"cancelados"}
+    _COLUNAS_PENDENTE = {
+        "backlog", "em refinamento de negocios", "pronto para refinamento tecnico",
+        "em refinamento tecnico", "pronto para validacao de produtos",
+        "em validacao de produtos", "pronto para dev", "em desenvolvimento",
+        "pronto para code review", "code review", "pronto para qa", "teste qa",
+    }
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """minusculo, sem acento — pra comparar nome de coluna sem depender de acentuação exata."""
+        if not text:
+            return ""
+        nfkd = unicodedata.normalize('NFKD', text)
+        sem_acento = ''.join(c for c in nfkd if not unicodedata.combining(c))
+        return sem_acento.strip().lower()
+
+    @classmethod
+    def _classify_board_column(cls, board_column: str):
+        """Retorna 'Aprovado'/'Cancelado'/'Pendente'/None (coluna não reconhecida)."""
+        norm = cls._normalize(board_column)
+        if norm in cls._COLUNAS_APROVADO:
+            return "Aprovado"
+        if norm in cls._COLUNAS_CANCELADO:
+            return "Cancelado"
+        if norm in cls._COLUNAS_PENDENTE:
+            return "Pendente"
+        return None
+
+    @staticmethod
+    def _classify_description_text(description: str):
+        """Fallback: procura frases explícitas na descrição (regra 4)."""
+        norm = (description or "").lower()
+        if "aprovado em homologação" in norm or "aprovado em homologacao" in norm or "aprovado em produção" in norm or "aprovado em producao" in norm:
+            return "Aprovado"
+        if "reprovado em homologação" in norm or "reprovado em homologacao" in norm or "reprovado em produção" in norm or "reprovado em producao" in norm:
+            return "Reprovado"
+        return None
+
+    def get_tested_work_item_ids(self, test_case_id: int) -> list:
+        """
+        A partir de um Caso de Teste, acha os Work Items que ele testa
+        (relação 'TestedBy-Reverse' — o inverso do que
+        link_test_case_to_work_item cria).
+        """
+        url = f"{self._base_url()}/wit/workitems/{test_case_id}?$expand=relations&api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Buscar requisitos testados pelo Caso de Teste {test_case_id}")
+
+        ids = []
+        for rel in data.get("relations") or []:
+            if rel.get("rel") == "Microsoft.VSTS.Common.TestedBy-Reverse":
+                try:
+                    ids.append(int(rel.get("url", "").rstrip("/").split("/")[-1]))
+                except (ValueError, IndexError):
+                    continue
+        return ids
+
+    def get_work_item_qa_status(self, work_item_id: int) -> str:
+        """
+        Classifica o status de QA de um Work Item pela coluna do board
+        (Kanban), olhando o item e seus filhos diretos — regras 1-4 que
+        você descreveu. Prioridade quando item e filhos divergem:
+        Cancelado > Reprovado > Aprovado > Pendente > Desconhecido (o mais
+        "definitivo"/avançado prevalece).
+
+        Retorna: "Aprovado" | "Cancelado" | "Reprovado" | "Pendente" | "Desconhecido"
+        """
+        url = f"{self._base_url()}/wit/workitems/{work_item_id}?$expand=all&api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Buscar status do Work Item {work_item_id}")
+
+        child_ids = []
+        for rel in data.get("relations") or []:
+            if rel.get("rel") == "System.LinkTypes.Hierarchy-Forward":  # "Child"
+                try:
+                    child_ids.append(int(rel.get("url", "").rstrip("/").split("/")[-1]))
+                except (ValueError, IndexError):
+                    continue
+
+        items_fields = [{
+            "board_column": data.get("fields", {}).get("System.BoardColumn", ""),
+            "description": data.get("fields", {}).get("System.Description", ""),
+        }]
+
+        if child_ids:
+            ids_param = ",".join(str(c) for c in child_ids)
+            fields2 = "System.Id,System.BoardColumn,System.Description"
+            url2 = f"{self._base_url()}/wit/workitems?ids={ids_param}&fields={fields2}&api-version={API_VERSION}"
+            response2 = self.session.get(url2, headers=self.headers_json, timeout=60)
+            data2 = self._handle_response(response2, f"Buscar status dos filhos do Work Item {work_item_id}")
+            for wi in data2.get("value", []):
+                items_fields.append({
+                    "board_column": wi.get("fields", {}).get("System.BoardColumn", ""),
+                    "description": wi.get("fields", {}).get("System.Description", ""),
+                })
+
+        found = set()
+        for item in items_fields:
+            status = self._classify_board_column(item["board_column"])
+            if status is None:
+                status = self._classify_description_text(item["description"])
+            if status:
+                found.add(status)
+
+        priority = ["Cancelado", "Reprovado", "Aprovado", "Pendente"]
+        for status in priority:
+            if status in found:
+                return status
+        return "Desconhecido"

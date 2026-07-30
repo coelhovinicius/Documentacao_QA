@@ -97,8 +97,21 @@ class PdfReportGenerator:
         canvas.line(18, 32, w - 18, 32)
         canvas.restoreState()
 
+    @staticmethod
+    def _sigla(ambiente: str) -> str:
+        if ambiente == "Homologação":
+            return "HML"
+        if ambiente == "Produção":
+            return "PROD"
+        return ""
+
     @classmethod
-    def generate(cls, project_name: str, matriz: list, test_plans: list, test_cases: list, author_name: str = "") -> bytes:
+    def _case_label(cls, idx: int, titulo: str, sigla: str) -> str:
+        prefix = f"CT{idx:02d}" + (f" {sigla}" if sigla else "")
+        return f"{prefix} - {titulo}"
+
+    @classmethod
+    def generate(cls, project_name: str, matriz: list, test_plans: list, test_cases: list, author_name: str = "", ambiente: str = "") -> bytes:
         buffer = io.BytesIO()
         styles = cls._styles()
         on_page = lambda canvas, doc: cls._on_page(canvas, doc, project_name, author_name)
@@ -114,6 +127,7 @@ class PdfReportGenerator:
         )
         pw = doc.width
         story = []
+        sigla = cls._sigla(ambiente)
 
         # Numeração TC-XX consistente entre a Matriz, os Planos e os Casos,
         # e um índice reverso (requisito da Matriz -> quais TC-XX o cobrem)
@@ -122,7 +136,7 @@ class PdfReportGenerator:
         cases_by_titulo = {tc.get('titulo', ''): tc for tc in test_cases or []}
         coverage_by_mc_id = {}
         for tc in test_cases or []:
-            tc_label = f"TC-{tc_numbers.get(tc.get('titulo', ''), 0):02d}"
+            tc_label = f"CT{tc_numbers.get(tc.get('titulo', ''), 0):02d}" + (f" {sigla}" if sigla else "")
             for mc_id in (tc.get('requisitos_relacionados') or []):
                 coverage_by_mc_id.setdefault(str(mc_id), []).append(tc_label)
 
@@ -130,7 +144,8 @@ class PdfReportGenerator:
         story.append(Paragraph("Documentação QA", styles['title']))
         story.append(Paragraph(
             f"Projeto: <b>{cls._esc(project_name)}</b> &nbsp;|&nbsp; "
-            f"Gerado em {datetime.now(TZ_BR).strftime('%d/%m/%Y às %H:%M')}",
+            + (f"Ambiente: <b>{cls._esc(ambiente)}</b> &nbsp;|&nbsp; " if ambiente else "")
+            + f"Gerado em {datetime.now(TZ_BR).strftime('%d/%m/%Y às %H:%M')}",
             styles['subtitle'],
         ))
         story.append(HRFlowable(width="100%", thickness=2, color=COR_LARANJA, spaceAfter=14))
@@ -243,7 +258,7 @@ class PdfReportGenerator:
                         ]]
                         for c_idx, caso in enumerate(casos, start=1):
                             tc_num = tc_numbers.get(caso)
-                            caso_label = f"TC-{tc_num:02d} – {caso}" if tc_num else caso
+                            caso_label = (f"CT{tc_num:02d}" + (f" {sigla}" if sigla else "") + f" – {caso}") if tc_num else caso
                             reqs = (cases_by_titulo.get(caso, {}) or {}).get('requisitos_relacionados') or []
                             reqs_text = ", ".join(str(r) for r in reqs) if reqs else "—"
                             suite_data.append([
@@ -277,7 +292,7 @@ class PdfReportGenerator:
             reqs = tc.get('requisitos_relacionados') or []
             reqs_text = ", ".join(str(r) for r in reqs) if reqs else "—"
 
-            hdr = Table([[Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['tc_title'])]], colWidths=[pw])
+            hdr = Table([[Paragraph(cls._esc(cls._case_label(idx, titulo, sigla)), styles['tc_title'])]], colWidths=[pw])
             hdr.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA),
                 ('TOPPADDING', (0, 0), (-1, -1), 5),
@@ -334,7 +349,12 @@ class PdfReportGenerator:
         'aprovado': (colors.HexColor('#1E8449'), colors.HexColor('#EAFAF1')),
         'reprovado': (colors.HexColor('#C0392B'), colors.HexColor('#FDECEA')),
         'pendente': (colors.HexColor('#7A7A7A'), colors.HexColor('#F0F0F0')),
+        'cancelado': (colors.HexColor('#8E44AD'), colors.HexColor('#F4ECF7')),
+        'desconhecido': (colors.HexColor('#B7950B'), colors.HexColor('#FEF9E7')),
     }
+    # Status agora vem pronto em português (calculado pela coluna do board
+    # do Work Item vinculado, não mais pelo outcome bruto do Test Point) —
+    # esse mapa só cobre o caso raro de algo ainda vir em inglês.
     _OUTCOME_LABELS = {
         'Passed': 'Aprovado', 'Failed': 'Reprovado', 'Blocked': 'Bloqueado',
         'NotApplicable': 'Não Aplicável', 'Not Run': 'Não Executado',
@@ -398,6 +418,7 @@ class PdfReportGenerator:
         pw = doc.width
         story = []
         casos = casos or []
+        sigla = cls._sigla(ambiente)
 
         # ---- Capa / cabeçalho de identificação ----
         story.append(Spacer(1, 0.4 * cm))
@@ -446,7 +467,7 @@ class PdfReportGenerator:
             outcome_label = cls._OUTCOME_LABELS.get(outcome_raw, outcome_raw or 'Não Executado')
 
             hdr = Table(
-                [[Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['tc_title'])]],
+                [[Paragraph(cls._esc(cls._case_label(idx, titulo, sigla)), styles['tc_title'])]],
                 colWidths=[pw],
             )
             hdr.setStyle(TableStyle([
@@ -517,7 +538,7 @@ class PdfReportGenerator:
             if not imgs:
                 continue
             any_evidence = True
-            story.append(Paragraph(f"TC-{idx:02d} – {cls._esc(titulo)}", styles['subsection']))
+            story.append(Paragraph(cls._esc(cls._case_label(idx, titulo, sigla)), styles['subsection']))
             for filename, img_bytes in imgs:
                 try:
                     img_buf = io.BytesIO(img_bytes)
@@ -537,9 +558,10 @@ class PdfReportGenerator:
 
         story.append(PageBreak())
 
-        # ---- Matriz de Cobertura ----
-        story.append(Paragraph("5. Matriz de Cobertura de Testes", styles['section']))
+        # ---- Matriz de Cobertura — só aparece se houver dado de verdade ----
+        proxima_secao = 5
         if matriz:
+            story.append(Paragraph(f"{proxima_secao}. Matriz de Cobertura de Testes", styles['section']))
             hcols = ["id", "funcionalidade", "requisito", "cenario", "categoria", "prioridade", "criticidade"]
             labels = ["ID", "Funcionalidade", "Requisito", "Cenário", "Categoria", "Prioridade", "Criticidade"]
             widths = [1.6 * cm, 3.4 * cm, 2.2 * cm, 5.2 * cm, 3 * cm, 2.2 * cm, 2.4 * cm]
@@ -557,18 +579,11 @@ class PdfReportGenerator:
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ]))
             story.append(table)
-        else:
-            story.append(Paragraph(
-                "Matriz de Cobertura não disponível para este relatório — ela só existe quando o "
-                "projeto foi gerado nesta mesma sessão do app (a Matriz não é enviada ao Azure DevOps, "
-                "então não pode ser recuperada de lá quando o relatório é gerado de forma independente).",
-                styles['body'],
-            ))
-
-        story.append(PageBreak())
+            story.append(PageBreak())
+            proxima_secao += 1
 
         # ---- Conclusão e Governança ----
-        story.append(Paragraph("6. Conclusão e Governança", styles['section']))
+        story.append(Paragraph(f"{proxima_secao}. Conclusão e Governança", styles['section']))
         story.append(Paragraph(cls._esc(conclusao or '—').replace(chr(10), '<br/>'), styles['body']))
         if proximos_passos and proximos_passos.strip():
             story.append(Spacer(1, 10))

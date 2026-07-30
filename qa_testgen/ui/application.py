@@ -130,8 +130,23 @@ class UserInterface:
         html += '</table>'
         st.markdown(html, unsafe_allow_html=True)
 
-    @staticmethod
-    def _next_matriz_id(matriz: list) -> str:
+    def _env_sigla(self) -> str:
+        ambiente = self.state.get('ambiente_testes', '')
+        return "HML" if ambiente == "Homologação" else ("PROD" if ambiente == "Produção" else "")
+
+    def _format_case_label(self, idx_1based: int, titulo: str) -> str:
+        """
+        Rótulo padrão de um Caso de Teste: "CT01 HML - <título>" (ou PROD).
+        Usado consistentemente na tela, no CSV, no PDF e nos títulos
+        criados de verdade no Azure DevOps — computado sempre na hora (não
+        gravado no título bruto), pra não ficar desatualizado se os casos
+        forem reordenados/editados depois.
+        """
+        sigla = self._env_sigla()
+        prefix = f"CT{idx_1based:02d}" + (f" {sigla}" if sigla else "")
+        return f"{prefix} - {titulo}"
+
+    def _next_matriz_id(self, matriz: list) -> str:
         max_n = 0
         for row in matriz:
             digits = ''.join(c for c in str(row.get('id', '')) if c.isdigit())
@@ -140,7 +155,9 @@ class UserInterface:
                     max_n = max(max_n, int(digits))
                 except ValueError:
                     pass
-        return f"MC-{max_n + 1:03d}"
+        base = f"MC-{max_n + 1:03d}"
+        sigla = self._env_sigla()
+        return f"{base} {sigla}" if sigla else base
 
     def _err(self, error: Exception):
         if isinstance(error, ValueError):
@@ -785,8 +802,24 @@ class UserInterface:
                 for f in uploaded:
                     st.caption(f"• {f.name} ({f.size / 1024:.0f} KB)")
 
+        ambiente = st.radio(
+            "Ambiente dos Testes *",
+            options=["Homologação", "Produção"],
+            index=None,  # sem pré-seleção — obriga a pessoa a escolher conscientemente
+            key="ambiente_testes_input",
+            disabled=self.state.get('is_processing'),
+            horizontal=True,
+            help="Define a etiqueta (HML/PROD) usada no nome de cada Caso de Teste, na Matriz e na documentação.",
+        )
+        if ambiente:
+            self.state.set('ambiente_testes', ambiente)
+
         if not project or not uploaded:
             st.info("Preencha o nome do projeto e faça o upload de ao menos um documento para continuar.")
+            return
+
+        if not ambiente:
+            st.info("Selecione o Ambiente dos Testes (Homologação ou Produção) para continuar.")
             return
 
         st.button(
@@ -908,6 +941,12 @@ class UserInterface:
                         st.error("❌ Matriz vazia.")
                         self.clear_action()
                     else:
+                        sigla = self._env_sigla()
+                        if sigla:
+                            for row in matriz:
+                                base_id = str(row.get('id', '')).strip()
+                                if base_id and not base_id.endswith(f" {sigla}"):
+                                    row['id'] = f"{base_id} {sigla}"
                         self.state.set('user_answers', self.state.get('step_2_answers', answers))
                         self.state.set('matriz', matriz)
                         self._set_step(3, allow_during_processing=True)
@@ -1069,7 +1108,7 @@ class UserInterface:
             is_editing = self.state.get(f"edit_tc_{idx}", False)
             if is_editing:
                 editing_any = True
-            label = f"TC-{idx + 1:02d} - {tc.get('titulo', '')}"
+            label = self._format_case_label(idx + 1, tc.get('titulo', ''))
             with st.container(key=f"tc_row_{idx}"):
                 if self._render_row_toggle('active_test_case_row', idx, label, disabled=self.state.get('is_processing') or (editing_any and not is_editing)):
                     if is_editing:
@@ -1352,9 +1391,10 @@ class UserInterface:
                 )
 
         if self.state.get('current_action') == 'build_artifacts' and not self.state.get('show_interrupt_modal'):
-            self.state.set('csv_cases', AzureCsvFormatter.cases_only(self.state.get('test_cases'), self.state.get('project_name')))
+            ambiente = self.state.get('ambiente_testes', '')
+            self.state.set('csv_cases', AzureCsvFormatter.cases_only(self.state.get('test_cases'), self.state.get('project_name'), ambiente))
             self.state.set('csv_plans', AzureCsvFormatter.plans_suites_cases(
-                self.state.get('test_plans'), self.state.get('test_cases'), self.state.get('project_name')
+                self.state.get('test_plans'), self.state.get('test_cases'), self.state.get('project_name'), ambiente
             ))
             self._set_step(6, allow_during_processing=True)
             self.clear_action()
@@ -1415,7 +1455,7 @@ class UserInterface:
             fingerprint = hashlib.md5(
                 json.dumps(
                     [project, self.state.get('matriz'), self.state.get('test_plans'),
-                     self.state.get('test_cases'), author_name],
+                     self.state.get('test_cases'), author_name, self.state.get('ambiente_testes')],
                     sort_keys=True, default=str,
                 ).encode('utf-8')
             ).hexdigest()
@@ -1427,6 +1467,7 @@ class UserInterface:
                         self.state.get('test_plans'),
                         self.state.get('test_cases'),
                         author_name=author_name,
+                        ambiente=self.state.get('ambiente_testes', ''),
                     )
                 self.state.set('pdf_report_bytes', pdf_bytes)
                 self.state.set('pdf_report_fingerprint', fingerprint)
@@ -2042,7 +2083,7 @@ class UserInterface:
         ado_client, ado_org, ado_project, area_path = conn
 
         st.divider()
-        self._render_execution_report_section(ado_client)
+        self._render_execution_report_section(ado_client, ado_project, area_path)
 
         st.divider()
         if st.button("← Voltar", key="btn_report_back_bottom"):
@@ -2134,16 +2175,30 @@ class UserInterface:
             disabled=self.state.get('is_processing'),
         )
 
+        ambiente = st.radio(
+            "Ambiente dos Testes *",
+            options=["Homologação", "Produção"],
+            index=None,
+            key="wigen_ambiente_input",
+            disabled=self.state.get('is_processing'),
+            horizontal=True,
+            help="Define a etiqueta (HML/PROD) usada no nome de cada Caso de Teste, na Matriz e na documentação.",
+        )
+        if ambiente:
+            self.state.set('ambiente_testes', ambiente)
+
         with st.container(key="azure_blue_btn_confirm_wigen"):
             st.button(
                 "✅ Confirmar e Gerar Especificação",
                 type="primary",
                 use_container_width=True,
-                disabled=self.state.get('is_processing') or not project_name.strip(),
+                disabled=self.state.get('is_processing') or not project_name.strip() or not ambiente,
                 key="btn_confirm_wigen",
                 on_click=self.trigger_action,
                 args=("confirm_wigen",),
             )
+        if not ambiente:
+            st.caption("Selecione o Ambiente dos Testes para habilitar a confirmação.")
 
         if self.state.get('current_action') == 'confirm_wigen' and not self.state.get('show_interrupt_modal'):
             try:
@@ -2240,15 +2295,17 @@ class UserInterface:
         st.markdown("#### 📝 Revise antes de criar")
         st.info(f"**O que a IA entendeu:** {generated.get('explicacao', '—')}")
 
+        if "wiql_titulo_input" not in st.session_state:
+            st.session_state["wiql_titulo_input"] = generated.get('titulo_sugerido', '')
         titulo = st.text_input(
             "Nome da query",
-            value=generated.get('titulo_sugerido', ''),
             key="wiql_titulo_input",
             disabled=self.state.get('is_processing'),
         )
+        if "wiql_text_input" not in st.session_state:
+            st.session_state["wiql_text_input"] = generated.get('wiql', '')
         wiql_text = st.text_area(
             "Query WIQL (pode editar à mão se quiser ajustar algo)",
-            value=generated.get('wiql', ''),
             key="wiql_text_input",
             height=150,
             disabled=self.state.get('is_processing'),
@@ -2334,7 +2391,7 @@ class UserInterface:
         else:
             st.caption("Testa a query acima antes de poder confirmar a criação.")
 
-    def _render_execution_report_section(self, ado_client):
+    def _render_execution_report_section(self, ado_client, ado_project: str = "", area_path: str = ""):
         st.markdown("### 📊 Relatório de Testes (execução)")
         st.caption(
             "Documenta o que foi EXECUTADO no Azure DevOps (diferente do PDF do Passo 6, que "
@@ -2371,13 +2428,18 @@ class UserInterface:
             return
 
         plan_labels = {f"{p['id']} - {p['name']}": p for p in available_plans}
-        chosen_label = st.selectbox(
-            "Test Plan a reportar",
+        chosen_labels = st.multiselect(
+            "Test Plan(s) a reportar",
             options=list(plan_labels.keys()),
             disabled=self.state.get('is_processing'),
             key="report_plan_select",
+            help="Selecione um ou mais Test Plans — os resultados de todos entram juntos no mesmo relatório.",
         )
-        chosen_plan = plan_labels[chosen_label]
+        chosen_plans = [plan_labels[label] for label in chosen_labels]
+
+        if not chosen_plans:
+            st.caption("Nenhum Test Plan selecionado ainda — escolha acima.")
+            return
 
         with st.container(key="azure_blue_btn_suggest_narrative"):
             st.button(
@@ -2386,77 +2448,94 @@ class UserInterface:
                 key="btn_suggest_report_narrative",
                 on_click=self.trigger_action,
                 args=("suggest_report_narrative",),
-                help="A IA analisa os resultados desse Test Plan e sugere os textos abaixo — você revisa e edita antes de gerar o PDF.",
+                help="A IA analisa os resultados desses Test Plans e sugere os textos abaixo — você revisa e edita antes de gerar o PDF.",
             )
         if self.state.get('current_action') == 'suggest_report_narrative' and not self.state.get('show_interrupt_modal'):
-            self._suggest_report_narrative(ado_client, chosen_plan)
+            self._suggest_report_narrative(ado_client, chosen_plans)
 
         st.caption("Os campos abaixo já vêm com sugestão da IA (se você clicou no botão acima) — revise e edite livremente antes de gerar o PDF.")
 
         col1, col2 = st.columns(2)
         with col1:
+            if "report_contexto_input" not in st.session_state:
+                st.session_state["report_contexto_input"] = self.state.get('report_contexto', '')
             contexto = st.text_input(
                 "Contexto",
-                value=self.state.get('report_contexto', ''),
                 key="report_contexto_input",
                 help="Ex.: 'Testes de regressão pós-deploy da Sprint 14'",
             )
         with col2:
             ambiente_opts = ["Homologação", "Produção"]
-            ambiente_default = 0
-            plan_name_lower = chosen_plan["name"].lower()
-            if "prod" in plan_name_lower:
-                ambiente_default = 1
+            session_ambiente = self.state.get('ambiente_testes', '')
+            if session_ambiente in ambiente_opts:
+                ambiente_default = ambiente_opts.index(session_ambiente)
+                help_text = "Pré-selecionado com base no Ambiente escolhido na geração desta sessão — confirme antes de gerar."
+            else:
+                ambiente_default = 1 if any("prod" in p["name"].lower() for p in chosen_plans) else 0
+                help_text = "Pré-selecionado por um palpite a partir do nome do Test Plan — confirme antes de gerar."
             ambiente = st.selectbox(
                 "Ambiente",
                 options=ambiente_opts,
                 index=ambiente_default,
                 disabled=self.state.get('is_processing'),
                 key="report_ambiente_select",
-                help="Pré-selecionado por um palpite a partir do nome do Test Plan — confirme antes de gerar.",
+                help=help_text,
             )
         self.state.set('report_contexto', contexto)
 
+        if "report_escopo_input" not in st.session_state:
+            st.session_state["report_escopo_input"] = self.state.get('report_escopo', '')
         escopo_proposito = st.text_area(
             "Escopo e Propósito",
-            value=self.state.get('report_escopo', ''),
             key="report_escopo_input",
             help="Explique brevemente o escopo e o propósito dos testes executados.",
             height=100,
         )
         self.state.set('report_escopo', escopo_proposito)
 
+        if "report_conclusao_input" not in st.session_state:
+            st.session_state["report_conclusao_input"] = self.state.get('report_conclusao', '')
         conclusao = st.text_area(
             "Conclusão",
-            value=self.state.get('report_conclusao', ''),
             key="report_conclusao_input",
             height=100,
         )
         self.state.set('report_conclusao', conclusao)
 
+        if "report_proximos_input" not in st.session_state:
+            st.session_state["report_proximos_input"] = self.state.get('report_proximos', '')
         proximos_passos = st.text_area(
             "Próximos Passos e Sugestões (opcional)",
-            value=self.state.get('report_proximos', ''),
             key="report_proximos_input",
             height=80,
         )
         self.state.set('report_proximos', proximos_passos)
+
+        status_manual = st.radio(
+            "Status do Relatório *",
+            options=["Aprovado", "Cancelado", "Pendente"],
+            index=None,
+            key="report_status_manual_select",
+            disabled=self.state.get('is_processing'),
+            horizontal=True,
+            help="Você define o status final do relatório diretamente — não depende mais do cálculo automático pela coluna do board.",
+        )
 
         with st.container(key="azure_blue_btn_generate_report"):
             st.button(
                 "📊 Buscar Resultados e Gerar Relatório",
                 type="primary",
                 use_container_width=True,
-                disabled=self.state.get('is_processing') or not contexto or not escopo_proposito or not conclusao,
+                disabled=self.state.get('is_processing') or not contexto or not escopo_proposito or not conclusao or not status_manual,
                 key="btn_generate_execution_report",
                 on_click=self.trigger_action,
                 args=("generate_execution_report",),
             )
-        if not (contexto and escopo_proposito and conclusao):
-            st.caption("Preencha Contexto, Escopo e Propósito, e Conclusão para habilitar a geração.")
+        if not (contexto and escopo_proposito and conclusao and status_manual):
+            st.caption("Preencha Contexto, Escopo e Propósito, Conclusão, e escolha o Status para habilitar a geração.")
 
         if self.state.get('current_action') == 'generate_execution_report' and not self.state.get('show_interrupt_modal'):
-            self._generate_execution_report(ado_client, chosen_plan, contexto, ambiente, escopo_proposito, conclusao, proximos_passos)
+            self._generate_execution_report(ado_client, chosen_plans, contexto, ambiente, escopo_proposito, conclusao, proximos_passos, ado_project, area_path, status_manual)
 
         report_bytes = self.state.get('report_pdf_bytes')
         if report_bytes:
@@ -2472,26 +2551,74 @@ class UserInterface:
             for warn in self.state.get('report_warnings') or []:
                 st.caption(f"ℹ️ {warn}")
 
-    def _suggest_report_narrative(self, ado_client, plan: dict):
+    def _suggest_report_narrative(self, ado_client, plans: list):
+        EXCLUDE_TYPES = {"test plan", "test suite", "test case"}
+        # Vocabulário real da coluna "Outcome" da aba Execute das Suites de
+        # Teste no Azure DevOps — usado tal e qual, sem lumping genérico.
+        OUTCOME_LABELS = {
+            "Passed": "Aprovado", "Failed": "Reprovado", "Active": "Ativo (não iniciado)",
+            "Paused": "Pausado", "Blocked": "Bloqueado", "NotApplicable": "Não Aplicável",
+            "Not Run": "Não Executado",
+        }
         try:
-            with st.spinner("Analisando resultados do Test Plan para sugerir os textos..."):
-                summary = ado_client.get_test_plan_execution_summary(plan["id"])
-                points = summary.get("points", [])
-                total = len(points)
-                passed = sum(1 for p in points if p.get("outcome") == "Passed")
-                failed = sum(1 for p in points if p.get("outcome") == "Failed")
-                outros = total - passed - failed
-                resumo_resultados = (
-                    f"{total} casos de teste no Test Plan '{plan['name']}'. "
-                    f"{passed} aprovados, {failed} reprovados, {outros} em outro status "
-                    "(bloqueado/não executado/não aplicável)."
-                )
+            plan_names = ", ".join(p['name'] for p in plans)
+            with st.spinner("Analisando resultados dos Test Plans para sugerir os textos..."):
+                total = 0
+                by_outcome = {}       # outcome bruto -> contagem
+                titles_by_outcome = {}  # outcome bruto -> [títulos dos casos]
+                all_case_ids = []
+                for plan in plans:
+                    summary = ado_client.get_test_plan_execution_summary(plan["id"])
+                    points = summary.get("points", [])
+                    total += len(points)
+                    for p in points:
+                        outcome = p.get("outcome") or "Not Run"
+                        by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
+                        titles_by_outcome.setdefault(outcome, []).append(p.get("case_title", ""))
+                    all_case_ids.extend(p.get("case_id") for p in points if p.get("case_id"))
+
+                linhas_resumo = [f"{total} casos de teste no(s) Test Plan(s) '{plan_names}', por status (aba Execute das Suítes):"]
+                for outcome_raw, count in sorted(by_outcome.items(), key=lambda x: -x[1]):
+                    label = OUTCOME_LABELS.get(outcome_raw, outcome_raw)
+                    titulos = titles_by_outcome.get(outcome_raw, [])
+                    # Lista até 5 títulos por status, pra IA poder citar casos
+                    # específicos (ex.: qual bug está bloqueando o quê) sem
+                    # o prompt virar uma lista infinita em Test Plans grandes.
+                    amostra = "; ".join(t for t in titulos[:5] if t)
+                    extra = f" (e mais {len(titulos) - 5})" if len(titulos) > 5 else ""
+                    linha = f"- {label} ({outcome_raw}): {count} caso(s)"
+                    if amostra:
+                        linha += f" — ex.: {amostra}{extra}"
+                    linhas_resumo.append(linha)
+                resumo_resultados = "\n".join(linhas_resumo)
+
+                # Contexto deve ser baseado na descrição real dos Work Items
+                # testados (User Stories, Bugs, Features etc.) — não em Test
+                # Plan/Suite/Case, que não descrevem negócio nenhum.
+                wi_ids = set()
+                for case_id in all_case_ids:
+                    try:
+                        wi_ids.update(ado_client.get_tested_work_item_ids(case_id))
+                    except Exception:
+                        pass  # um caso sem vínculo não deve travar a sugestão inteira
+
+                descricoes_texto = ""
+                if wi_ids:
+                    details = ado_client.get_work_items_full_details(list(wi_ids))
+                    relevantes = [d for d in details if (d.get('type') or '').strip().lower() not in EXCLUDE_TYPES]
+                    partes = []
+                    for d in relevantes:
+                        desc = (d.get('description') or '').strip()
+                        if desc:
+                            partes.append(f"[{d.get('type')}] {d.get('title')}: {desc[:500]}")
+                    descricoes_texto = "\n\n".join(partes)
 
                 resp = self.client.trigger_execution_report_narrative(
-                    nome_projeto=self.state.get('project_name') or plan['name'],
-                    nome_plano=plan['name'],
+                    nome_projeto=self.state.get('project_name') or plan_names,
+                    nome_plano=plan_names,
                     resumo_resultados=resumo_resultados,
                     matriz=self.state.get('matriz') or [],
+                    descricoes_work_items=descricoes_texto,
                 )
 
             contexto = resp.get('contexto', '')
@@ -2517,46 +2644,83 @@ class UserInterface:
         self.clear_action()
         st.rerun()
 
-    def _generate_execution_report(self, ado_client, plan: dict, contexto: str, ambiente: str,
-                                     escopo_proposito: str, conclusao: str, proximos_passos: str):
+    def _generate_execution_report(self, ado_client, plans: list, contexto: str, ambiente: str,
+                                     escopo_proposito: str, conclusao: str, proximos_passos: str,
+                                     ado_project: str = "", area_path: str = "", status_manual: str = ""):
         warnings = []
         evidencias_por_caso = {}
         casos = []  # [{"titulo", "outcome", "suite_name"}] — direto do Azure DevOps
+        plan_names = ", ".join(p['name'] for p in plans)
+
+        # Nome usado na documentação: se uma Area Path DE VERDADE foi
+        # escolhida (diferente da raiz do projeto), usa o nome dela — só
+        # cai pro nome do Projeto se a Area Path ficou em "---" (raiz).
+        if area_path and ado_project and area_path != ado_project:
+            report_project_name = area_path
+        else:
+            report_project_name = self.state.get('project_name') or ado_project or plan_names
 
         try:
-            with st.spinner(f"Buscando Casos de Teste e resultados do Test Plan '{plan['name']}'..."):
-                summary = ado_client.get_test_plan_execution_summary(plan["id"])
-            warnings.extend(summary.get("warnings", []))
+            all_points = []
+            with st.spinner(f"Buscando Casos de Teste de {len(plans)} Test Plan(s)..."):
+                for plan in plans:
+                    summary = ado_client.get_test_plan_execution_summary(plan["id"])
+                    warnings.extend(summary.get("warnings", []))
+                    all_points.extend(summary.get("points", []))
 
-            outcomes_seen = set()
-            for point in summary.get("points", []):
-                titulo = point.get("case_title") or f"Caso #{point.get('case_id')}"
-                outcome = point.get("outcome", "Not Run")
-                casos.append({
-                    "titulo": titulo,
-                    "outcome": outcome,
-                    "suite_name": point.get("suite_name", "—"),
-                })
-                outcomes_seen.add(outcome)
+            with st.spinner(f"Consultando status de QA (coluna do board) de {len(all_points)} caso(s)..."):
+                statuses_seen = set()
+                all_wi_ids = set()
+                for point in all_points:
+                    titulo = point.get("case_title") or f"Caso #{point.get('case_id')}"
+                    case_id = point.get("case_id")
 
-                case_id = point.get("case_id")
-                if case_id:
-                    try:
-                        imgs, img_warnings = ado_client.get_test_case_step_images(case_id)
-                        if imgs:
-                            evidencias_por_caso[titulo] = imgs
-                        warnings.extend(img_warnings)
-                    except Exception as error:
-                        warnings.append(f"Falha ao buscar imagens dos steps de '{titulo}': {error}")
+                    # Status vem da coluna do board do(s) Work Item(s) que
+                    # esse Caso de Teste testa — não do outcome de execução
+                    # do Test Point (que nem sempre reflete a realidade de
+                    # como o time trabalha).
+                    qa_status = "Desconhecido"
+                    if case_id:
+                        try:
+                            wi_ids = ado_client.get_tested_work_item_ids(case_id)
+                            all_wi_ids.update(wi_ids)
+                            wi_statuses = set()
+                            for wi_id in wi_ids:
+                                try:
+                                    wi_statuses.add(ado_client.get_work_item_qa_status(wi_id))
+                                except Exception as error:
+                                    warnings.append(f"Falha ao checar status do Work Item {wi_id} (caso '{titulo}'): {error}")
+                            for prioridade in ["Cancelado", "Reprovado", "Aprovado", "Pendente"]:
+                                if prioridade in wi_statuses:
+                                    qa_status = prioridade
+                                    break
+                            if not wi_ids:
+                                warnings.append(f"Caso '{titulo}': nenhum Work Item vinculado encontrado — status ficou 'Desconhecido'.")
+                        except Exception as error:
+                            warnings.append(f"Falha ao buscar Work Items vinculados ao caso '{titulo}': {error}")
 
-            # Status geral: Reprovado se qualquer caso falhou; Aprovado se
-            # todos passaram; Pendente se não há execução suficiente ainda.
-            if "Failed" in outcomes_seen:
-                status_geral = "Reprovado"
-            elif outcomes_seen and outcomes_seen.issubset({"Passed", "NotApplicable"}):
-                status_geral = "Aprovado"
-            else:
-                status_geral = "Pendente"
+                    casos.append({
+                        "titulo": titulo,
+                        "outcome": qa_status,
+                        "suite_name": point.get("suite_name", "—"),
+                    })
+                    statuses_seen.add(qa_status)
+
+                    if case_id:
+                        try:
+                            imgs, img_warnings = ado_client.get_test_case_attachments(case_id)
+                            if imgs:
+                                evidencias_por_caso[titulo] = imgs
+                            warnings.extend(img_warnings)
+                        except Exception as error:
+                            warnings.append(f"Falha ao buscar imagens dos steps de '{titulo}': {error}")
+
+            # Status GERAL do relatório: agora é escolhido manualmente por
+            # você antes de gerar (o cálculo automático pela coluna do
+            # board continua alimentando o status de CADA caso individual
+            # na seção "Casos de Teste", só o resumo geral do topo é que
+            # passou a ser sua decisão direta).
+            status_geral = status_manual or "Pendente"
 
             # A Matriz de Cobertura nunca é enviada pro Azure DevOps, então
             # só existe se ESTA sessão gerou o mesmo projeto que está sendo
@@ -2573,9 +2737,52 @@ class UserInterface:
                     "Plan selecionado — não foi incluída no relatório."
                 )
 
+            # Sem Matriz de sessão disponível? Monta uma Matriz INDEPENDENTE
+            # a partir dos Work Items de verdade vinculados aos Casos de
+            # Teste no Azure DevOps — funciona mesmo sem nada ter sido
+            # gerado nesta sessão do app.
+            if not matriz_to_use and all_wi_ids:
+                try:
+                    with st.spinner(f"Montando Matriz de Cobertura a partir de {len(all_wi_ids)} Work Item(s) vinculado(s)..."):
+                        details = ado_client.get_work_items_full_details(list(all_wi_ids))
+                        EXCLUDE_TYPES_MTX = {"test plan", "test suite", "test case"}
+                        relevantes = [d for d in details if (d.get('type') or '').strip().lower() not in EXCLUDE_TYPES_MTX]
+                        CATEGORIA_POR_TIPO = {
+                            "bug": "Correção de Defeito",
+                            "user story": "Fluxo Funcional",
+                            "product backlog item": "Fluxo Funcional",
+                            "feature": "Fluxo Funcional",
+                            "task": "Tarefa Técnica",
+                        }
+                        sigla = self._env_sigla()
+                        matriz_independente = []
+                        for idx, wi in enumerate(relevantes, start=1):
+                            mc_id = f"MC-{idx:03d}" + (f" {sigla}" if sigla else "")
+                            wi_type_label = wi.get('type', '') or ''
+                            categoria = CATEGORIA_POR_TIPO.get(wi_type_label.strip().lower(), wi_type_label or "—")
+                            descricao = (wi.get('description') or '').strip()
+                            matriz_independente.append({
+                                "id": mc_id,
+                                "funcionalidade": wi.get('title', '') or '—',
+                                "requisito": f"{wi_type_label} #{wi.get('id', '')}".strip(),
+                                "cenario": (descricao[:200] + "…") if len(descricao) > 200 else (descricao or "—"),
+                                "categoria": categoria,
+                                "prioridade": "—",
+                                "criticidade": "—",
+                            })
+                    if matriz_independente:
+                        matriz_to_use = matriz_independente
+                        warnings.append(
+                            f"Matriz de Cobertura montada de forma independente, a partir de "
+                            f"{len(matriz_independente)} Work Item(s) vinculado(s) diretamente no Azure "
+                            f"DevOps (não depende de nada ter sido gerado nesta sessão)."
+                        )
+                except Exception as error:
+                    warnings.append(f"Não foi possível montar a Matriz independente: {error}")
+
             with st.spinner("Gerando o PDF do Relatório de Testes..."):
                 pdf_bytes = PdfReportGenerator.generate_execution_report(
-                    project_name=self.state.get('project_name') or plan['name'],
+                    project_name=report_project_name,
                     contexto=contexto,
                     ambiente=ambiente,
                     status_geral=status_geral,
@@ -2589,7 +2796,7 @@ class UserInterface:
                 )
             self.state.set('report_pdf_bytes', pdf_bytes)
             self.state.set('report_warnings', warnings)
-            self._log("Gerar Relatório de Testes", "Relatório de Testes", f"Test Plan '{plan['name']}' — status: {status_geral}")
+            self._log("Gerar Relatório de Testes", "Relatório de Testes", f"Test Plan(s) '{plan_names}' — status: {status_geral}")
         except AzureDevOpsError as error:
             st.error(f"❌ {error}")
         except Exception as error:
@@ -2768,7 +2975,7 @@ class UserInterface:
         # a chave interna (case_ids, links, etc.) continua sendo o título
         # ORIGINAL do caso; só o texto enviado como Title pro Azure DevOps é
         # que leva o prefixo.
-        titled = AzureCsvFormatter._titled(test_cases)
+        titled = AzureCsvFormatter._titled(test_cases, self.state.get('ambiente_testes', ''))
         MAX_WORKERS = 4  # nº de chamadas simultâneas à API do Azure DevOps (reduzido — 8 causava reset de conexão)
 
         # 1) Garante que TODOS os Casos de Teste gerados existem no Azure DevOps,

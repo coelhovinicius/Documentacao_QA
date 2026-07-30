@@ -5,6 +5,7 @@ class SessionState:
         'step': 1,
         'doc_text': '',
         'project_name': '',
+        'ambiente_testes': '',
         'uploaded_files': [],
         'questions': [],
         'user_answers': {},

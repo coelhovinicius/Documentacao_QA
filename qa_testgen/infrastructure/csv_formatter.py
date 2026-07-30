@@ -37,23 +37,34 @@ class AzureCsvFormatter:
         return "; ".join(str(r) for r in reqs)
 
     @staticmethod
-    def _titled(test_cases: list) -> dict:
+    def _sigla(ambiente: str) -> str:
+        if ambiente == "Homologação":
+            return "HML"
+        if ambiente == "Produção":
+            return "PROD"
+        return ""
+
+    @staticmethod
+    def _titled(test_cases: list, ambiente: str = "") -> dict:
         """
-        Mapeia título original -> título prefixado (CT01, CT02, ...), na ordem
-        em que os casos aparecem em test_cases. Usado nos dois CSVs para que
-        o mesmo caso sempre receba o mesmo número, independente de qual
-        exportação está sendo gerada.
+        Mapeia título original -> título prefixado (CT01 HML - ..., CT02 HML - ...,
+        conforme o Ambiente escolhido), na ordem em que os casos aparecem em
+        test_cases. Usado nos dois CSVs e também no push pro Azure DevOps,
+        pra que o mesmo caso sempre receba o mesmo número/etiqueta,
+        independente de qual exportação está sendo gerada.
         """
+        sigla = AzureCsvFormatter._sigla(ambiente)
+        prefix_tag = f" {sigla}" if sigla else ""
         mapping = {}
         for idx, tc in enumerate(test_cases or [], start=1):
             titulo = tc.get('titulo', '')
-            mapping[titulo] = f"CT{idx:02d} - {titulo}"
+            mapping[titulo] = f"CT{idx:02d}{prefix_tag} - {titulo}"
         return mapping
 
     @staticmethod
-    def cases_only(test_cases: list, project_name: str) -> str:
+    def cases_only(test_cases: list, project_name: str, ambiente: str = "") -> str:
         rows = [AzureCsvFormatter.CASES_HEADER]
-        titled = AzureCsvFormatter._titled(test_cases)
+        titled = AzureCsvFormatter._titled(test_cases, ambiente)
 
         for tc in test_cases or []:
             rows.append([
@@ -88,10 +99,10 @@ class AzureCsvFormatter:
         return AzureCsvFormatter._write(rows)
 
     @staticmethod
-    def plans_suites_cases(test_plans: list, test_cases: list, project_name: str) -> str:
+    def plans_suites_cases(test_plans: list, test_cases: list, project_name: str, ambiente: str = "") -> str:
         rows = [AzureCsvFormatter.CASES_HEADER + ["Suite", "Plan"]]
         cases_index = {tc.get('titulo', ''): tc for tc in test_cases or []}
-        titled = AzureCsvFormatter._titled(test_cases)
+        titled = AzureCsvFormatter._titled(test_cases, ambiente)
 
         for plan in test_plans or []:
             plan_name = AzureCsvFormatter._text(plan.get('nome'))
