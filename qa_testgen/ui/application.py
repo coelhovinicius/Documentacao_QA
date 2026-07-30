@@ -33,6 +33,8 @@ from qa_testgen.ui.dialogs import (
     confirm_suite_deletion_modal,
     confirm_step_deletion_modal,
     confirm_new_analysis_modal,
+    confirm_new_report_modal,
+    confirm_leave_report_modal,
 )
 from qa_testgen.ui.auth import (
     require_login, render_logout_control, is_approver, has_permission,
@@ -175,6 +177,23 @@ class UserInterface:
         username = st.session_state.get(SESSION_USER_KEY, "")
         log_action(self.config, username, action_name, location, details)
 
+    def _navigate_or_confirm(self, pending_state_updates: dict):
+        """
+        Aplica as mudanças de estado em `pending_state_updates` (ex.: trocar
+        de página/sidebar) — a não ser que estejamos na página de Relatório
+        de Testes com um PDF já gerado, caso em que primeiro pede
+        confirmação (evita perder o relatório sem querer ao clicar em
+        qualquer outro botão/menu).
+        """
+        if self.state.get('show_execution_report_page') and self.state.get('report_pdf_bytes'):
+            self.state.set('_pending_navigation_after_report', pending_state_updates)
+            self.state.set('show_leave_report_modal', True)
+            st.rerun()
+        else:
+            for key, value in pending_state_updates.items():
+                self.state.set(key, value)
+            st.rerun()
+
     def _get_permission_cached(self, permission: str) -> bool:
         """
         Checa uma permissão granular (ex.: 'azure_devops', 'execution_report')
@@ -191,6 +210,45 @@ class UserInterface:
             username = st.session_state.get(SESSION_USER_KEY, "")
             self.state.set(cache_key, has_permission(self.config, username, permission))
         return bool(self.state.get(cache_key))
+
+    def _block_f5_reload(self):
+        """
+        Tenta impedir F5/Ctrl+R de recarregar a página, pra evitar perda de
+        dados não salvos (ex.: Relatório de Testes gerado).
+
+        AVISO HONESTO: isso NÃO é garantido — navegadores modernos
+        deliberadamente restringem páginas de bloquear atalhos do próprio
+        navegador (F5/Ctrl+R são "chrome" do navegador, não da página), e
+        essa proteção pode simplesmente não funcionar dependendo do
+        navegador/versão. Os botões "Novo Relatório" e a confirmação antes
+        de sair da tela de Relatório são a proteção que realmente sempre
+        funciona — isso aqui é só uma tentativa extra.
+        """
+        components.html(
+            """
+            <script>
+                (function () {
+                    try {
+                        var doc = window.parent.document;
+                        if (doc.__qaF5BlockAttached) { return; }
+                        doc.__qaF5BlockAttached = true;
+                        doc.addEventListener('keydown', function (e) {
+                            var isF5 = e.key === 'F5' || e.keyCode === 116;
+                            var isCtrlR = (e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R');
+                            if (isF5 || isCtrlR) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                            }
+                        }, true);
+                    } catch (err) {
+                        // Se o navegador não permitir acessar window.parent
+                        // (restrição de segurança), não tem o que fazer.
+                    }
+                })();
+            </script>
+            """,
+            height=0,
+        )
 
     def _force_sidebar_collapsed(self):
         """
@@ -354,7 +412,11 @@ class UserInterface:
                 # Diferente de "Nova Análise": só navega pro Passo 1, sem
                 # apagar nada — tudo que já foi preenchido continua lá, e
                 # dá pra voltar a qualquer passo já feito normalmente.
-                if self._has_editing_in_progress():
+                if self.state.get('show_execution_report_page') and self.state.get('report_pdf_bytes'):
+                    self.state.set('_pending_navigation_after_report', {'show_execution_report_page': False, 'step': 1})
+                    self.state.set('show_leave_report_modal', True)
+                    st.rerun()
+                elif self._has_editing_in_progress():
                     confirm_navigate_away_modal(1)
                 else:
                     clear_widget_states()
@@ -363,31 +425,30 @@ class UserInterface:
 
             st.divider()
             if st.button("ℹ️ Sobre o app", use_container_width=True, key="btn_about_sidebar", disabled=self.state.get('is_processing')):
-                self.state.set('show_about_page', True)
-                self.state.set('show_admin_page', False)
-                self.state.set('show_execution_report_page', False)
-                self.state.set('show_wi_generation_page', False)
-                self.state.set('show_wiql_generation_page', False)
-                st.rerun()
+                self._navigate_or_confirm({
+                    'show_about_page': True, 'show_admin_page': False,
+                    'show_execution_report_page': False, 'show_wi_generation_page': False,
+                    'show_wiql_generation_page': False,
+                })
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
             if self._get_permission_cached("azure_devops"):
                 if st.button("🎯 Gerar a partir de Work Items", use_container_width=True, key="btn_wigen_sidebar", disabled=self.state.get('is_processing')):
-                    self.state.set('show_wi_generation_page', True)
-                    self.state.set('show_about_page', False)
-                    self.state.set('show_admin_page', False)
-                    self.state.set('show_execution_report_page', False)
-                    self.state.set('show_wiql_generation_page', False)
-                    st.rerun()
+                    self._navigate_or_confirm({
+                        'show_wi_generation_page': True, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wiql_generation_page': False,
+                    })
                 if st.button("🔎 Criar Query com IA", use_container_width=True, key="btn_wiql_sidebar", disabled=self.state.get('is_processing')):
-                    self.state.set('show_wiql_generation_page', True)
-                    self.state.set('show_about_page', False)
-                    self.state.set('show_admin_page', False)
-                    self.state.set('show_execution_report_page', False)
-                    self.state.set('show_wi_generation_page', False)
-                    st.rerun()
+                    self._navigate_or_confirm({
+                        'show_wiql_generation_page': True, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wi_generation_page': False,
+                    })
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
+                    # Já estar na própria página de Relatório não conta como
+                    # "sair" dela — não precisa do guarda aqui.
                     self.state.set('show_execution_report_page', True)
                     self.state.set('show_about_page', False)
                     self.state.set('show_admin_page', False)
@@ -401,12 +462,11 @@ class UserInterface:
                 # aprovadores/permissões (isso é decidido dentro da própria
                 # página, não aqui).
                 if st.button("🛡️ Administração", use_container_width=True, key="btn_admin_sidebar", disabled=self.state.get('is_processing')):
-                    self.state.set('show_admin_page', True)
-                    self.state.set('show_about_page', False)
-                    self.state.set('show_execution_report_page', False)
-                    self.state.set('show_wi_generation_page', False)
-                    self.state.set('show_wiql_generation_page', False)
-                    st.rerun()
+                    self._navigate_or_confirm({
+                        'show_admin_page': True, 'show_about_page': False,
+                        'show_execution_report_page': False, 'show_wi_generation_page': False,
+                        'show_wiql_generation_page': False,
+                    })
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
 
@@ -2069,9 +2129,18 @@ class UserInterface:
             "assistente de geração, só busca dados que já existem lá."
         )
 
-        if st.button("← Voltar", key="btn_report_back_top"):
-            self.state.set('show_execution_report_page', False)
-            st.rerun()
+        c_back, c_new = st.columns(2)
+        with c_back:
+            if st.button("← Voltar", key="btn_report_back_top", use_container_width=True):
+                self._navigate_or_confirm({'show_execution_report_page': False})
+        with c_new:
+            if st.button("🔄 Novo Relatório", key="btn_new_report_top", use_container_width=True, disabled=not self.state.get('report_pdf_bytes')):
+                self.state.set('show_new_report_modal', True)
+                st.rerun()
+        if self.state.get('show_new_report_modal'):
+            confirm_new_report_modal()
+        if self.state.get('show_leave_report_modal'):
+            confirm_leave_report_modal()
 
         if not self._get_permission_cached("execution_report"):
             st.error("❌ Você não tem permissão para acessar o Relatório de Testes.")
@@ -2087,8 +2156,7 @@ class UserInterface:
 
         st.divider()
         if st.button("← Voltar", key="btn_report_back_bottom"):
-            self.state.set('show_execution_report_page', False)
-            st.rerun()
+            self._navigate_or_confirm({'show_execution_report_page': False})
 
     def _wi_generation_page(self):
         st.subheader("🎯 Gerar Casos de Teste a partir de Work Items")
@@ -3259,6 +3327,10 @@ class UserInterface:
     def run(self):
         if not require_login(self.config):
             return
+
+        if not self.state.get('_f5_block_injected'):
+            self.state.set('_f5_block_injected', True)
+            self._block_f5_reload()
 
         self._inject_ui_styles()
         self._header()

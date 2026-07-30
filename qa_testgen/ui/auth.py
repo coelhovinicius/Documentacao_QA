@@ -120,7 +120,7 @@ def _grant_session(config, username: str, cookie_manager):
     expires_at = datetime.now() + timedelta(minutes=INACTIVITY_TIMEOUT_MINUTES)
     cookie_manager.set(
         COOKIE_NAME, _make_token(username),
-        expires_at=expires_at, key="set_auth_cookie",
+        expires_at=expires_at, key="set_auth_cookie", same_site="lax",
     )
     st.session_state.pop(PENDING_USERNAME_KEY, None)
     log_action(config, username, "Login", "Login", "Sessão iniciada com sucesso")
@@ -406,14 +406,21 @@ def require_login(config) -> bool:
         st.stop()
 
     cookie_manager = _get_cookie_manager()
-    # O CookieManager lê os cookies do navegador de forma assíncrona — na
-    # primeiríssima execução do script ele pode ainda não ter o valor
-    # pronto. Nesse caso, `get_all()` devolve None; esperamos o próximo
-    # rerun (que o próprio componente dispara sozinho) antes de decidir
-    # que a pessoa não está logada.
-    all_cookies = cookie_manager.get_all(key="get_all_cookies_initial")
-    if all_cookies is None:
+    # O CookieManager NUNCA devolve None (a própria biblioteca já usa
+    # default={} internamente) — então checar "is None" pra saber se ainda
+    # está carregando não funciona, e fazia o app tratar "ainda carregando"
+    # como "sem cookie nenhum", jogando pro login mesmo com sessão válida
+    # (esse era o motivo do F5 derrubar a sessão). Em vez disso, força uma
+    # rodada de "aquecimento": na primeiríssima execução do script nesta
+    # aba do navegador, só dispara a leitura e para — o rerun automático
+    # do componente (quando ele termina de ler o cookie de verdade) traz a
+    # próxima execução já com o dado real disponível.
+    if "_cookie_warmup_done" not in st.session_state:
+        cookie_manager.get_all(key="get_all_cookies_warmup")
+        st.session_state["_cookie_warmup_done"] = True
         st.stop()
+
+    all_cookies = cookie_manager.get_all(key="get_all_cookies_initial") or {}
 
     token = all_cookies.get(COOKIE_NAME)
     if token:
@@ -425,7 +432,7 @@ def require_login(config) -> bool:
             expires_at = datetime.now() + timedelta(minutes=INACTIVITY_TIMEOUT_MINUTES)
             cookie_manager.set(
                 COOKIE_NAME, _make_token(username),
-                expires_at=expires_at, key="renew_auth_cookie",
+                expires_at=expires_at, key="renew_auth_cookie", same_site="lax",
             )
             return True
         # Token inválido/expirado: limpa o cookie.
@@ -566,4 +573,29 @@ def render_logout_control():
             if user:
                 st.caption(f"👤 Logado como **{user}**")
             if st.button("🚪 Sair", use_container_width=True, key="btn_logout"):
-                logout()
+                if st.session_state.get('show_execution_report_page') and st.session_state.get('report_pdf_bytes'):
+                    st.session_state['_show_logout_report_confirm'] = True
+                    st.rerun()
+                else:
+                    logout()
+
+    if st.session_state.get('_show_logout_report_confirm'):
+        _confirm_logout_with_report_modal()
+
+
+@st.dialog("⚠️ Sair sem salvar o Relatório de Testes")
+def _confirm_logout_with_report_modal():
+    st.markdown(
+        "Você tem um Relatório de Testes gerado nesta sessão. Ao sair, essas informações "
+        "serão **perdidas** (não ficam salvas em lugar nenhum fora desta sessão). Deseja "
+        "sair mesmo assim?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚪 Sair mesmo assim", use_container_width=True, type="primary", key="confirm_logout_report_btn"):
+            st.session_state.pop('_show_logout_report_confirm', None)
+            logout()
+    with c2:
+        if st.button("✖ Continuar Logado", use_container_width=True, key="cancel_logout_report_btn"):
+            st.session_state['_show_logout_report_confirm'] = False
+            st.rerun()

@@ -222,3 +222,65 @@ def confirm_new_analysis_modal(config=None):
         if st.button("Cancelar", use_container_width=True, key="cancel_new_btn"):
             st.session_state['show_new_analysis_modal'] = False
             st.rerun()
+
+_REPORT_WIDGET_KEYS = [
+    'report_plan_select', 'report_contexto_input', 'report_ambiente_select',
+    'report_escopo_input', 'report_conclusao_input', 'report_proximos_input',
+    'report_status_manual_select',
+]
+
+
+def _clear_report_state():
+    st.session_state['report_available_plans'] = []
+    st.session_state['report_contexto'] = ''
+    st.session_state['report_escopo'] = ''
+    st.session_state['report_conclusao'] = ''
+    st.session_state['report_proximos'] = ''
+    st.session_state['report_pdf_bytes'] = None
+    st.session_state['report_warnings'] = []
+    for key in _REPORT_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+
+
+@st.dialog("⚠️ Começar um Novo Relatório")
+def confirm_new_report_modal():
+    st.markdown(
+        "Isso vai limpar o Test Plan selecionado, os textos preenchidos (Contexto, Escopo, "
+        "Conclusão, Próximos Passos), o Status escolhido e o PDF já gerado nesta tela. "
+        "Essas informações serão **perdidas permanentemente**. Tem certeza que deseja começar um "
+        "novo relatório?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔄 Sim, Novo Relatório", use_container_width=True, type="primary", key="confirm_new_report_btn"):
+            _clear_report_state()
+            st.session_state['show_new_report_modal'] = False
+            st.rerun()
+    with c2:
+        if st.button("Cancelar", use_container_width=True, key="cancel_new_report_btn"):
+            st.session_state['show_new_report_modal'] = False
+            st.rerun()
+
+
+@st.dialog("⚠️ Sair do Relatório de Testes")
+def confirm_leave_report_modal():
+    st.markdown(
+        "Você tem um Relatório de Testes gerado nesta tela (ou em andamento). Se sair agora, "
+        "essas informações serão **perdidas** (não ficam salvas em lugar nenhum fora desta "
+        "sessão). Deseja continuar mesmo assim?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚪 Sair mesmo assim", use_container_width=True, type="primary", key="confirm_leave_report_btn"):
+            pending = st.session_state.get('_pending_navigation_after_report') or {}
+            for key, value in pending.items():
+                st.session_state[key] = value
+            _clear_report_state()
+            st.session_state['show_leave_report_modal'] = False
+            st.session_state.pop('_pending_navigation_after_report', None)
+            st.rerun()
+    with c2:
+        if st.button("✖ Continuar no Relatório", use_container_width=True, key="cancel_leave_report_btn"):
+            st.session_state['show_leave_report_modal'] = False
+            st.session_state.pop('_pending_navigation_after_report', None)
+            st.rerun()
