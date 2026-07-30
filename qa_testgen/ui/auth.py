@@ -1,9 +1,10 @@
 import hmac
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import bcrypt
+import extra_streamlit_components as stx
 import streamlit as st
 
 from qa_testgen.infrastructure.access_control_client import AccessControlClient
@@ -12,12 +13,25 @@ SESSION_AUTH_KEY = "authenticated"
 SESSION_USER_KEY = "auth_user"
 PENDING_USERNAME_KEY = "_access_pending_username"
 
-QUERY_PARAM_NAME = "auth"
+COOKIE_NAME = "qa_testgen_auth"
 
 # Desloga automaticamente após esse tempo sem nenhuma interação com o app.
 # Cada requisição válida "renova" essa janela (sliding window) — é isso que
 # controla o logout automático.
 INACTIVITY_TIMEOUT_MINUTES = 60
+
+
+def _get_cookie_manager():
+    """
+    Cria (ou reaproveita, via o parâmetro `key`) a instância do gerenciador
+    de cookies. IMPORTANTE: não pode ser envolvida em `@st.cache_resource`
+    — o CookieManager já chama um componente internamente (equivalente a
+    um widget), e o Streamlit proíbe widgets dentro de função cacheada
+    (gera `CachedWidgetWarning`/erro). A própria biblioteca já garante
+    estabilidade entre reruns através do parâmetro `key`, então cachear
+    por fora era redundante e quebrava o app.
+    """
+    return stx.CookieManager(key="qa_testgen_cookie_manager")
 
 
 # --------------------------------------------------------------------------- #
@@ -100,10 +114,14 @@ def _validate_token(raw: str):
     return username
 
 
-def _grant_session(config, username: str):
+def _grant_session(config, username: str, cookie_manager):
     st.session_state[SESSION_AUTH_KEY] = True
     st.session_state[SESSION_USER_KEY] = username
-    st.query_params[QUERY_PARAM_NAME] = _make_token(username)
+    expires_at = datetime.now() + timedelta(minutes=INACTIVITY_TIMEOUT_MINUTES)
+    cookie_manager.set(
+        COOKIE_NAME, _make_token(username),
+        expires_at=expires_at, key="set_auth_cookie",
+    )
     st.session_state.pop(PENDING_USERNAME_KEY, None)
     log_action(config, username, "Login", "Login", "Sessão iniciada com sucesso")
 
@@ -387,28 +405,45 @@ def require_login(config) -> bool:
         )
         st.stop()
 
-    token = st.query_params.get(QUERY_PARAM_NAME)
+    cookie_manager = _get_cookie_manager()
+    # O CookieManager lê os cookies do navegador de forma assíncrona — na
+    # primeiríssima execução do script ele pode ainda não ter o valor
+    # pronto. Nesse caso, `get_all()` devolve None; esperamos o próximo
+    # rerun (que o próprio componente dispara sozinho) antes de decidir
+    # que a pessoa não está logada.
+    all_cookies = cookie_manager.get_all(key="get_all_cookies_initial")
+    if all_cookies is None:
+        st.stop()
+
+    token = all_cookies.get(COOKIE_NAME)
     if token:
         username = _validate_token(token)
         if username:
             st.session_state[SESSION_AUTH_KEY] = True
             st.session_state[SESSION_USER_KEY] = username
             # Renova a janela de inatividade a cada carregamento válido.
-            st.query_params[QUERY_PARAM_NAME] = _make_token(username)
+            expires_at = datetime.now() + timedelta(minutes=INACTIVITY_TIMEOUT_MINUTES)
+            cookie_manager.set(
+                COOKIE_NAME, _make_token(username),
+                expires_at=expires_at, key="renew_auth_cookie",
+            )
             return True
-        # Token inválido/expirado: limpa da URL pra não ficar um lixo ali.
-        del st.query_params[QUERY_PARAM_NAME]
+        # Token inválido/expirado: limpa o cookie.
+        try:
+            cookie_manager.delete(COOKIE_NAME, key="delete_invalid_cookie")
+        except Exception:
+            pass
 
     pending_username = st.session_state.get(PENDING_USERNAME_KEY)
     if pending_username:
-        _render_waiting_screen(config, pending_username)
+        _render_waiting_screen(config, pending_username, cookie_manager)
         return False
 
-    _render_login_form(config)
+    _render_login_form(config, cookie_manager)
     return False
 
 
-def _render_login_form(config):
+def _render_login_form(config, cookie_manager):
     st.markdown(
         """
         <style>
@@ -432,7 +467,7 @@ def _render_login_form(config):
             username = username.strip()
             if _check_credentials(username, password):
                 if username == config.owner_username:
-                    _grant_session(config, username)
+                    _grant_session(config, username, cookie_manager)
                     st.rerun()
                 else:
                     try:
@@ -440,7 +475,7 @@ def _render_login_form(config):
                         status = client.check_status(username)
                         if status == "approved":
                             client.consume(username)
-                            _grant_session(config, username)
+                            _grant_session(config, username, cookie_manager)
                             st.rerun()
                         else:
                             if status in ("none", "denied", "consumed"):
@@ -453,7 +488,7 @@ def _render_login_form(config):
                 st.error("❌ Usuário ou senha inválidos.")
 
 
-def _render_waiting_screen(config, username: str):
+def _render_waiting_screen(config, username: str, cookie_manager):
     st.markdown(
         """
         <style>
@@ -480,7 +515,7 @@ def _render_waiting_screen(config, username: str):
                     status = client.check_status(username)
                     if status == "approved":
                         client.consume(username)
-                        _grant_session(config, username)
+                        _grant_session(config, username, cookie_manager)
                         st.rerun()
                     elif status == "denied":
                         st.error("❌ Sua solicitação de acesso foi negada.")
@@ -495,8 +530,11 @@ def _render_waiting_screen(config, username: str):
 
 
 def logout():
-    if QUERY_PARAM_NAME in st.query_params:
-        del st.query_params[QUERY_PARAM_NAME]
+    cookie_manager = _get_cookie_manager()
+    try:
+        cookie_manager.delete(COOKIE_NAME, key="logout_delete_cookie")
+    except Exception:
+        pass
     st.session_state.pop(SESSION_AUTH_KEY, None)
     st.session_state.pop(SESSION_USER_KEY, None)
     st.rerun()
