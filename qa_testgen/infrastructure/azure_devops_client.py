@@ -252,7 +252,7 @@ class AzureDevOpsClient:
     # Test Plans
     # ------------------------------------------------------------------ #
     def list_test_plans(self) -> list:
-        """Lista os Test Plans do projeto como [{'id':..., 'name':...}]."""
+        """Lista os Test Plans do projeto como [{'id':..., 'name':..., 'area_path':...}]."""
         plans = []
         url = f"{self._base_url()}/testplan/plans?api-version={API_VERSION}"
         while url:
@@ -260,7 +260,11 @@ class AzureDevOpsClient:
             data = self._handle_response(response, "Listar Test Plans existentes")
             for plan in data.get("value", []):
                 if plan.get("name"):
-                    plans.append({"id": plan.get("id"), "name": plan.get("name")})
+                    plans.append({
+                        "id": plan.get("id"),
+                        "name": plan.get("name"),
+                        "area_path": plan.get("areaPath", ""),
+                    })
             continuation = response.headers.get("x-ms-continuationtoken")
             if continuation:
                 url = f"{self._base_url()}/testplan/plans?continuationToken={continuation}&api-version={API_VERSION}"
@@ -274,6 +278,40 @@ class AzureDevOpsClient:
         if not target:
             return False
         return any(p["name"].strip().lower() == target for p in self.list_test_plans())
+
+    def list_test_plans_for_area_path(self, area_path: str) -> list:
+        """Mesma coisa que list_test_plans(), mas só os que pertencem à Area Path informada."""
+        return [p for p in self.list_test_plans() if p.get("area_path") == area_path]
+
+    def get_test_plan_root_suite(self, plan_id: int) -> int:
+        """
+        Busca o ID da suite raiz de um Test Plan JÁ EXISTENTE (a criação de
+        um plano novo já devolve isso direto na resposta, mas pra um plano
+        existente que a pessoa escolheu reaproveitar, precisa buscar
+        separadamente).
+        """
+        url = f"{self._base_url()}/testplan/plans/{plan_id}?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Buscar detalhes do Test Plan {plan_id}")
+        root_suite = data.get("rootSuite") or {}
+        return root_suite.get("id")
+
+    def get_existing_requirement_suite_ids(self, plan_id: int) -> dict:
+        """
+        Mapeia work_item_id -> suite_id das Requirement-based Suites que já
+        existem num Test Plan — usado pra não duplicar suite quando a
+        pessoa escolhe reaproveitar um Test Plan já existente (regra do
+        "merge": só cria suite pros Work Items que ainda não têm uma).
+        """
+        mapping = {}
+        url = f"{self._base_url()}/testplan/Plans/{plan_id}/suites?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Listar Suites existentes do Test Plan {plan_id}")
+        for suite in data.get("value", []):
+            requirement_id = suite.get("requirementId")
+            if requirement_id:
+                mapping[int(requirement_id)] = suite.get("id")
+        return mapping
 
     # ------------------------------------------------------------------ #
     # Queries WIQL — geração assistida por IA (descrição em linguagem

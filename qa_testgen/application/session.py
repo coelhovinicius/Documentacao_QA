@@ -76,6 +76,9 @@ class SessionState:
         'wiql_preview_result': None,
         'ado_confirm_modal_params': None,
         'ado_test_plan_name': '',
+        'ado_existing_plans_in_path': [],
+        'ado_existing_plans_area_path': '',
+        'ado_existing_plan_id_chosen': None,
         'ado_tc_initial_state': 'Ready',
         'ado_plan_name_error': None,
     }

@@ -528,6 +528,7 @@ class UserInterface:
             'build_artifacts': 'Construindo os artefatos finais',
             'fetch_wi': 'Buscando Work Items do Board no Azure DevOps',
             'fetch_report_plans': 'Buscando Test Plans do projeto',
+            'fetch_existing_plans': 'Buscando Test Plans existentes na Area Path',
             'generate_execution_report': 'Buscando resultados de execução e gerando o Relatório de Testes',
             'suggest_report_narrative': 'Analisando resultados e gerando sugestão de texto com IA',
             'fetch_orgs': 'Carregando organizações acessíveis a este PAT',
@@ -2041,16 +2042,76 @@ class UserInterface:
             total_links = sum(len(c) for c in items_with_cases.values())
 
             st.divider()
-            st.markdown("### 📋 Nome do Test Plan")
-            default_plan_name = f"{self.state.get('project_name') or 'QA TestGen'} - QA TestGen"
-            plan_name = st.text_input(
-                "Nome do Test Plan a ser criado no Azure DevOps",
-                value=self.state.get('ado_test_plan_name') or default_plan_name,
-                disabled=self.state.get('is_processing'),
-                key="ado_test_plan_name_input",
-                help="Precisa ser único no projeto — não pode repetir o nome de um Test Plan já existente.",
+            st.markdown("### 📋 Test Plan")
+
+            with st.container(key="azure_blue_btn_fetch_existing_plans"):
+                st.button(
+                    "🔍 Buscar Test Plans existentes nesta Area Path",
+                    disabled=self.state.get('is_processing'),
+                    key="btn_fetch_existing_plans",
+                    on_click=self.trigger_action,
+                    args=("fetch_existing_plans",),
+                )
+            if self.state.get('current_action') == 'fetch_existing_plans' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner(f"Buscando Test Plans em '{area_path}'..."):
+                        existing = ado_client.list_test_plans_for_area_path(area_path)
+                    self.state.set('ado_existing_plans_in_path', existing)
+                    self.state.set('ado_existing_plans_area_path', area_path)
+                except AzureDevOpsError as error:
+                    st.error(f"❌ Não foi possível buscar Test Plans existentes: {error}")
+                except Exception as error:
+                    st.error(f"❌ Erro inesperado: {error}")
+                self.clear_action()
+                st.rerun()
+
+            existing_plans = (
+                self.state.get('ado_existing_plans_in_path') or []
+                if self.state.get('ado_existing_plans_area_path') == area_path
+                else []
             )
-            self.state.set('ado_test_plan_name', plan_name)
+
+            plan_mode_options = ["Criar novo Test Plan"]
+            if existing_plans:
+                plan_mode_options.append("Usar um Test Plan existente (adicionar Suites/Casos nele)")
+            else:
+                st.caption(
+                    "Nenhum Test Plan encontrado ainda nesta Area Path — clique em \"Buscar\" acima "
+                    "se você espera que já exista um (ou simplesmente crie um novo abaixo)."
+                )
+
+            plan_mode = st.radio(
+                "O que você quer fazer?",
+                options=plan_mode_options,
+                disabled=self.state.get('is_processing'),
+                key="ado_plan_mode_radio",
+                horizontal=False,
+            )
+
+            existing_plan_id = None
+            if plan_mode.startswith("Usar"):
+                plan_labels = {f"{p['id']} - {p['name']}": p for p in existing_plans}
+                chosen_plan_label = st.selectbox(
+                    "Test Plan existente",
+                    options=list(plan_labels.keys()),
+                    disabled=self.state.get('is_processing'),
+                    key="ado_existing_plan_select",
+                    help="Os Work Items selecionados que já tiverem uma Suite neste plano não geram Suite "
+                         "duplicada — os Casos de Teste novos só entram na Suite já existente.",
+                )
+                existing_plan_id = plan_labels[chosen_plan_label]["id"]
+                plan_name = plan_labels[chosen_plan_label]["name"]
+                self.state.set('ado_plan_name_error', None)
+            else:
+                default_plan_name = f"{self.state.get('project_name') or 'QA TestGen'} - QA TestGen"
+                plan_name = st.text_input(
+                    "Nome do Test Plan a ser criado no Azure DevOps",
+                    value=self.state.get('ado_test_plan_name') or default_plan_name,
+                    disabled=self.state.get('is_processing'),
+                    key="ado_test_plan_name_input",
+                    help="Precisa ser único no projeto — não pode repetir o nome de um Test Plan já existente.",
+                )
+                self.state.set('ado_test_plan_name', plan_name)
 
             initial_state_label = st.selectbox(
                 "Estado inicial dos Casos de Teste criados",
@@ -2081,7 +2142,12 @@ class UserInterface:
                             st.rerun()
                         else:
                             self.state.set('ado_confirm_modal_params', (len(test_cases), len(items_with_cases), total_links))
-                            self.trigger_action("check_ado_plan_name")
+                            self.state.set('ado_existing_plan_id_chosen', existing_plan_id)
+                            if existing_plan_id:
+                                self.state.set('ado_plan_name_error', None)
+                                self.state.set('show_ado_confirm_modal', True)
+                            else:
+                                self.trigger_action("check_ado_plan_name")
                             st.rerun()
             else:
                 st.info("Vincule pelo menos um Caso de Teste a um Work Item antes de continuar.")
@@ -2094,7 +2160,8 @@ class UserInterface:
                         self.state.set(
                             'ado_plan_name_error',
                             f"❌ Já existe um Test Plan chamado **{plan_name.strip()}** neste projeto do "
-                            "Azure DevOps. Escolha um nome diferente antes de continuar.",
+                            "Azure DevOps. Escolha um nome diferente, ou use a opção \"Usar um Test Plan "
+                            "existente\" acima pra reaproveitar esse mesmo plano.",
                         )
                     else:
                         self.state.set('ado_plan_name_error', None)
@@ -2111,7 +2178,7 @@ class UserInterface:
                 confirm_azure_devops_full_push_modal(*params)
 
             if self.state.get('current_action') == 'push_azure_devops_full' and not self.state.get('show_interrupt_modal'):
-                self._push_full_azure_devops(ado_client, area_path, plan_name.strip(), initial_state)
+                self._push_full_azure_devops(ado_client, area_path, plan_name.strip(), initial_state, self.state.get('ado_existing_plan_id_chosen'))
 
             log = self.state.get('ado_full_push_log') or []
             if log:
@@ -3029,7 +3096,7 @@ class UserInterface:
         except Exception as error:
             self.state.set('ado_suggest_message', ("error", f"❌ Erro inesperado ao consultar sugestão da IA: {error}"))
 
-    def _push_full_azure_devops(self, ado_client, area_path: str, plan_name: str, initial_state: str = None):
+    def _push_full_azure_devops(self, ado_client, area_path: str, plan_name: str, initial_state: str = None, existing_plan_id: int = None):
         test_cases = self.state.get('test_cases') or []
         project_name = self.state.get('project_name') or "QA TestGen"
         case_ids = dict(self.state.get('ado_test_case_ids') or {})
@@ -3096,24 +3163,52 @@ class UserInterface:
                     progress.progress(done / total, text=f"Criando Test Cases no Azure DevOps... ({done}/{total})")
             self.state.set('ado_test_case_ids', case_ids)
 
-        # 2) Cria o Test Plan (precisa existir antes das Suites — não dá pra paralelizar com o resto)
-        try:
-            plan = ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen para {project_name}")
-            plan_id = plan["id"]
-            root_suite_id = plan.get("root_suite_id")
-            log.append(f"✅ Test Plan criado: **{plan_name}** (ID {plan_id})")
-        except AzureDevOpsError as error:
-            log.append(f"❌ Falha ao criar Test Plan: {error}")
-            self.state.set('ado_full_push_log', log)
-            self.clear_action()
-            st.rerun()
-            return
-        except Exception as error:
-            log.append(f"❌ Erro inesperado ao criar Test Plan: {error}")
-            self.state.set('ado_full_push_log', log)
-            self.clear_action()
-            st.rerun()
-            return
+        # 2) Test Plan: cria um novo, ou reaproveita um já existente (modo
+        # "merge" — a pessoa escolheu isso no Passo 7).
+        if existing_plan_id:
+            plan_id = existing_plan_id
+            try:
+                with st.spinner(f"Buscando suite raiz do Test Plan existente '{plan_name}'..."):
+                    root_suite_id = ado_client.get_test_plan_root_suite(plan_id)
+                log.append(f"♻️ Reaproveitando Test Plan existente: **{plan_name}** (ID {plan_id})")
+            except AzureDevOpsError as error:
+                log.append(f"❌ Falha ao buscar detalhes do Test Plan existente: {error}")
+                self.state.set('ado_full_push_log', log)
+                self.clear_action()
+                st.rerun()
+                return
+            except Exception as error:
+                log.append(f"❌ Erro inesperado ao buscar Test Plan existente: {error}")
+                self.state.set('ado_full_push_log', log)
+                self.clear_action()
+                st.rerun()
+                return
+
+            try:
+                with st.spinner("Verificando Suites já existentes neste Test Plan (evita duplicar)..."):
+                    existing_suite_by_wi = ado_client.get_existing_requirement_suite_ids(plan_id)
+            except Exception as error:
+                log.append(f"⚠️ Não foi possível checar Suites já existentes — pode gerar Suite duplicada: {error}")
+                existing_suite_by_wi = {}
+        else:
+            try:
+                plan = ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen para {project_name}")
+                plan_id = plan["id"]
+                root_suite_id = plan.get("root_suite_id")
+                log.append(f"✅ Test Plan criado: **{plan_name}** (ID {plan_id})")
+            except AzureDevOpsError as error:
+                log.append(f"❌ Falha ao criar Test Plan: {error}")
+                self.state.set('ado_full_push_log', log)
+                self.clear_action()
+                st.rerun()
+                return
+            except Exception as error:
+                log.append(f"❌ Erro inesperado ao criar Test Plan: {error}")
+                self.state.set('ado_full_push_log', log)
+                self.clear_action()
+                st.rerun()
+                return
+            existing_suite_by_wi = {}
 
         if not root_suite_id:
             log.append("⚠️ Não recebi o ID da suite raiz do plano — não é possível criar as Requirement Suites.")
@@ -3122,8 +3217,13 @@ class UserInterface:
             st.rerun()
             return
 
-        # 3a) Cria as Requirement Suites, uma por Work Item com casos.
-        # IMPORTANTE: isso precisa ser SEQUENCIAL — todas as Suites são
+        # 3a) Cria as Requirement Suites, uma por Work Item com casos — mas
+        # só pros Work Items que AINDA NÃO têm uma Suite neste plano (regra
+        # do "merge"). A Suite que já existe continua funcionando sozinha:
+        # como ela já "puxa" qualquer Caso de Teste vinculado ("Tests") ao
+        # Work Item dela, os Casos NOVOS aparecem lá automaticamente assim
+        # que o vínculo é criado no passo 3b — não precisa mexer na Suite.
+        # IMPORTANTE: criação de Suite precisa ser SEQUENCIAL — todas são
         # filhas do mesmo Suite raiz do plano, e criar várias ao mesmo tempo
         # em paralelo faz o Azure DevOps rejeitar com erro de concorrência
         # (TF26071: "changed by someone else since you opened it"), porque
@@ -3131,17 +3231,23 @@ class UserInterface:
         suite_tasks = list(items_with_cases.items())  # [(work_item_id_str, [titulos]), ...]
         if suite_tasks:
             total_suites = len(suite_tasks)
-            progress2 = st.progress(0, text=f"Criando Suites no Azure DevOps... (0/{total_suites})")
+            progress2 = st.progress(0, text=f"Verificando/criando Suites no Azure DevOps... (0/{total_suites})")
             for idx, (wid_str, _casos) in enumerate(suite_tasks, start=1):
                 work_item_id = int(wid_str)
-                try:
-                    suite_id = ado_client.create_requirement_based_suite(plan_id, root_suite_id, work_item_id)
-                    log.append(f"✅ Suite criada para Work Item {work_item_id} (Suite ID {suite_id})")
-                except AzureDevOpsError as error:
-                    log.append(f"❌ Falha ao criar Suite para Work Item {work_item_id}: {error}")
-                except Exception as error:
-                    log.append(f"❌ Erro inesperado ao criar Suite para Work Item {work_item_id}: {error}")
-                progress2.progress(idx / total_suites, text=f"Criando Suites no Azure DevOps... ({idx}/{total_suites})")
+                if work_item_id in existing_suite_by_wi:
+                    log.append(
+                        f"♻️ Work Item {work_item_id} já tinha Suite neste Test Plan "
+                        f"(Suite ID {existing_suite_by_wi[work_item_id]}) — Casos novos entram nela automaticamente."
+                    )
+                else:
+                    try:
+                        suite_id = ado_client.create_requirement_based_suite(plan_id, root_suite_id, work_item_id)
+                        log.append(f"✅ Suite criada para Work Item {work_item_id} (Suite ID {suite_id})")
+                    except AzureDevOpsError as error:
+                        log.append(f"❌ Falha ao criar Suite para Work Item {work_item_id}: {error}")
+                    except Exception as error:
+                        log.append(f"❌ Erro inesperado ao criar Suite para Work Item {work_item_id}: {error}")
+                progress2.progress(idx / total_suites, text=f"Verificando/criando Suites no Azure DevOps... ({idx}/{total_suites})")
 
         # 3b) Vincula os Casos de Teste aos Work Items (link "Tests", não
         # depende da Suite existir). Isso é seguro em paralelo ENTRE casos
