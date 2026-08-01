@@ -3331,8 +3331,9 @@ class UserInterface:
     def _about_page(self):
         st.subheader("ℹ️ Sobre o App")
         st.caption(
-            "Uma visão geral de como o QA Automation funciona, do envio do documento até a "
-            "integração com o Azure DevOps."
+            "Uma visão geral de como o QA Automation funciona hoje — do envio do documento até "
+            "a integração com o Azure DevOps, passando pelo controle de acesso e pelos recursos "
+            "extras disponíveis na barra lateral."
         )
 
         if st.button("← Voltar", key="btn_about_back"):
@@ -3341,16 +3342,41 @@ class UserInterface:
 
         st.markdown("#### 🧭 Arquitetura geral")
         st.caption(
-            "O time de QA usa o app, que aciona o n8n (onde a IA gera o conteúdo) e depois "
-            "integra tudo direto no Azure DevOps."
+            "O acesso passa por aprovação antes de entrar. Depois disso, o time de QA usa o "
+            "app, que aciona o n8n (onde a IA gera o conteúdo, e onde o controle de acesso/logs "
+            "também vivem) e integra tudo direto no Azure DevOps, usando o PAT pessoal de cada "
+            "pessoa — não mais um token único compartilhado."
         )
         st.markdown(self._flatten_html(self._svg_architecture_diagram()), unsafe_allow_html=True)
 
         st.divider()
 
-        st.markdown("#### 📋 Os 7 passos do app")
+        st.markdown("#### 📋 Os 7 passos do assistente")
         st.caption("Do upload do documento até a integração automática com o Azure DevOps.")
         st.markdown(self._flatten_html(self._svg_steps_diagram()), unsafe_allow_html=True)
+
+        st.divider()
+
+        st.markdown("#### 🧩 Recursos adicionais (barra lateral)")
+        st.caption(
+            "Não fazem parte da sequência dos 7 passos — ficam sempre disponíveis na sidebar, "
+            "cada um liberado só pra quem tem a permissão certa (concedida em Administração)."
+        )
+        st.markdown(self._flatten_html(self._svg_extras_diagram()), unsafe_allow_html=True)
+
+        st.divider()
+
+        st.markdown("#### 🔐 Controle de acesso e governança")
+        st.markdown(
+            "- **Login com aprovação**: só o dono do app entra direto — qualquer outra pessoa "
+            "precisa ser aprovada por você ou por um aprovador cadastrado, a cada nova sessão\n"
+            "- **PAT pessoal**: cada pessoa usa o próprio token do Azure DevOps no Passo 7/8 — as "
+            "ações ficam registradas no nome de quem fez, não de uma conta compartilhada\n"
+            "- **Permissões granulares**: acesso à Integração com Azure DevOps e ao Relatório de "
+            "Testes são liberados individualmente — quem não tem permissão nem vê o botão\n"
+            "- **Logs de auditoria**: os últimos 500 eventos do app (login, aprovações, "
+            "integrações, relatórios gerados) ficam visíveis só pro dono, em Administração"
+        )
 
         st.divider()
         if st.button("← Voltar", key="btn_about_back_bottom"):
@@ -3373,7 +3399,7 @@ class UserInterface:
 
         return f"""
         <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
-        <svg width="100%" viewBox="0 0 680 484" style="max-width:520px;display:block;margin:0 auto;">
+        <svg width="100%" viewBox="0 0 680 600" style="max-width:520px;display:block;margin:0 auto;">
             <defs>
                 <marker id="arch_arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                     <path d="M2 1L8 5L2 9" fill="none" stroke="#F15A24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -3381,11 +3407,13 @@ class UserInterface:
             </defs>
             {node(40, "Usuário", "Time de QA")}
             <line x1="340" y1="96" x2="340" y2="156" {arrow} />
-            {node(156, "App QA Automation", "Streamlit")}
+            {node(156, "Login", "Aprovação + PAT pessoal")}
             <line x1="340" y1="212" x2="340" y2="272" {arrow} />
-            {node(272, "n8n + IA", "Gera conteúdo com IA")}
+            {node(272, "App QA Automation", "Streamlit")}
             <line x1="340" y1="328" x2="340" y2="388" {arrow} />
-            {node(388, "Azure DevOps", "Board e Test Plans")}
+            {node(388, "n8n", "IA + Controle de Acesso")}
+            <line x1="340" y1="444" x2="340" y2="504" {arrow} />
+            {node(504, "Azure DevOps", "Board, Test Plans, Queries")}
         </svg>
         </div>
         """
@@ -3413,19 +3441,44 @@ class UserInterface:
                     <path d="M2 1L8 5L2 9" fill="none" stroke="#F15A24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </marker>
             </defs>
-            {node(40, 90, 135, "1. Upload", "Setup inicial")}
+            {node(40, 90, 135, "1. Upload", "Documento + imagens")}
             {node(195, 90, 135, "2. Dúvidas", "Perguntas da IA")}
-            {node(350, 90, 135, "3. Matriz", "Matriz gerada")}
-            {node(505, 90, 135, "4. Casos", "Geração por IA")}
+            {node(350, 90, 135, "3. Matriz", "Com etiqueta HML/PROD")}
+            {node(505, 90, 135, "4. Casos", "CT01 HML/PROD - título")}
             <line x1="175" y1="118" x2="195" y2="118" {arrow} />
             <line x1="330" y1="118" x2="350" y2="118" {arrow} />
             <line x1="485" y1="118" x2="505" y2="118" {arrow} />
             <path d="M572.5 146 L572.5 195 L135.5 195 L135.5 250" fill="none" {arrow} />
             {node(43, 250, 185, "5. Planos", "Organiza em suítes")}
             {node(248, 250, 185, "6. Download", "CSV e PDF prontos")}
-            {node(453, 250, 185, "7. Azure DevOps", "Integração automática")}
+            {node(453, 250, 185, "7. Azure DevOps", "PAT pessoal + merge")}
             <line x1="228" y1="278" x2="248" y2="278" {arrow} />
             <line x1="433" y1="278" x2="453" y2="278" {arrow} />
+        </svg>
+        </div>
+        """
+
+    @staticmethod
+    def _svg_extras_diagram() -> str:
+        box = "fill='#ffffff' stroke='#d8d8d8' stroke-width='1'"
+        title_style = "font-family:sans-serif;font-size:13px;font-weight:600;fill:#2d2d2d"
+        sub_style = "font-family:sans-serif;font-size:11px;fill:#7a7a7a"
+
+        def node(x, y, w, title, sub):
+            cx = x + w / 2
+            return f"""
+            <rect x="{x}" y="{y}" width="{w}" height="60" rx="8" {box} />
+            <text x="{cx}" y="{y+24}" text-anchor="middle" style="{title_style}">{title}</text>
+            <text x="{cx}" y="{y+44}" text-anchor="middle" style="{sub_style}">{sub}</text>
+            """
+
+        return f"""
+        <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
+        <svg width="100%" viewBox="0 0 680 130" style="max-width:680px;display:block;margin:0 auto;">
+            {node(40, 40, 135, "📊 Relatório", "Status real do board")}
+            {node(195, 40, 135, "🎯 Via Work Items", "Gera a partir do Azure")}
+            {node(350, 40, 135, "🔎 Query com IA", "WIQL por descrição")}
+            {node(505, 40, 135, "🛡️ Administração", "Permissões e Logs")}
         </svg>
         </div>
         """
