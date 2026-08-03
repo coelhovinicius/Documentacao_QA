@@ -1,7 +1,5 @@
-import hmac
-import json
-import time
-from datetime import datetime
+import secrets as _secrets_module
+from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import streamlit as st
@@ -10,9 +8,10 @@ from qa_testgen.infrastructure.access_control_client import AccessControlClient
 
 SESSION_AUTH_KEY = "authenticated"
 SESSION_USER_KEY = "auth_user"
+SESSION_ID_KEY = "_auth_session_id"
 PENDING_USERNAME_KEY = "_access_pending_username"
 
-QUERY_PARAM_NAME = "auth"
+QUERY_PARAM_NAME = "sid"
 
 # Desloga automaticamente após esse tempo sem nenhuma interação com o app.
 # Cada requisição válida "renova" essa janela (sliding window) — é isso que
@@ -28,20 +27,11 @@ def _get_users() -> dict:
     [credentials]
     [credentials.usernames]
     admin = "$2b$12$....hash-bcrypt....."   # gerado com generate_password_hash.py
-
-    cookie_secret = "uma-string-aleatoria-bem-longa"
     """
     try:
         return dict(st.secrets["credentials"]["usernames"])
     except Exception:
         return {}
-
-
-def _get_cookie_secret() -> str:
-    try:
-        return str(st.secrets["credentials"]["cookie_secret"])
-    except Exception:
-        return "troque-este-segredo-antes-de-publicar"
 
 
 # Hash "dummy" só para gastar o mesmo tempo de bcrypt quando o usuário não
@@ -63,47 +53,30 @@ def _check_credentials(username: str, password: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Token assinado, guardado na URL (query param) — não guarda senha, só
-# usuário + última atividade. Usar a URL em vez de cookie evita depender de
-# componentes de terceiros baseados em iframe, que navegadores modernos vêm
-# isolando cada vez mais (mesmo cookies "de sessão" ficam presos no
-# armazenamento isolado do iframe em vez da página real).
+# Sessão via ID opaco na URL — a URL só carrega um identificador aleatório
+# (ex.: "?sid=k3F9x..."), sem nenhuma informação legível sobre quem está
+# logado. O dado de verdade (usuário, validade) fica guardado no n8n, não
+# na URL — isso também permite REVOGAR uma sessão remotamente (o ID para
+# de funcionar mesmo que a URL continue circulando por aí).
 # --------------------------------------------------------------------------- #
-def _sign(username: str, last_activity: int) -> str:
-    secret = _get_cookie_secret()
-    msg = f"{username}:{last_activity}".encode()
-    return hmac.new(secret.encode(), msg, "sha256").hexdigest()
+def _new_session_id() -> str:
+    return _secrets_module.token_urlsafe(24)
 
 
-def _make_token(username: str, last_activity: int = None) -> str:
-    if last_activity is None:
-        last_activity = int(time.time())
-    payload = {"u": username, "t": last_activity, "sig": _sign(username, last_activity)}
-    return json.dumps(payload, separators=(",", ":"))
-
-
-def _validate_token(raw: str):
-    try:
-        payload = json.loads(raw)
-        username = str(payload["u"])
-        last_activity = int(payload["t"])
-        sig = str(payload["sig"])
-    except Exception:
-        return None
-
-    if not hmac.compare_digest(sig, _sign(username, last_activity)):
-        return None
-    if int(time.time()) - last_activity > INACTIVITY_TIMEOUT_MINUTES * 60:
-        return None  # ficou parado tempo demais — precisa logar de novo
-    if username not in _get_users():
-        return None
-    return username
+def _expires_at_iso() -> str:
+    return (datetime.now(timezone.utc) + timedelta(minutes=INACTIVITY_TIMEOUT_MINUTES)).isoformat()
 
 
 def _grant_session(config, username: str):
+    session_id = _new_session_id()
+    try:
+        AccessControlClient(config).create_session(session_id, username, _expires_at_iso())
+    except Exception:
+        pass  # se o n8n estiver fora do ar, a sessão ainda funciona nesta aba (só não sobrevive a F5)
     st.session_state[SESSION_AUTH_KEY] = True
     st.session_state[SESSION_USER_KEY] = username
-    st.query_params[QUERY_PARAM_NAME] = _make_token(username)
+    st.session_state[SESSION_ID_KEY] = session_id
+    st.query_params[QUERY_PARAM_NAME] = session_id
     st.session_state.pop(PENDING_USERNAME_KEY, None)
     log_action(config, username, "Login", "Login", "Sessão iniciada com sucesso")
 
@@ -270,7 +243,58 @@ def render_admin_panel(config):
     _render_permission_management(config, client, "execution_report", "📊 Acesso ao Relatório de Testes (Passo 8)")
 
     st.divider()
+    _render_active_sessions(config, client)
+
+    st.divider()
     _render_audit_logs(config, client)
+
+
+def _render_active_sessions(config, client):
+    st.subheader("🔑 Sessões Ativas")
+    st.caption(
+        "Revogar uma sessão invalida o link de acesso dela imediatamente — mesmo que a pessoa "
+        "já tenha o link aberto ou salvo, ele para de funcionar na próxima ação/carregamento."
+    )
+    my_session_id = st.session_state.get(SESSION_ID_KEY, "")
+    try:
+        sessions = client.list_sessions()
+    except Exception as error:
+        st.error(f"❌ Não foi possível carregar as sessões: {error}")
+        return
+
+    if not sessions:
+        st.caption("Nenhuma sessão ativa no momento.")
+        return
+
+    for sess in sessions:
+        is_mine = sess.get("session_id") == my_session_id
+        created = sess.get("created_at", "")
+        try:
+            created_fmt = datetime.fromisoformat(created).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            created_fmt = created
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            label = f"**{sess.get('username', '')}** — desde {created_fmt}"
+            if is_mine:
+                label += " *(esta sessão, a sua)*"
+            st.write(label)
+        with c2:
+            if st.button("Revogar", key=f"revoke_session_{sess.get('session_id')}"):
+                try:
+                    client.revoke_session(sess.get("session_id"))
+                    log_action(config, st.session_state.get(SESSION_USER_KEY, ""), "Revogar Sessão", "Administração",
+                               f"Revogou a sessão de {sess.get('username', '')}")
+                    if is_mine:
+                        # Revogou a própria sessão — precisa deslogar localmente também.
+                        st.session_state.pop(SESSION_AUTH_KEY, None)
+                        st.session_state.pop(SESSION_USER_KEY, None)
+                        st.session_state.pop(SESSION_ID_KEY, None)
+                        if QUERY_PARAM_NAME in st.query_params:
+                            del st.query_params[QUERY_PARAM_NAME]
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"❌ {error}")
 
 
 def _render_audit_logs(config, client):
@@ -387,16 +411,25 @@ def require_login(config) -> bool:
         )
         st.stop()
 
-    token = st.query_params.get(QUERY_PARAM_NAME)
-    if token:
-        username = _validate_token(token)
-        if username:
+    session_id = st.query_params.get(QUERY_PARAM_NAME)
+    if session_id:
+        try:
+            data = AccessControlClient(config).get_session(session_id)
+        except Exception:
+            data = {"valid": False}
+
+        username = data.get("username", "") if data.get("valid") else ""
+        if username and username in _get_users():
             st.session_state[SESSION_AUTH_KEY] = True
             st.session_state[SESSION_USER_KEY] = username
+            st.session_state[SESSION_ID_KEY] = session_id
             # Renova a janela de inatividade a cada carregamento válido.
-            st.query_params[QUERY_PARAM_NAME] = _make_token(username)
+            try:
+                AccessControlClient(config).renew_session(session_id, _expires_at_iso())
+            except Exception:
+                pass
             return True
-        # Token inválido/expirado: limpa da URL pra não ficar um lixo ali.
+        # ID inválido/expirado/revogado: limpa da URL pra não ficar lixo ali.
         del st.query_params[QUERY_PARAM_NAME]
 
     pending_username = st.session_state.get(PENDING_USERNAME_KEY)
@@ -494,15 +527,22 @@ def _render_waiting_screen(config, username: str):
                 st.rerun()
 
 
-def logout():
+def logout(config=None):
+    session_id = st.session_state.get(SESSION_ID_KEY)
+    if config is not None and session_id:
+        try:
+            AccessControlClient(config).revoke_session(session_id)
+        except Exception:
+            pass  # se falhar, a sessão local ainda é encerrada — só não é revogada remotamente
     if QUERY_PARAM_NAME in st.query_params:
         del st.query_params[QUERY_PARAM_NAME]
     st.session_state.pop(SESSION_AUTH_KEY, None)
     st.session_state.pop(SESSION_USER_KEY, None)
+    st.session_state.pop(SESSION_ID_KEY, None)
     st.rerun()
 
 
-def render_logout_control():
+def render_logout_control(config=None):
     """Controle de logout fixado no rodapé da sidebar (usuário logado + botão Sair)."""
     user = st.session_state.get(SESSION_USER_KEY, "")
 
@@ -527,19 +567,20 @@ def render_logout_control():
         with st.container(key="sidebar_logout_box"):
             if user:
                 st.caption(f"👤 Logado como **{user}**")
-            if st.button("🚪 Sair", use_container_width=True, key="btn_logout"):
+            if st.button("🚪 Sair", use_container_width=True, key="btn_logout",
+                         help="Encerra e revoga esta sessão — o link deixa de funcionar, mesmo se alguém tiver uma cópia dele."):
                 if st.session_state.get('show_execution_report_page') and st.session_state.get('report_pdf_bytes'):
                     st.session_state['_show_logout_report_confirm'] = True
                     st.rerun()
                 else:
-                    logout()
+                    logout(config)
 
     if st.session_state.get('_show_logout_report_confirm'):
-        _confirm_logout_with_report_modal()
+        _confirm_logout_with_report_modal(config)
 
 
 @st.dialog("⚠️ Sair sem salvar o Relatório de Testes")
-def _confirm_logout_with_report_modal():
+def _confirm_logout_with_report_modal(config=None):
     st.markdown(
         "Você tem um Relatório de Testes gerado nesta sessão. Ao sair, essas informações "
         "serão **perdidas** (não ficam salvas em lugar nenhum fora desta sessão). Deseja "
@@ -549,7 +590,7 @@ def _confirm_logout_with_report_modal():
     with c1:
         if st.button("🚪 Sair mesmo assim", use_container_width=True, type="primary", key="confirm_logout_report_btn"):
             st.session_state.pop('_show_logout_report_confirm', None)
-            logout()
+            logout(config)
     with c2:
         if st.button("✖ Continuar Logado", use_container_width=True, key="cancel_logout_report_btn"):
             st.session_state['_show_logout_report_confirm'] = False

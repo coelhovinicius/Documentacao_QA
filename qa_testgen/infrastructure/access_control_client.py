@@ -106,3 +106,49 @@ class AccessControlClient:
     def list_logs(self) -> list:
         data = self._call("list_logs")
         return data.get("logs", [])
+
+    # ------------------------------------------------------------------ #
+    # Sessões — o dado de sessão de verdade (quem, quando expira) fica
+    # aqui, no n8n. A URL do navegador só carrega um ID curto e opaco.
+    # ------------------------------------------------------------------ #
+    def create_session(self, session_id: str, username: str, expires_at_iso: str) -> None:
+        self._call("create_session", session_id=session_id, username=username, expires_at=expires_at_iso)
+
+    def get_session(self, session_id: str) -> dict:
+        """Retorna {'valid': bool, 'username': str, 'expires_at': str} — 'valid' False se não existir/expirou."""
+        data = self._call("get_session", session_id=session_id)
+        return {
+            "valid": bool(data.get("valid")),
+            "username": data.get("username", ""),
+            "expires_at": data.get("expires_at", ""),
+        }
+
+    def renew_session(self, session_id: str, expires_at_iso: str) -> None:
+        self._call("renew_session", session_id=session_id, expires_at=expires_at_iso)
+
+    def revoke_session(self, session_id: str) -> None:
+        self._call("revoke_session", session_id=session_id)
+
+    def list_sessions(self) -> list:
+        data = self._call("list_sessions")
+        return data.get("sessions", [])
+
+    # ------------------------------------------------------------------ #
+    # Sessões — o ID que vai na URL é opaco (curto, aleatório); o dado
+    # real (quem é, quando expira) fica guardado aqui, não na URL.
+    # ------------------------------------------------------------------ #
+    def create_session(self, session_id: str, username: str, expires_at_iso: str) -> None:
+        self._call("create_session", session_id=session_id, username=username, expires_at=expires_at_iso)
+
+    def get_session(self, session_id: str) -> dict:
+        return self._call("get_session", session_id=session_id)
+
+    def renew_session(self, session_id: str, expires_at_iso: str) -> None:
+        self._call("renew_session", session_id=session_id, expires_at=expires_at_iso)
+
+    def revoke_session(self, session_id: str) -> None:
+        self._call("revoke_session", session_id=session_id)
+
+    def list_sessions(self) -> list:
+        data = self._call("list_sessions")
+        return data.get("sessions", [])
