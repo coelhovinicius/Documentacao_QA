@@ -1578,18 +1578,26 @@ class UserInterface:
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
-    def _setup_azure_devops_connection(self):
+    def _setup_azure_devops_connection(self, show_area_path_picker: bool = True):
         """
-        Renderiza PAT + Organização + Projeto + Area Path — compartilhado
-        entre o Passo 7 (Integração) e o Passo 8 (Relatório de Testes), já
-        que os dois precisam da mesma conexão com o Azure DevOps. Como só
-        um step roda por vez, reaproveitar as mesmas widget keys aqui é
-        seguro (nunca os dois renderizam na mesma execução do script).
+        Renderiza PAT + Organização + Projeto (+ Area Path, se
+        `show_area_path_picker=True`) — compartilhado entre o Passo 7
+        (Integração) e o Relatório de Testes, já que os dois precisam da
+        mesma conexão com o Azure DevOps. Como só um step roda por vez,
+        reaproveitar as mesmas widget keys aqui é seguro (nunca os dois
+        renderizam na mesma execução do script).
+
+        O Relatório de Testes tem seu PRÓPRIO seletor de Area Path(s)
+        (multiseleção) fora deste método — por isso ele chama com
+        `show_area_path_picker=False`, pra não mostrar dois seletores de
+        Area Path na mesma tela (um aqui de 1 só, outro dele de vários).
 
         Retorna (ado_client, ado_org, ado_project, area_path) quando tudo
         está pronto, ou None se ainda falta algo — nesse caso, a mensagem
         já foi mostrada, e quem chamou só precisa dar `return` (o botão
-        Voltar/Nova Análise fica por conta de quem chamou).
+        Voltar/Nova Análise fica por conta de quem chamou). Quando
+        `show_area_path_picker=False`, `area_path` sempre volta como
+        `ado_project` (equivalente a "raiz do projeto").
         """
         st.markdown("#### 🔧 Configuração do Azure DevOps")
         st.caption(
@@ -1813,6 +1821,9 @@ class UserInterface:
                 "estar configurado no `secrets.toml` (não é editável nesta tela, por segurança)."
             )
             return None
+
+        if not show_area_path_picker:
+            return ado_client, ado_org, ado_project, ado_project
 
         st.divider()
 
@@ -2213,13 +2224,38 @@ class UserInterface:
             st.error("❌ Você não tem permissão para acessar o Relatório de Testes.")
             return
 
-        conn = self._setup_azure_devops_connection()
+        conn = self._setup_azure_devops_connection(show_area_path_picker=False)
         if conn is None:
             return
-        ado_client, ado_org, ado_project, area_path = conn
+        ado_client, ado_org, ado_project, _default_area_path = conn
+
+        st.markdown("##### 📁 Area Path(s) para este relatório")
+        st.caption(
+            "Opcional — filtra quais Test Plans aparecem pra escolher abaixo, e vira o \"nome "
+            "do projeto\" mostrado no relatório. Deixe vazio pra considerar o projeto inteiro."
+        )
+        if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+            area_path_options = self.state.get('ado_available_area_paths') or []
+        else:
+            try:
+                with st.spinner("Buscando Area Paths do projeto..."):
+                    area_path_options = ado_client.list_area_paths()
+                self.state.set('ado_available_area_paths', area_path_options)
+                self.state.set('ado_area_paths_project', ado_project)
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                area_path_options = []
+
+        area_paths = st.multiselect(
+            "Area Path(s)",
+            options=area_path_options,
+            disabled=self.state.get('is_processing'),
+            key="report_area_paths_select",
+            help="Selecione uma ou mais — os Test Plans mostrados abaixo ficam restritos a elas.",
+        )
 
         st.divider()
-        self._render_execution_report_section(ado_client, ado_project, area_path)
+        self._render_execution_report_section(ado_client, ado_project, area_paths)
 
         st.divider()
         if st.button("← Voltar", key="btn_report_back_bottom"):
@@ -2242,10 +2278,35 @@ class UserInterface:
             st.error("❌ Você não tem permissão para acessar Work Items do Azure DevOps.")
             return
 
-        conn = self._setup_azure_devops_connection()
+        conn = self._setup_azure_devops_connection(show_area_path_picker=False)
         if conn is None:
             return
-        ado_client, ado_org, ado_project, area_path = conn
+        ado_client, ado_org, ado_project, _default_area_path = conn
+
+        st.markdown("##### 📁 Area Path(s) do Board")
+        st.caption(
+            "Opcional — deixe vazio pra considerar o projeto inteiro. Selecione uma ou mais pra "
+            "restringir a busca de Work Items a boards específicos."
+        )
+        if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+            area_path_options = self.state.get('ado_available_area_paths') or []
+        else:
+            try:
+                with st.spinner("Buscando Area Paths do projeto..."):
+                    area_path_options = ado_client.list_area_paths()
+                self.state.set('ado_available_area_paths', area_path_options)
+                self.state.set('ado_area_paths_project', ado_project)
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                area_path_options = []
+
+        area_paths = st.multiselect(
+            "Area Path(s)",
+            options=area_path_options,
+            disabled=self.state.get('is_processing'),
+            key="wigen_area_paths_select",
+            help="Selecione uma ou mais — a busca de Work Items considera todas juntas.",
+        )
 
         st.divider()
         with st.container(key="azure_blue_btn_fetch_wi_gen"):
@@ -2259,14 +2320,19 @@ class UserInterface:
 
         if self.state.get('current_action') == 'fetch_wi_gen' and not self.state.get('show_interrupt_modal'):
             try:
-                with st.spinner("Buscando Work Items..."):
-                    items = ado_client.fetch_work_items_by_area_path(area_path)
+                paths_to_search = area_paths or [ado_project]
+                with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
+                    items_by_id = {}
+                    for ap in paths_to_search:
+                        for item in ado_client.fetch_work_items_by_area_path(ap):
+                            items_by_id[item["id"]] = item
+                    items = list(items_by_id.values())
                 self.state.set('wigen_board_items', items)
                 self.state.set('wigen_selected_ids', [])
                 if 'wigen_multiselect' in st.session_state:
                     del st.session_state['wigen_multiselect']
                 if not items:
-                    st.warning("Nenhum Work Item encontrado nesse Area Path.")
+                    st.warning("Nenhum Work Item encontrado" + (" nessas Area Paths." if area_paths else " neste projeto."))
             except AzureDevOpsError as error:
                 st.error(f"❌ {error}")
                 self.state.set('wigen_board_items', [])
@@ -2526,7 +2592,8 @@ class UserInterface:
         else:
             st.caption("Testa a query acima antes de poder confirmar a criação.")
 
-    def _render_execution_report_section(self, ado_client, ado_project: str = "", area_path: str = ""):
+    def _render_execution_report_section(self, ado_client, ado_project: str = "", area_paths: list = None):
+        area_paths = area_paths or []
         st.markdown("### 📊 Relatório de Testes (execução)")
         st.caption(
             "Documenta o que foi EXECUTADO no Azure DevOps (diferente do PDF do Passo 6, que "
@@ -2534,9 +2601,13 @@ class UserInterface:
             "execução e as evidências (anexos) direto do Azure DevOps."
         )
 
+        fetch_label = (
+            f"🔍 Buscar Test Plans de {len(area_paths)} Area Path(s)" if area_paths
+            else "🔍 Buscar Test Plans deste Projeto"
+        )
         with st.container(key="azure_blue_btn_fetch_report_plans"):
             st.button(
-                "🔍 Buscar Test Plans deste Projeto",
+                fetch_label,
                 disabled=self.state.get('is_processing'),
                 key="btn_fetch_report_plans",
                 on_click=self.trigger_action,
@@ -2544,11 +2615,19 @@ class UserInterface:
             )
         if self.state.get('current_action') == 'fetch_report_plans' and not self.state.get('show_interrupt_modal'):
             try:
-                with st.spinner("Buscando Test Plans..."):
-                    plans = ado_client.list_test_plans()
+                if area_paths:
+                    with st.spinner(f"Buscando Test Plans em {len(area_paths)} Area Path(s)..."):
+                        plans_by_id = {}
+                        for ap in area_paths:
+                            for p in ado_client.list_test_plans_for_area_path(ap):
+                                plans_by_id[p["id"]] = p
+                        plans = list(plans_by_id.values())
+                else:
+                    with st.spinner("Buscando Test Plans..."):
+                        plans = ado_client.list_test_plans()
                 self.state.set('report_available_plans', plans)
                 if not plans:
-                    st.warning("Nenhum Test Plan encontrado neste projeto.")
+                    st.warning("Nenhum Test Plan encontrado" + (" nessas Area Paths." if area_paths else " neste projeto."))
             except AzureDevOpsError as error:
                 st.error(f"❌ {error}")
                 self.state.set('report_available_plans', [])
@@ -2670,7 +2749,7 @@ class UserInterface:
             st.caption("Preencha Contexto, Escopo e Propósito, Conclusão, e escolha o Status para habilitar a geração.")
 
         if self.state.get('current_action') == 'generate_execution_report' and not self.state.get('show_interrupt_modal'):
-            self._generate_execution_report(ado_client, chosen_plans, contexto, ambiente, escopo_proposito, conclusao, proximos_passos, ado_project, area_path, status_manual)
+            self._generate_execution_report(ado_client, chosen_plans, contexto, ambiente, escopo_proposito, conclusao, proximos_passos, ado_project, area_paths, status_manual)
 
         report_bytes = self.state.get('report_pdf_bytes')
         if report_bytes:
@@ -2781,17 +2860,18 @@ class UserInterface:
 
     def _generate_execution_report(self, ado_client, plans: list, contexto: str, ambiente: str,
                                      escopo_proposito: str, conclusao: str, proximos_passos: str,
-                                     ado_project: str = "", area_path: str = "", status_manual: str = ""):
+                                     ado_project: str = "", area_paths: list = None, status_manual: str = ""):
+        area_paths = area_paths or []
         warnings = []
         evidencias_por_caso = {}
         casos = []  # [{"titulo", "outcome", "suite_name"}] — direto do Azure DevOps
         plan_names = ", ".join(p['name'] for p in plans)
 
-        # Nome usado na documentação: se uma Area Path DE VERDADE foi
-        # escolhida (diferente da raiz do projeto), usa o nome dela — só
-        # cai pro nome do Projeto se a Area Path ficou em "---" (raiz).
-        if area_path and ado_project and area_path != ado_project:
-            report_project_name = area_path
+        # Nome usado na documentação: se uma ou mais Area Paths DE VERDADE
+        # foram escolhidas, usa o(s) nome(s) delas — só cai pro nome do
+        # Projeto se nenhuma Area Path foi selecionada.
+        if area_paths:
+            report_project_name = ", ".join(area_paths)
         else:
             report_project_name = self.state.get('project_name') or ado_project or plan_names
 
