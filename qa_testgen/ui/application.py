@@ -478,7 +478,7 @@ class UserInterface:
                          style="max-width:100%;max-height:80px;object-fit:contain;">
                 </div>
                 <div style="flex:1;background:linear-gradient(135deg,#F15A24,#c94a1a);padding:1rem 1.5rem;border-radius:6px;display:flex;flex-direction:column;justify-content:center;min-height:80px;">
-                    <h1 style="color:white;margin:0;font-size:1.6rem;padding:0;">🧪 QA Automation – Azure DevOps</h1>
+                    <h1 style="color:white;margin:0;font-size:1.6rem;padding:0;">🧪 QA Automation – DevOps</h1>
                     <p style="color:white;margin:0.2rem 0 0 0;font-size:1.05rem;padding:0;">Automação QA com IA - Integração ao Azure DevOps</p>
                 </div>
             </div>
