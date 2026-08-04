@@ -1894,12 +1894,41 @@ class UserInterface:
             self._render_step7_back_and_new("disabled")
             return
 
-        conn = self._setup_azure_devops_connection()
+        conn = self._setup_azure_devops_connection(show_area_path_picker=False)
         if conn is None:
             st.divider()
             self._render_step7_back_and_new("incomplete_setup")
             return
-        ado_client, ado_org, ado_project, area_path = conn
+        ado_client, ado_org, ado_project, _default_area_path = conn
+
+        st.markdown("##### 📁 Area Path(s) do Board no Azure DevOps")
+        st.caption(
+            "Opcional — deixe vazio pra considerar o projeto inteiro. Selecione uma ou mais pra "
+            "restringir a busca de Work Items a boards específicos."
+        )
+        if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+            area_path_options = self.state.get('ado_available_area_paths') or []
+        else:
+            try:
+                with st.spinner("Buscando Area Paths do projeto..."):
+                    area_path_options = ado_client.list_area_paths()
+                self.state.set('ado_available_area_paths', area_path_options)
+                self.state.set('ado_area_paths_project', ado_project)
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                area_path_options = []
+
+        area_paths = st.multiselect(
+            "Area Path(s)",
+            options=area_path_options,
+            disabled=self.state.get('is_processing'),
+            key="ado_area_paths_select_s7",
+            help="Selecione uma ou mais — a busca de Work Items considera todas juntas.",
+        )
+        # Área usada como fallback pra Casos sem nenhum Work Item vinculado
+        # (esses precisam de UMA Area Path pra existir no Azure DevOps —
+        # usa a primeira escolhida, ou a raiz do projeto se nenhuma foi selecionada).
+        fallback_area_path = area_paths[0] if area_paths else ado_project
 
         with st.container(key="azure_blue_btn_fetch_wi"):
             st.button(
@@ -1912,8 +1941,13 @@ class UserInterface:
 
         if self.state.get('current_action') == 'fetch_wi' and not self.state.get('show_interrupt_modal'):
             try:
-                with st.spinner("Buscando Work Items..."):
-                    items = ado_client.fetch_work_items_by_area_path(area_path)
+                paths_to_search = area_paths or [ado_project]
+                with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
+                    items_by_id = {}
+                    for ap in paths_to_search:
+                        for item in ado_client.fetch_work_items_by_area_path(ap):
+                            items_by_id[item["id"]] = item
+                    items = list(items_by_id.values())
                 self.state.set('ado_board_items', items)
                 # Nova busca -> reseta a seleção de "quais entram no matching"
                 # pra não arrastar uma seleção antiga de um board diferente.
@@ -1921,7 +1955,7 @@ class UserInterface:
                 if 'ado_wi_matching_multiselect' in st.session_state:
                     del st.session_state['ado_wi_matching_multiselect']
                 if not items:
-                    st.warning("Nenhum Work Item encontrado nesse Area Path (além de Test Cases).")
+                    st.warning("Nenhum Work Item encontrado" + (" nessas Area Paths (além de Test Cases)." if area_paths else " nesse projeto (além de Test Cases)."))
             except AzureDevOpsError as error:
                 st.error(f"❌ {error}")
             except Exception as error:
@@ -2083,9 +2117,13 @@ class UserInterface:
             st.divider()
             st.markdown("### 📋 Test Plan")
 
+            existing_plans_label = (
+                f"🔍 Buscar Test Plans existentes ({len(area_paths)} Area Path(s))" if area_paths
+                else "🔍 Buscar Test Plans existentes no Projeto"
+            )
             with st.container(key="azure_blue_btn_fetch_existing_plans"):
                 st.button(
-                    "🔍 Buscar Test Plans existentes nesta Area Path",
+                    existing_plans_label,
                     disabled=self.state.get('is_processing'),
                     key="btn_fetch_existing_plans",
                     on_click=self.trigger_action,
@@ -2093,10 +2131,15 @@ class UserInterface:
                 )
             if self.state.get('current_action') == 'fetch_existing_plans' and not self.state.get('show_interrupt_modal'):
                 try:
-                    with st.spinner(f"Buscando Test Plans em '{area_path}'..."):
-                        existing = ado_client.list_test_plans_for_area_path(area_path)
+                    paths_key = tuple(sorted(area_paths)) if area_paths else (ado_project,)
+                    with st.spinner(f"Buscando Test Plans em {len(paths_key)} Area Path(s)..."):
+                        plans_by_id = {}
+                        for ap in paths_key:
+                            for p in ado_client.list_test_plans_for_area_path(ap):
+                                plans_by_id[p["id"]] = p
+                        existing = list(plans_by_id.values())
                     self.state.set('ado_existing_plans_in_path', existing)
-                    self.state.set('ado_existing_plans_area_path', area_path)
+                    self.state.set('ado_existing_plans_area_path', paths_key)
                 except AzureDevOpsError as error:
                     st.error(f"❌ Não foi possível buscar Test Plans existentes: {error}")
                 except Exception as error:
@@ -2104,9 +2147,10 @@ class UserInterface:
                 self.clear_action()
                 st.rerun()
 
+            current_paths_key = tuple(sorted(area_paths)) if area_paths else (ado_project,)
             existing_plans = (
                 self.state.get('ado_existing_plans_in_path') or []
-                if self.state.get('ado_existing_plans_area_path') == area_path
+                if self.state.get('ado_existing_plans_area_path') == current_paths_key
                 else []
             )
 
@@ -2218,7 +2262,7 @@ class UserInterface:
                 confirm_azure_devops_full_push_modal(*params)
 
             if self.state.get('current_action') == 'push_azure_devops_full' and not self.state.get('show_interrupt_modal'):
-                self._push_full_azure_devops(ado_client, area_path, plan_name.strip(), initial_state, self.state.get('ado_existing_plan_id_chosen'))
+                self._push_full_azure_devops(ado_client, fallback_area_path, plan_name.strip(), initial_state, self.state.get('ado_existing_plan_id_chosen'))
 
             log = self.state.get('ado_full_push_log') or []
             if log:

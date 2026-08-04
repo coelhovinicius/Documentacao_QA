@@ -661,7 +661,7 @@ class AzureDevOpsClient:
             return []
 
         ids_str = ",".join(ids)
-        fields = "System.Id,System.Title,System.WorkItemType,System.State"
+        fields = "System.Id,System.Title,System.WorkItemType,System.State,System.AreaPath"
         details_url = (
             f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}"
             f"&api-version={API_VERSION}"
@@ -684,6 +684,7 @@ class AzureDevOpsClient:
                 "title": f.get("System.Title", ""),
                 "type": f.get("System.WorkItemType", ""),
                 "state": state,
+                "area_path": f.get("System.AreaPath", area_path or self.project),
             })
         return items
 
