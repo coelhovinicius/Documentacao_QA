@@ -54,6 +54,7 @@ class SessionState:
         'ado_board_items': [],
         'ado_wi_matching_selected_ids': [],
         'ado_test_case_ids': {},
+        'ado_excluded_case_titles': [],
         'ado_wi_case_links': {},
         'ado_duplicate_case_titles': [],
         'ado_suggest_message': None,

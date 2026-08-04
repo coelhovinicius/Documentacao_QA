@@ -2045,11 +2045,39 @@ class UserInterface:
                 assigned_titles.update(casos)
             unassigned = [t for t in case_titles if t not in assigned_titles]
             if unassigned:
-                with st.expander(f"⚠️ {len(unassigned)} Caso(s) sem nenhum Work Item vinculado (não serão enviados)"):
+                with st.expander(f"⚠️ {len(unassigned)} Caso(s) sem nenhum Work Item vinculado (marcados por padrão pra não subir — veja abaixo)"):
                     for t in unassigned:
                         st.write(f"- {t}")
 
-            items_with_cases = {wid: casos for wid, casos in links.items() if casos}
+            st.divider()
+            st.markdown("### 🚫 Excluir Casos de Teste do Envio")
+            st.caption(
+                "Escolha aqui os Casos de Teste que você **não** quer enviar pro Azure DevOps "
+                "nesta integração — nem como Caso avulso, nem vinculados a nenhum Work Item. "
+                "Casos sem nenhum Work Item vinculado já vêm marcados por padrão — desmarque "
+                "aqui se quiser enviar algum deles mesmo assim."
+            )
+            # Semeia a exclusão só na primeira vez que o widget aparece nesta
+            # sessão — depois disso, respeita o que a pessoa escolher
+            # manualmente (não fica reforçando o padrão a cada rerun).
+            if "ado_excluded_case_titles_select" not in st.session_state:
+                st.session_state["ado_excluded_case_titles_select"] = list(unassigned)
+            excluded_titles = st.multiselect(
+                "Casos a excluir",
+                options=case_titles,
+                disabled=self.state.get('is_processing'),
+                key="ado_excluded_case_titles_select",
+                help="Os excluídos aqui não sobem de jeito nenhum, mesmo que estejam vinculados a um Work Item acima.",
+            )
+            self.state.set('ado_excluded_case_titles', excluded_titles)
+            if excluded_titles:
+                st.caption(f"ℹ️ {len(excluded_titles)} Caso(s) marcados pra não subir.")
+
+            items_with_cases = {
+                wid: [c for c in casos if c not in excluded_titles]
+                for wid, casos in links.items()
+            }
+            items_with_cases = {wid: casos for wid, casos in items_with_cases.items() if casos}
             total_links = sum(len(c) for c in items_with_cases.values())
 
             st.divider()
@@ -2152,7 +2180,8 @@ class UserInterface:
                             self.state.set('ado_plan_name_error', "❌ Informe um nome para o Test Plan antes de continuar.")
                             st.rerun()
                         else:
-                            self.state.set('ado_confirm_modal_params', (len(test_cases), len(items_with_cases), total_links))
+                            cases_count_for_modal = len([tc for tc in test_cases if tc.get('titulo') not in excluded_titles])
+                            self.state.set('ado_confirm_modal_params', (cases_count_for_modal, len(items_with_cases), total_links))
                             self.state.set('ado_existing_plan_id_chosen', existing_plan_id)
                             if existing_plan_id:
                                 self.state.set('ado_plan_name_error', None)
@@ -3182,9 +3211,17 @@ class UserInterface:
         case_ids = dict(self.state.get('ado_test_case_ids') or {})
         case_links = dict(self.state.get('ado_case_links') or {})
         links = self.state.get('ado_wi_case_links') or {}
+        excluded_titles = set(self.state.get('ado_excluded_case_titles') or [])
         log = []
 
-        items_with_cases = {wid: casos for wid, casos in links.items() if casos}
+        if excluded_titles:
+            log.append(f"🚫 {len(excluded_titles)} Caso(s) excluído(s) do envio, por escolha sua: {', '.join(excluded_titles)}")
+
+        items_with_cases = {
+            wid: [c for c in casos if c not in excluded_titles]
+            for wid, casos in links.items()
+        }
+        items_with_cases = {wid: casos for wid, casos in items_with_cases.items() if casos}
 
         # Mesma numeração CT01, CT02... usada nos CSVs, aplicada também aqui —
         # a chave interna (case_ids, links, etc.) continua sendo o título
@@ -3197,7 +3234,8 @@ class UserInterface:
         # vinculados a algum Work Item ou não — casos sem vínculo são criados
         # normalmente, só não entram em nenhuma Suite depois. Casos marcados
         # como duplicados de algo que já existe no Azure DevOps (checagem
-        # feita em _suggest_ado_links) são pulados — não sobem pro Azure.
+        # feita em _suggest_ado_links), ou marcados como excluídos por você,
+        # são pulados — não sobem pro Azure.
         # As criações são independentes entre si, então rodam em paralelo.
         duplicate_titles = set(self.state.get('ado_duplicate_case_titles') or [])
         skipped_as_duplicate = [tc.get('titulo') for tc in test_cases if tc.get('titulo') in duplicate_titles]
@@ -3208,7 +3246,9 @@ class UserInterface:
             )
         cases_to_create = [
             tc for tc in test_cases
-            if tc.get('titulo') not in case_ids and tc.get('titulo') not in duplicate_titles
+            if tc.get('titulo') not in case_ids
+            and tc.get('titulo') not in duplicate_titles
+            and tc.get('titulo') not in excluded_titles
         ]
         if cases_to_create:
             total = len(cases_to_create)
