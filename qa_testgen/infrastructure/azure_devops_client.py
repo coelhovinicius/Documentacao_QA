@@ -660,17 +660,24 @@ class AzureDevOpsClient:
         if not ids:
             return []
 
-        ids_str = ",".join(ids)
+        # A API do Azure DevOps limita a 200 IDs por chamada de batch —
+        # sem isso, buscas amplas (projeto inteiro, ou board grande) geram
+        # uma URL enorme demais e a API rejeita a chamada.
         fields = "System.Id,System.Title,System.WorkItemType,System.State,System.AreaPath"
-        details_url = (
-            f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}"
-            f"&api-version={API_VERSION}"
-        )
-        details_response = self.session.get(details_url, headers=self.headers_json, timeout=60)
-        details_data = self._handle_response(details_response, "Detalhar Work Items")
+        details_data_values = []
+        for i in range(0, len(ids), 200):
+            batch = ids[i:i + 200]
+            ids_str = ",".join(batch)
+            details_url = (
+                f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}"
+                f"&api-version={API_VERSION}"
+            )
+            details_response = self.session.get(details_url, headers=self.headers_json, timeout=60)
+            details_data = self._handle_response(details_response, "Detalhar Work Items")
+            details_data_values.extend(details_data.get("value", []))
 
         items = []
-        for wi in details_data.get("value", []):
+        for wi in details_data_values:
             f = wi.get("fields", {})
             state = f.get("System.State", "")
             wi_type = f.get("System.WorkItemType", "")
