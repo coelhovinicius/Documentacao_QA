@@ -302,6 +302,15 @@ class UserInterface:
         st.markdown(
             """
             <style>
+                /* Alinha pela base qualquer linha de colunas que contenha um
+                   botão "azul" (Azure) — corrige o desalinhamento entre um
+                   selectbox/multiselect (que tem rótulo acima) e um botão ao
+                   lado (que não tem), sem afetar outros pares de colunas do
+                   app que não usam esse tipo de botão. */
+                div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-azure_blue_btn_"]) {
+                    align-items: flex-end;
+                }
+
                 /* Botões "azuis" (padrão Azure) — usados nos fluxos de
                    integração com o Azure DevOps. Qualquer botão dentro de um
                    st.container(key="azure_blue_btn_...") recebe essa cor,
@@ -1763,7 +1772,6 @@ class UserInterface:
 
         with col_proj:
             if need_fetch_projects:
-                st.markdown("&nbsp;")  # alinha verticalmente com o selectbox da coluna ao lado
                 with st.container(key="azure_blue_btn_fetch_projects"):
                     st.button(
                         "🔍 Buscar Projetos desta Organização",
@@ -1945,7 +1953,6 @@ class UserInterface:
         fallback_area_path = area_paths[0] if area_paths else ado_project
 
         with col_btn:
-            st.markdown("&nbsp;")  # alinha verticalmente com o multiselect ao lado
             with st.container(key="azure_blue_btn_fetch_wi"):
                 st.button(
                     "🔄 Buscar Work Items do Board",
@@ -2404,7 +2411,6 @@ class UserInterface:
                 help="Selecione uma ou mais — a busca de Work Items considera todas juntas.",
             )
         with col_btn:
-            st.markdown("&nbsp;")  # alinha verticalmente com o multiselect ao lado
             with st.container(key="azure_blue_btn_fetch_wi_gen"):
                 st.button(
                     "🔄 Buscar Work Items do Board",

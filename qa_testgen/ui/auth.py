@@ -454,7 +454,7 @@ def _render_login_form(config):
 
     _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        st.markdown("## 🧪 QA Automation – DevOps")
+        st.markdown("## 🧪 QA Automation – Azure DevOps")
         st.caption("Acesso restrito. Informe suas credenciais para continuar.")
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Usuário")
@@ -569,29 +569,35 @@ def render_logout_control(config=None):
                 st.caption(f"👤 Logado como **{user}**")
             if st.button("🚪 Sair", use_container_width=True, key="btn_logout",
                          help="Encerra e revoga esta sessão — o link deixa de funcionar, mesmo se alguém tiver uma cópia dele."):
-                if st.session_state.get('show_execution_report_page') and st.session_state.get('report_pdf_bytes'):
-                    st.session_state['_show_logout_report_confirm'] = True
-                    st.rerun()
-                else:
-                    logout(config)
+                st.session_state['_show_logout_confirm'] = True
+                st.rerun()
 
-    if st.session_state.get('_show_logout_report_confirm'):
-        _confirm_logout_with_report_modal(config)
+    if st.session_state.get('_show_logout_confirm'):
+        _confirm_logout_modal(config)
 
 
-@st.dialog("⚠️ Sair sem salvar o Relatório de Testes")
-def _confirm_logout_with_report_modal(config=None):
-    st.markdown(
-        "Você tem um Relatório de Testes gerado nesta sessão. Ao sair, essas informações "
-        "serão **perdidas** (não ficam salvas em lugar nenhum fora desta sessão). Deseja "
-        "sair mesmo assim?"
+@st.dialog("⚠️ Confirmar Saída")
+def _confirm_logout_modal(config=None):
+    has_unsaved_report = bool(
+        st.session_state.get('show_execution_report_page') and st.session_state.get('report_pdf_bytes')
     )
+    if has_unsaved_report:
+        st.markdown(
+            "Você tem um Relatório de Testes gerado nesta sessão. Ao sair, essas informações "
+            "serão **perdidas** (não ficam salvas em lugar nenhum fora desta sessão), e a "
+            "sessão será encerrada — vai precisar logar de novo pra voltar."
+        )
+    else:
+        st.markdown(
+            "Isso encerra e revoga sua sessão atual — vai precisar logar de novo pra voltar. "
+            "Tem certeza que deseja sair?"
+        )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚪 Sair mesmo assim", use_container_width=True, type="primary", key="confirm_logout_report_btn"):
-            st.session_state.pop('_show_logout_report_confirm', None)
+        if st.button("🚪 Sair", use_container_width=True, type="primary", key="confirm_logout_btn"):
+            st.session_state.pop('_show_logout_confirm', None)
             logout(config)
     with c2:
-        if st.button("✖ Continuar Logado", use_container_width=True, key="cancel_logout_report_btn"):
-            st.session_state['_show_logout_report_confirm'] = False
+        if st.button("✖ Continuar Logado", use_container_width=True, key="cancel_logout_btn"):
+            st.session_state['_show_logout_confirm'] = False
             st.rerun()
