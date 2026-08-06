@@ -1735,14 +1735,17 @@ class UserInterface:
         default_org = previous_org if previous_org in orgs else (
             self.config.azure_devops_org if self.config.azure_devops_org in orgs else orgs[0]
         )
-        ado_org = st.selectbox(
-            "Organização *",
-            options=orgs,
-            index=orgs.index(default_org),
-            disabled=self.state.get('is_processing'),
-            key="ado_org_select",
-            help="Lista vem direto do Azure DevOps — só as organizações que esse PAT consegue acessar.",
-        )
+
+        col_org, col_proj = st.columns(2)
+        with col_org:
+            ado_org = st.selectbox(
+                "Organização *",
+                options=orgs,
+                index=orgs.index(default_org),
+                disabled=self.state.get('is_processing'),
+                key="ado_org_select",
+                help="Lista vem direto do Azure DevOps — só as organizações que esse PAT consegue acessar.",
+            )
         if ado_org != previous_org:
             # Organização mudou — projetos/Area Paths buscados antes eram de
             # outra org, não faz sentido continuar mostrando eles.
@@ -1755,14 +1758,22 @@ class UserInterface:
         self.state.set('ado_org_override', ado_org)
 
         # 2) Projetos — só buscados quando o usuário pedir explicitamente.
-        with st.container(key="azure_blue_btn_fetch_projects"):
-            st.button(
-                "🔍 Buscar Projetos desta Organização",
-                disabled=self.state.get('is_processing'),
-                key="btn_fetch_projects",
-                on_click=self.trigger_action,
-                args=("fetch_projects",),
-            )
+        projects = self.state.get('ado_available_projects') or []
+        need_fetch_projects = not projects or self.state.get('ado_projects_org') != ado_org
+
+        with col_proj:
+            if need_fetch_projects:
+                st.markdown("&nbsp;")  # alinha verticalmente com o selectbox da coluna ao lado
+                with st.container(key="azure_blue_btn_fetch_projects"):
+                    st.button(
+                        "🔍 Buscar Projetos desta Organização",
+                        disabled=self.state.get('is_processing'),
+                        key="btn_fetch_projects",
+                        on_click=self.trigger_action,
+                        args=("fetch_projects",),
+                        use_container_width=True,
+                    )
+
         if self.state.get('current_action') == 'fetch_projects' and not self.state.get('show_interrupt_modal'):
             probe_proj = AzureDevOpsClient(ado_org, "", user_pat)
             try:
@@ -1791,14 +1802,15 @@ class UserInterface:
         current_project = self.state.get('ado_project_override') or PLACEHOLDER
         if current_project not in project_options:
             current_project = PLACEHOLDER
-        ado_project_choice = st.selectbox(
-            "Projeto *",
-            options=project_options,
-            index=project_options.index(current_project),
-            disabled=self.state.get('is_processing'),
-            key="ado_project_select",
-            help="Lista vem direto do Azure DevOps — só os projetos visíveis a esse PAT dentro da organização selecionada.",
-        )
+        with col_proj:
+            ado_project_choice = st.selectbox(
+                "Projeto *",
+                options=project_options,
+                index=project_options.index(current_project),
+                disabled=self.state.get('is_processing'),
+                key="ado_project_select",
+                help="Lista vem direto do Azure DevOps — só os projetos visíveis a esse PAT dentro da organização selecionada.",
+            )
         if ado_project_choice != self.state.get('ado_project_override'):
             self.state.set('ado_available_area_paths', [])
             self.state.set('ado_area_paths_project', '')
@@ -1918,26 +1930,31 @@ class UserInterface:
                 st.error(f"❌ Não foi possível buscar Area Paths: {error}")
                 area_path_options = []
 
-        area_paths = st.multiselect(
-            "Area Path(s)",
-            options=area_path_options,
-            disabled=self.state.get('is_processing'),
-            key="ado_area_paths_select_s7",
-            help="Selecione uma ou mais — a busca de Work Items considera todas juntas.",
-        )
+        col_ap, col_btn = st.columns(2)
+        with col_ap:
+            area_paths = st.multiselect(
+                "Area Path(s)",
+                options=area_path_options,
+                disabled=self.state.get('is_processing'),
+                key="ado_area_paths_select_s7",
+                help="Selecione uma ou mais — a busca de Work Items considera todas juntas.",
+            )
         # Área usada como fallback pra Casos sem nenhum Work Item vinculado
         # (esses precisam de UMA Area Path pra existir no Azure DevOps —
         # usa a primeira escolhida, ou a raiz do projeto se nenhuma foi selecionada).
         fallback_area_path = area_paths[0] if area_paths else ado_project
 
-        with st.container(key="azure_blue_btn_fetch_wi"):
-            st.button(
-                "🔄 Buscar Work Items do Board",
-                disabled=self.state.get('is_processing'),
-                key="btn_fetch_wi_s7",
-                on_click=self.trigger_action,
-                args=("fetch_wi",),
-            )
+        with col_btn:
+            st.markdown("&nbsp;")  # alinha verticalmente com o multiselect ao lado
+            with st.container(key="azure_blue_btn_fetch_wi"):
+                st.button(
+                    "🔄 Buscar Work Items do Board",
+                    disabled=self.state.get('is_processing'),
+                    key="btn_fetch_wi_s7",
+                    on_click=self.trigger_action,
+                    args=("fetch_wi",),
+                    use_container_width=True,
+                )
 
         if self.state.get('current_action') == 'fetch_wi' and not self.state.get('show_interrupt_modal'):
             try:
@@ -2171,38 +2188,42 @@ class UserInterface:
                 horizontal=False,
             )
 
+            col_plan, col_state = st.columns(2)
             existing_plan_id = None
             if plan_mode.startswith("Usar"):
                 plan_labels = {f"{p['id']} - {p['name']}": p for p in existing_plans}
-                chosen_plan_label = st.selectbox(
-                    "Test Plan existente",
-                    options=list(plan_labels.keys()),
-                    disabled=self.state.get('is_processing'),
-                    key="ado_existing_plan_select",
-                    help="Os Work Items selecionados que já tiverem uma Suite neste plano não geram Suite "
-                         "duplicada — os Casos de Teste novos só entram na Suite já existente.",
-                )
+                with col_plan:
+                    chosen_plan_label = st.selectbox(
+                        "Test Plan existente",
+                        options=list(plan_labels.keys()),
+                        disabled=self.state.get('is_processing'),
+                        key="ado_existing_plan_select",
+                        help="Os Work Items selecionados que já tiverem uma Suite neste plano não geram Suite "
+                             "duplicada — os Casos de Teste novos só entram na Suite já existente.",
+                    )
                 existing_plan_id = plan_labels[chosen_plan_label]["id"]
                 plan_name = plan_labels[chosen_plan_label]["name"]
                 self.state.set('ado_plan_name_error', None)
             else:
                 default_plan_name = f"{self.state.get('project_name') or 'QA TestGen'} - QA TestGen"
-                plan_name = st.text_input(
-                    "Nome do Test Plan a ser criado no Azure DevOps",
-                    value=self.state.get('ado_test_plan_name') or default_plan_name,
-                    disabled=self.state.get('is_processing'),
-                    key="ado_test_plan_name_input",
-                    help="Precisa ser único no projeto — não pode repetir o nome de um Test Plan já existente.",
-                )
+                with col_plan:
+                    plan_name = st.text_input(
+                        "Nome do Test Plan a ser criado no Azure DevOps",
+                        value=self.state.get('ado_test_plan_name') or default_plan_name,
+                        disabled=self.state.get('is_processing'),
+                        key="ado_test_plan_name_input",
+                        help="Precisa ser único no projeto — não pode repetir o nome de um Test Plan já existente.",
+                    )
                 self.state.set('ado_test_plan_name', plan_name)
 
-            initial_state_label = st.selectbox(
-                "Estado inicial dos Casos de Teste criados",
-                options=["Design (revisar manualmente antes de rodar)", "Ready (pronto para execução)"],
-                index=1 if self.state.get('ado_tc_initial_state', 'Ready') == 'Ready' else 0,
-                disabled=self.state.get('is_processing'),
-                key="ado_tc_initial_state_select",
-            )
+            with col_state:
+                initial_state_label = st.selectbox(
+                    "Estado inicial dos Casos de Teste criados",
+                    options=["Design (revisar manualmente antes de rodar)", "Ready (pronto para execução)"],
+                    index=1 if self.state.get('ado_tc_initial_state', 'Ready') == 'Ready' else 0,
+                    disabled=self.state.get('is_processing'),
+                    key="ado_tc_initial_state_select",
+                )
             initial_state = "Ready" if initial_state_label.startswith("Ready") else "Design"
             self.state.set('ado_tc_initial_state', initial_state)
 
@@ -2373,23 +2394,26 @@ class UserInterface:
                 st.error(f"❌ Não foi possível buscar Area Paths: {error}")
                 area_path_options = []
 
-        area_paths = st.multiselect(
-            "Area Path(s)",
-            options=area_path_options,
-            disabled=self.state.get('is_processing'),
-            key="wigen_area_paths_select",
-            help="Selecione uma ou mais — a busca de Work Items considera todas juntas.",
-        )
-
-        st.divider()
-        with st.container(key="azure_blue_btn_fetch_wi_gen"):
-            st.button(
-                "🔄 Buscar Work Items do Board",
+        col_ap, col_btn = st.columns(2)
+        with col_ap:
+            area_paths = st.multiselect(
+                "Area Path(s)",
+                options=area_path_options,
                 disabled=self.state.get('is_processing'),
-                key="btn_fetch_wi_gen",
-                on_click=self.trigger_action,
-                args=("fetch_wi_gen",),
+                key="wigen_area_paths_select",
+                help="Selecione uma ou mais — a busca de Work Items considera todas juntas.",
             )
+        with col_btn:
+            st.markdown("&nbsp;")  # alinha verticalmente com o multiselect ao lado
+            with st.container(key="azure_blue_btn_fetch_wi_gen"):
+                st.button(
+                    "🔄 Buscar Work Items do Board",
+                    disabled=self.state.get('is_processing'),
+                    key="btn_fetch_wi_gen",
+                    on_click=self.trigger_action,
+                    args=("fetch_wi_gen",),
+                    use_container_width=True,
+                )
 
         if self.state.get('current_action') == 'fetch_wi_gen' and not self.state.get('show_interrupt_modal'):
             try:
@@ -2442,22 +2466,24 @@ class UserInterface:
             st.caption("Nenhum Work Item selecionado ainda — escolha acima.")
             return
 
-        project_name = st.text_input(
-            "Nome do Test Plan *",
-            value=self.state.get('project_name') or ado_project,
-            key="wigen_project_name_input",
-            disabled=self.state.get('is_processing'),
-        )
-
-        ambiente = st.radio(
-            "Ambiente dos Testes *",
-            options=["Homologação", "Produção"],
-            index=None,
-            key="wigen_ambiente_input",
-            disabled=self.state.get('is_processing'),
-            horizontal=True,
-            help="Define a etiqueta (HML/PROD) usada no nome de cada Caso de Teste, na Matriz e na documentação.",
-        )
+        col_name, col_amb = st.columns(2)
+        with col_name:
+            project_name = st.text_input(
+                "Nome do Test Plan *",
+                value=self.state.get('project_name') or ado_project,
+                key="wigen_project_name_input",
+                disabled=self.state.get('is_processing'),
+            )
+        with col_amb:
+            ambiente = st.radio(
+                "Ambiente dos Testes *",
+                options=["Homologação", "Produção"],
+                index=None,
+                key="wigen_ambiente_input",
+                disabled=self.state.get('is_processing'),
+                horizontal=True,
+                help="Define a etiqueta (HML/PROD) usada no nome de cada Caso de Teste, na Matriz e na documentação.",
+            )
         if ambiente:
             self.state.set('ambiente_testes', ambiente)
 
