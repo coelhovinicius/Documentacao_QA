@@ -1,0 +1,97 @@
+[33m7f1129d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m Ajustando titulo login
+[33mb0d58c3[m Alteracao de titulo na tela de login
+[33m392a0c0[m Inclusao de solicitacao de confirmacao para sair do app ao clicar no botao Sair
+[33m8cf4075[m Mudanca de layout da exibicao das informacoes
+[33m358c8b8[m Ajustes na integracao ao Azure DevOps - Funcionalidade de visualizar Work Items
+[33m9336b1f[m Ajustes na escolha de Area Path
+[33m3e2b9e9[m feat: exclusao de Casos de Teste do envio pro Azure DevOps, com exclusao automatica pra casos sem vinculo - nova secao no Passo 7 pra marcar Casos que nao devem subir (aplicado tanto na criacao dos Casos quanto nas Suites, Work Item sem nenhum caso apos exclusao nao gera Suite a toa); Casos sem Work Item vinculado agora vem pre-marcados pra exclusao por padrao, pode desmarcar manualmente se quiser enviar mesmo assim; pre-selecao acontece so uma vez por sessao; corrigido texto impreciso que dizia nao sera enviado pra caso sem vinculo quando na real sempre subiu como avulso; contagem no modal de confirmacao passou a refletir o numero apos exclusao
+[33m2652625[m fix: multiselecao de Area Path no Relatorio de Testes e em Gerar via Work Items
+[33m2d107a5[m fix: sessao volta a ser via URL apos cookie se mostrar pouco confiavel, agora com ID opaco e revogacao
+[33mc3ed059[m Mudanca de titulo do app no UI
+[33m3aece1c[m Ajustes de UI
+[33m92a5025[m Ajustando manutencao de sessao
+[33mfda7655[m README
+[33m9ad31df[m Descricao das novas funcionalidades na secao Sobre o app
+[33md90be47[m Implantacao de merge de casos de teste em Test Suites dentro de Test Plans preexistentes no Path selecionado do Azure
+[33m93b86c5[m fix: protecao contra perda do Relatorio de Testes (F5, navegacao e logout)
+[33m9308a41[m Correcao de Commit
+[33maa05812[m feat: relatorio de execucao independente com dados do Azure DevOps, geracao de casos a partir de Work Items, criacao de query WIQL via IA com preview, logs de auditoria, permissoes granulares por area, sessao trocada de URL pra cookie, pipeline de imagem restaurado no Passo 1, e correcoes de bug/performance na sidebar e no PDF do Passo 6
+[33mf1d1410[m Query por IA no Azure. Controle de Logs para Admin
+[33m0acbf7d[m Alteracao na área administrativa
+[33m9ce3d84[m Implantacao da possibilidade de se criar casso de testes escolhendo, diretamente, os Work Items
+[33mc592276[m Ajustes no relatorio de testes
+[33mdc0ba23[m Iniciando geracao de relatorio automatico
+[33mb90535c[m Implantacao de Area de Geracao de Relatorio de Testes
+[33m1b56565[m feat: fluxo de aprovacao de login por sessao, PAT pessoal e correcoes de UI >> >> - Fluxo de aprovacao de acesso (via n8n) >>   - Login de qualquer usuario (exceto o dono do app) exige aprovacao >>   - Aprovacao vale so por sessao: usada uma vez, exige nova solicitacao >>     no proximo login (corrigido bug onde status 'consumed' nao gerava >>     nova solicitacao, travando o fluxo apos a primeira aprovacao) >>   - Painel 'Solicitacoes Pendentes' para aprovadores, e painel de >>     Administracao (so o dono) para cadastrar/remover aprovadores >>   - Novo workflow n8n (Doc_QA_Access_Control) usando static data, >>     sem necessidade de banco de dados externo >> >> - PAT do Azure DevOps agora e pessoal, nao mais compartilhado >>   - Campo de PAT proprio no Passo 7, com guia passo a passo de como >>     gerar o token no Azure DevOps >>   - Validacao real do PAT: antes so um erro 401 na listagem de >>     organizacoes multi-org era tratado como 'valido, so restrito' sem >>     checar de verdade; agora faz uma chamada extra (list_projects) pra >>     confirmar se o PAT funciona antes de liberar o resto da tela >>   - Revalida automaticamente sempre que o PAT digitado muda >> >> - Correcoes de UI >>   - Paineis 'Sobre o app', 'Solicitacoes Pendentes' e 'Administracao' >>     nao alternavam entre si (cada um so desligava a si mesmo, nao os >>     outros) - corrigido para serem mutuamente exclusivos >>   - Selecao de Work Items para analise de matching trocada de >>     'um por vez' para multiselect nativo (selecionar varios de uma vez)
+[33mcfb7a9a[m Incluindo area Sobre o app
+[33m72864e5[m Ajustes de usabilidade
+[33m775f732[m Melhorias nos prompts dos agentes n8n e na usabilidade da integracao ao Azure DevOps.
+[33m006bf0e[m Correcao no link do plano de teste no Azure
+[33m317c076[m Ajustes nos dados puxados do relatorio em csv
+[33m8f3c32e[m Ajuste no título da tela de login 2
+[33m2b59423[m Ajuste no título da tela de login
+[33m0c7557a[m feat: robustez e segurança na integração com Azure DevOps + UX
+[33m0e71be0[m Refinamento na integração com Azure DevOps
+[33m5c52279[m Ajustes de segurança
+[33m66c91d4[m feat: torna Organização/Projeto/PAT do Azure DevOps editáveis por sessão
+[33mad064e5[m feat: rastreabilidade Matriz-Casos-Planos, múltiplos documentos e correções de UI
+[33m3a79a32[m Ultimos ajustes antes dos teste de integração Azure DevOps
+[33m0fd7085[m Concluindo o merge e finalizando pendências
+[33m7879a09[m Integracao Azure DevOps - Upload automatico de Test Plans e Test Cases
+[33m9fe8e42[m Integracao Azure DevOps - Implantacao de agente n8n para relacionar casos de teste com work items reais automaticamente
+[33m1af6d81[m Ajustes na estilizacao do header do PDF
+[33mde4effb[m Ajustes na identidade visual do relatorio em PDF
+[33m04109a6[m Iniciando configuracao de integracao ao Azure DevOps
+[33mb96dbb5[m Ajustando texto do Placeholder
+[33m59bef03[m Corrigindo conflito de merge
+[33m368941d[m Ajustes no Titulo e Placeholder do Projeto
+[33m26f144f[m Ajuste no Titulo - de Nome do Projeto para Area Path
+[33ma92a772[m Ajustes no csv gerado
+[33me942c54[m Adequacao do estado inicial do menu lateral esquerdo para iniciar collapsed
+[33mb91344c[m Ajustando botao de 'Nova Analise'
+[33m4cd63c6[m Implantando hash de senha
+[33mc3a26ee[m Implantando Tela de Login
+[33me4f46f2[m Implementando confirmacao de Nova Analise
+[33me1c39ff[m Atualizando JSON n8n
+[33mdeb88c3[m Ajustes no alinhamento dos textos
+[33m91691dc[m Ajustando a funcao de interromper o processamento
+[33m0653352[m Ajustes na visualizacao das linhas nos steps
+[33m936c956[m Ajustes application_py
+[33m44bed78[m Ajustes em application_py
+[33m4c166e5[m Melhorias na geracao dos arquivos csv
+[33mbfe8ff2[m Ajustes na Persistencia de Dados da Secao
+[33m289690c[m Melhorias de Navegacao entre as Paginas
+[33m5e2cc06[m Adicionando Simbolo e Logotipo da Refuturiza
+[33mc461069[m Reestruturacao de Arquitetura
+[33mc7875a2[m Rollback para versao 6_1
+[33m119a032[m Ajuste de erro de exclusao de linha de Planos de Teste
+[33m50dfabe[m Ajustes no Prompt de Geracao de Planos de Teste
+[33mf6ee87c[m Exclusao de codigo desnecessario
+[33m27d702c[m Implementacao de secao de Planos de Teste
+[33m3f05039[m Ajustes Streamlit
+[33m70f0543[m V5_0 Oficial - Melhorias e Novas Implementacoes
+[33m1c723dd[m Implementacao de verificacao de exclusao e alteracoes no layout
+[33m8b70e38[m Incluindo biblioteca pytz
+[33m1bc128a[m Inplantacao de controle de edicao e exclusao
+[33m80fe3ae[m Inclusao de funcionalidades estabilidade do sistema
+[33ma5e1e07[m Ajustando gitignore
+[33mc702fb4[m Incluindo variaveis toml streamlit
+[33mebdca94[m Ultima versao estavel
+[33mbb2d2dc[m V11 Ajustando app py
+[33me37370b[m V9 Ajustes app py
+[33m0cfece2[m V8 Ajustes app py
+[33m87cfc81[m V7 Ajustes app py
+[33mdfb5053[m V6 Ajustes app py
+[33m2def47f[m V5 Ajustes app py
+[33mc261440[m Ajustes app py v4
+[33mdaa93c6[m Ajuste app py v3
+[33m7dba732[m Ajuste no fluxo n8n da matriz
+[33m12d8cb9[m Gerador QA V2
+[33mf3e2c10[m Rollback para a versão anterior
+[33m0a15fc6[m Incluindo Matriz de Testes
+[33mf7e75b0[m Ajustando Gerador de Testes
+[33m0133bd7[m Checagem de logs
+[33mc8174f9[m Ajustanto Workflows n8n e app py
+[33mc2a0649[m refactor(app): centralize request handling and add debug logs
+[33m69b2f61[m Fix: Add x-api-key header to WebhookClient
+[33m7fe6221[m Documentacao_QA_Local

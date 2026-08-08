@@ -3,6 +3,7 @@ import base64
 import difflib
 import hashlib
 import json
+import re
 import uuid
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,6 +26,8 @@ from qa_testgen.domain.validators.testcase_validator import TestCaseValidator
 from qa_testgen.ui.dialogs import (
     clear_widget_states,
     confirm_azure_devops_full_push_modal,
+    confirm_static_suites_push_modal,
+    confirm_reconciliation_push_modal,
     confirm_deletion_modal,
     confirm_discard_new_modal,
     confirm_interrupt_modal,
@@ -176,6 +179,23 @@ class UserInterface:
     def _log(self, action_name: str, location: str, details: str = ""):
         username = st.session_state.get(SESSION_USER_KEY, "")
         log_action(self.config, username, action_name, location, details)
+
+    @staticmethod
+    def _dedupe_case_assignments(links: dict, ordered_wids: list) -> dict:
+        """
+        Garante que cada Caso de Teste apareça em, no máximo, UM Work Item.
+        Resolve conflito por ordem: o primeiro Work Item (na ordem de
+        ordered_wids) que já tinha aquele Caso mantém ele; qualquer Work
+        Item posterior perde esse Caso automaticamente da própria seleção.
+        """
+        claimed = set()
+        result = {}
+        for wid in ordered_wids:
+            titulos = links.get(wid, [])
+            livres = [t for t in titulos if t not in claimed]
+            result[wid] = livres
+            claimed.update(livres)
+        return result
 
     def _navigate_or_confirm(self, pending_state_updates: dict):
         """
@@ -487,7 +507,7 @@ class UserInterface:
                          style="max-width:100%;max-height:80px;object-fit:contain;">
                 </div>
                 <div style="flex:1;background:linear-gradient(135deg,#F15A24,#c94a1a);padding:1rem 1.5rem;border-radius:6px;display:flex;flex-direction:column;justify-content:center;min-height:80px;">
-                    <h1 style="color:white;margin:0;font-size:1.6rem;padding:0;">🧪 QA Automation – DevOps</h1>
+                    <h1 style="color:white;margin:0;font-size:1.6rem;padding:0;">🧪 QA Automation – Azure DevOps</h1>
                     <p style="color:white;margin:0.2rem 0 0 0;font-size:1.05rem;padding:0;">Automação QA com IA - Integração ao Azure DevOps</p>
                 </div>
             </div>
@@ -536,8 +556,14 @@ class UserInterface:
             'generate_plans': 'Gerando os Planos de Teste',
             'build_artifacts': 'Construindo os artefatos finais',
             'fetch_wi': 'Buscando Work Items do Board no Azure DevOps',
+            'fetch_wi_step1': 'Buscando Work Items do Board no Azure DevOps',
             'fetch_report_plans': 'Buscando Test Plans do projeto',
             'fetch_existing_plans': 'Buscando Test Plans existentes na Area Path',
+            'fetch_recon_plans': 'Buscando Test Plans do projeto',
+            'fetch_recon_cases': 'Buscando Casos de Teste do Test Plan anterior',
+            'fetch_recon_wi': 'Buscando Work Items do Board',
+            'suggest_recon_links': 'Consultando a IA para sugerir vínculos',
+            'push_reconciliation': 'Vinculando Casos aos Work Items',
             'generate_execution_report': 'Buscando resultados de execução e gerando o Relatório de Testes',
             'suggest_report_narrative': 'Analisando resultados e gerando sugestão de texto com IA',
             'fetch_orgs': 'Carregando organizações acessíveis a este PAT',
@@ -560,16 +586,31 @@ class UserInterface:
                     z-index: 2147483647 !important;
                 }
 
+                /* Barras de progresso (st.progress) — sem isso, elas
+                   renderizam ATRÁS do véu escuro durante o processamento
+                   (Passo 7, criação de Casos/Suítes/vínculos no Azure
+                   DevOps), ficando praticamente invisíveis. */
+                [data-testid="stProgress"] {
+                    position: relative;
+                    z-index: 1001;
+                }
+
                 /* pointer-events: auto -> ISSO bloqueia clique de verdade em
                    tudo que estiver embaixo, enquanto durar o processamento.
                    Antes estava "none", ou seja, só era visual — qualquer
-                   botão embaixo continuava clicável normalmente. */
+                   botão embaixo continuava clicável normalmente.
+                   touch-action: pan-y -> libera especificamente o GESTO de
+                   rolagem vertical (roda do mouse, trackpad, arrastar no
+                   touch) através do véu, sem abrir mão do bloqueio de
+                   clique — as duas coisas são independentes no CSS. */
                 .qa-processing-shade {
                     position: fixed;
                     inset: 0;
                     background: rgba(20, 24, 31, 0.35);
                     z-index: 999;
                     pointer-events: auto;
+                    touch-action: pan-y;
+                    overscroll-behavior: contain;
                 }
 
                 /* O card fica acima do shade e É a única coisa clicável —
@@ -822,6 +863,14 @@ class UserInterface:
             'observacoes': nobs,
         }
 
+    @staticmethod
+    def _suggest_project_name_from_filename(filename: str) -> str:
+        """Deriva um nome de Test Plan legível a partir do nome do arquivo (ex.: 'visao_integracao_linkedin.pdf' -> 'Visao Integracao Linkedin')."""
+        base = filename.rsplit('.', 1)[0]
+        base = base.replace('_', ' ').replace('-', ' ')
+        base = ' '.join(base.split())
+        return base.title()
+
     def step_1(self):
         st.subheader("Passo 1 – Setup e Documentação")
         if self.state.get('processing_interrupted'):
@@ -829,27 +878,39 @@ class UserInterface:
 
         col1, col2 = st.columns(2)
         with col1:
-            project = st.text_input(
-                "Nome do Test Plan *",
-                value=self.state.get('project_name', ''),
-                key='project_name_input',
-                placeholder="Ex: Passaporte Refuturiza",
-                disabled=self.state.get('is_processing'),
-            )
-            if project:
-                self.state.set('project_name', project)
-        with col2:
             uploaded_new = st.file_uploader(
                 "Documento(s) de Requisitos (Máx 20MB cada) *",
                 type=["pdf", "txt", "docx"],
                 key='step1_uploaded_file',
                 disabled=self.state.get('is_processing'),
                 accept_multiple_files=True,
-                help="Você pode anexar mais de um documento — o texto de todos será combinado numa única análise.",
+                help="Você pode anexar mais de um documento — o texto de todos será combinado numa única análise. Arraste e solte os arquivos aqui, ou clique para escolher.",
             )
             if uploaded_new:
                 self.state.set('uploaded_files', uploaded_new)
+                # Sugere o Nome do Test Plan a partir do primeiro documento —
+                # só quando o campo ainda está vazio, pra nunca sobrescrever
+                # algo que a pessoa já tenha digitado manualmente. Isso
+                # PRECISA rodar antes do text_input ser desenhado (coluna
+                # seguinte) — o Streamlit não deixa mudar o valor de um
+                # widget depois dele já ter sido instanciado na mesma execução.
+                if not st.session_state.get('project_name_input', '').strip():
+                    suggested = self._suggest_project_name_from_filename(uploaded_new[0].name)
+                    st.session_state['project_name_input'] = suggested
+                    self.state.set('project_name', suggested)
             uploaded = self.state.get('uploaded_files') or []
+        with col2:
+            if 'project_name_input' not in st.session_state:
+                st.session_state['project_name_input'] = self.state.get('project_name', '')
+            project = st.text_input(
+                "Nome do Test Plan *",
+                key='project_name_input',
+                placeholder="Ex: Passaporte Refuturiza",
+                disabled=self.state.get('is_processing'),
+                help="Preenchido automaticamente a partir do nome do primeiro documento enviado — altere livremente se quiser outro nome.",
+            )
+            if project:
+                self.state.set('project_name', project)
 
         MAX_FILE_MB = 20
         MAX_TOTAL_MB = 20  # limite total combinado (ex.: client_max_body_size do servidor)
@@ -872,24 +933,110 @@ class UserInterface:
                 for f in uploaded:
                     st.caption(f"• {f.name} ({f.size / 1024:.0f} KB)")
 
-        ambiente = st.radio(
-            "Ambiente dos Testes *",
-            options=["Homologação", "Produção"],
-            index=None,  # sem pré-seleção — obriga a pessoa a escolher conscientemente
-            key="ambiente_testes_input",
-            disabled=self.state.get('is_processing'),
-            horizontal=True,
-            help="Define a etiqueta (HML/PROD) usada no nome de cada Caso de Teste, na Matriz e na documentação.",
-        )
+        col_amb, col_tipo = st.columns(2)
+        with col_amb:
+            ambiente = st.radio(
+                "Ambiente dos Testes *",
+                options=["Homologação", "Produção"],
+                index=None,  # sem pré-seleção — obriga a pessoa a escolher conscientemente
+                key="ambiente_testes_input",
+                disabled=self.state.get('is_processing'),
+                horizontal=True,
+                help="Define a etiqueta (HML/PROD) usada no nome de cada Caso de Teste, na Matriz e na documentação.",
+            )
         if ambiente:
             self.state.set('ambiente_testes', ambiente)
+
+        with col_tipo:
+            tipo_documento = st.radio(
+                "Tipo de Documento *",
+                options=["Visão", "Requisitos Funcionais", "Especificações Funcionais", "Outros"],
+                index=None,  # sem pré-seleção — obriga a pessoa a escolher conscientemente
+                key="tipo_documento_input",
+                disabled=self.state.get('is_processing'),
+                horizontal=True,
+                help=(
+                    "Calibra o nível de detalhe que a IA assume ao gerar Matriz/Casos (Visão = mais "
+                    "exploratório, Especificações = mais granular) e sugere o modo de envio pro Azure "
+                    "DevOps no Passo 7 (com ou sem vínculo a Work Items)."
+                ),
+            )
+        if tipo_documento:
+            self.state.set('tipo_documento', tipo_documento)
+
+        st.divider()
+        vincular_wi = st.checkbox(
+            "🔗 Vincular cada documento a um Work Item específico do Azure DevOps",
+            key="step1_vincular_wi_checkbox",
+            disabled=self.state.get('is_processing'),
+            help=(
+                "Em vez de deixar a IA sugerir os vínculos depois (Passo 7), você já declara aqui "
+                "a qual Work Item cada documento se refere. A Matriz e os Casos gerados a partir "
+                "desse documento já saem marcados com esse Work Item, entrando pré-vinculados no Passo 7."
+            ),
+        )
+        doc_work_item_map = {}
+        if vincular_wi and uploaded:
+            conn = self._setup_azure_devops_connection(show_area_path_picker=True)
+            if conn is None:
+                return  # conexão com o Azure DevOps ainda incompleta — não mostra o resto do Passo 1 até terminar (ou desmarcar a opção)
+            ado_client, ado_org, ado_project, area_path = conn
+
+            with st.container(key="azure_blue_btn_fetch_wi_step1"):
+                st.button(
+                    "🔄 Buscar Work Items do Board",
+                    disabled=self.state.get('is_processing'),
+                    key="btn_fetch_wi_step1",
+                    on_click=self.trigger_action,
+                    args=("fetch_wi_step1",),
+                )
+            if self.state.get('current_action') == 'fetch_wi_step1' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner(f"Buscando Work Items em '{area_path}'..."):
+                        items = ado_client.fetch_work_items_by_area_path(area_path)
+                    self.state.set('step1_board_items', items)
+                    if not items:
+                        st.warning("Nenhum Work Item encontrado nesse Area Path.")
+                except Exception as error:
+                    st.error(f"❌ Não foi possível buscar Work Items: {error}")
+                self.clear_action()
+                st.rerun()
+
+            board_items = self.state.get('step1_board_items') or []
+            if board_items:
+                st.caption("Escolha um ou mais Work Items de cada documento (opcional — deixe vazio se preferir):")
+                wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
+                doc_cols = st.columns(2)
+                for idx, f in enumerate(uploaded):
+                    with doc_cols[idx % 2]:
+                        chosen_labels = st.multiselect(
+                            f"📄 {f.name}",
+                            options=list(wi_labels.keys()),
+                            key=f"step1_doc_wi_{f.name}",
+                            disabled=self.state.get('is_processing'),
+                        )
+                    items = [wi_labels[label] for label in chosen_labels]
+                    if items:
+                        doc_work_item_map[f.name] = [{"id": it["id"], "title": it["title"]} for it in items]
+                self.state.set('step1_doc_work_item_map', doc_work_item_map)
+                st.caption(
+                    f"💡 Lembrete: no Passo 7, use uma Area Path que inclua estes Work Items "
+                    f"(buscados agora em '{area_path}') pra que o pré-vínculo funcione."
+                )
+            else:
+                st.caption("Busque os Work Items do board acima pra poder vinculá-los aos documentos.")
+        else:
+            self.state.set('step1_doc_work_item_map', {})
+
+        st.divider()
+
 
         if not project or not uploaded:
             st.info("Preencha o nome do projeto e faça o upload de ao menos um documento para continuar.")
             return
 
-        if not ambiente:
-            st.info("Selecione o Ambiente dos Testes (Homologação ou Produção) para continuar.")
+        if not ambiente or not tipo_documento:
+            st.info("Selecione o Ambiente dos Testes e o Tipo de Documento para continuar.")
             return
 
         st.button(
@@ -903,7 +1050,7 @@ class UserInterface:
 
         if self.state.get('current_action') == 'analyze_docs' and not self.state.get('show_interrupt_modal'):
             with st.spinner("Extraindo texto dos documentos..."):
-                text = DocumentProcessor.extract_plain_text_multi(uploaded)
+                text = DocumentProcessor.extract_plain_text_multi(uploaded, self.state.get('step1_doc_work_item_map'))
             if not text:
                 st.error("Não foi possível extrair texto.")
                 self.clear_action()
@@ -1005,6 +1152,7 @@ class UserInterface:
                         self.state.get('doc_text'),
                         self.state.get('step_2_answers', answers),
                         self.state.get('project_name'),
+                        self.state.get('tipo_documento', ''),
                     )
                     matriz = resp.get('matriz') or []
                     if not matriz:
@@ -1148,6 +1296,7 @@ class UserInterface:
                         self.state.get('matriz'),
                         self.state.get('user_answers'),
                         self.state.get('project_name'),
+                        self.state.get('tipo_documento', ''),
                     )
                     casos = resp.get('casos_de_teste') or []
                     if not casos:
@@ -1196,6 +1345,7 @@ class UserInterface:
                                         st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
                                     else:
                                         test_cases[idx] = {
+                                            **test_cases[idx],  # preserva campos extras (work_item_relacionado, requisitos_relacionados, id) que não são editados aqui
                                             'titulo': titulo,
                                             'pre_condicoes': pre,
                                             'passos': [
@@ -1213,6 +1363,14 @@ class UserInterface:
                                     self.state.delete(sk)
                                     st.rerun()
                     else:
+                        wi_relacionado = str(tc.get('work_item_relacionado') or '').strip()
+                        if wi_relacionado:
+                            st.caption(f"🔗 Work Item relacionado (vindo do Passo 1): #{wi_relacionado}")
+                        elif self.state.get('step1_doc_work_item_map'):
+                            # Só mostra esse aviso se a pessoa realmente usou a
+                            # vinculação no Passo 1 — senão é ruído pra quem
+                            # nunca pediu esse recurso.
+                            st.caption("⚪ Nenhum Work Item relacionado veio da IA para este Caso.")
                         self._read_only_table([("Pré-condições", tc.get('pre_condicoes') or '—')])
                         passos = tc.get('passos', [])
                         if passos:
@@ -1569,6 +1727,540 @@ class UserInterface:
             if st.button("🔄 Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing'), key="btn_new_step6"):
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
+
+    def _render_step7_static_suite_mode(self, ado_client, ado_project: str, fallback_area_path: str):
+        """
+        Modo alternativo de envio: usa os Planos/Suítes/Casos já gerados
+        pelo próprio app (Passo 5) e cria Suítes ESTÁTICAS no Azure DevOps
+        — sem depender de nenhum Work Item existir. Indicado pra projetos
+        no início (só Documento de Visão), onde o máximo que existe no
+        board é um Épico/Backlog genérico, se tanto.
+        """
+        test_plans = self.state.get('test_plans') or []
+        test_cases = self.state.get('test_cases') or []
+
+        if not test_plans or not test_cases:
+            st.warning("Nenhum Plano de Teste gerado ainda — volte ao Passo 5 antes de usar este modo.")
+            return
+
+        st.markdown("### 📋 Test Plan (destino no Azure DevOps)")
+        st.caption(
+            f"Os **{len(test_plans)} Plano(s)** e suas Suítes, gerados no Passo 5, serão criados "
+            "como Suítes Estáticas no Azure DevOps, com os Casos de Teste vinculados diretamente "
+            "— sem depender de nenhum Work Item."
+        )
+        with st.expander("Ver os Planos que serão enviados"):
+            for plan in test_plans:
+                suites = plan.get('suites', [])
+                total_casos = sum(len(s.get('casos', [])) for s in suites)
+                st.write(f"**{plan.get('nome', '')}** — {len(suites)} Suíte(s), {total_casos} Caso(s) no total")
+
+        with st.container(key="azure_blue_btn_fetch_static_plans"):
+            st.button(
+                "🔍 Buscar Test Plans existentes",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_static_plans",
+                on_click=self.trigger_action,
+                args=("fetch_static_plans",),
+            )
+        if self.state.get('current_action') == 'fetch_static_plans' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner(f"Buscando Test Plans em '{fallback_area_path}'..."):
+                    existing = ado_client.list_test_plans_for_area_path(fallback_area_path)
+                self.state.set('ado_static_existing_plans', existing)
+                self.state.set('ado_static_existing_plans_path', fallback_area_path)
+            except AzureDevOpsError as error:
+                st.error(f"❌ Não foi possível buscar Test Plans existentes: {error}")
+            except Exception as error:
+                st.error(f"❌ Erro inesperado: {error}")
+            self.clear_action()
+            st.rerun()
+
+        existing_plans = (
+            self.state.get('ado_static_existing_plans') or []
+            if self.state.get('ado_static_existing_plans_path') == fallback_area_path
+            else []
+        )
+        plan_mode_options = ["Criar novo Test Plan"]
+        if existing_plans:
+            plan_mode_options.append("Usar um Test Plan existente (adicionar Suites/Casos nele)")
+        plan_mode = st.radio(
+            "O que você quer fazer?",
+            options=plan_mode_options,
+            disabled=self.state.get('is_processing'),
+            key="ado_static_plan_mode_radio",
+        )
+
+        col_plan, col_state = st.columns(2)
+        existing_plan_id = None
+        if plan_mode.startswith("Usar"):
+            plan_labels = {f"{p['id']} - {p['name']}": p for p in existing_plans}
+            with col_plan:
+                chosen_label = st.selectbox(
+                    "Test Plan existente", options=list(plan_labels.keys()),
+                    disabled=self.state.get('is_processing'), key="ado_static_existing_plan_select",
+                    help="Suítes com o mesmo nome que já existirem neste plano não são duplicadas — só recebem os Casos novos.",
+                )
+            existing_plan_id = plan_labels[chosen_label]["id"]
+            plan_name = plan_labels[chosen_label]["name"]
+        else:
+            default_name = f"{self.state.get('project_name') or 'QA TestGen'} - QA TestGen"
+            with col_plan:
+                plan_name = st.text_input(
+                    "Nome do Test Plan a ser criado", value=self.state.get('ado_static_plan_name') or default_name,
+                    disabled=self.state.get('is_processing'), key="ado_static_plan_name_input",
+                )
+            self.state.set('ado_static_plan_name', plan_name)
+
+        with col_state:
+            initial_state_label = st.selectbox(
+                "Estado inicial dos Casos de Teste criados",
+                options=["Design (revisar manualmente antes de rodar)", "Ready (pronto para execução)"],
+                index=1 if self.state.get('ado_tc_initial_state', 'Ready') == 'Ready' else 0,
+                disabled=self.state.get('is_processing'), key="ado_static_tc_initial_state_select",
+            )
+        initial_state = "Ready" if initial_state_label.startswith("Ready") else "Design"
+
+        st.divider()
+        with st.container(key="azure_blue_btn_confirm_static"):
+            if st.button(
+                "🔗 Confirmar e Integrar com Azure DevOps",
+                type="primary", use_container_width=True,
+                disabled=self.state.get('is_processing') or not plan_name.strip(),
+                key="btn_confirm_static_push",
+            ):
+                existing_case_ids = self.state.get('ado_test_case_ids') or {}
+                excluded_titles = set(self.state.get('ado_excluded_case_titles') or [])
+                duplicate_titles_now = set(self.state.get('ado_duplicate_case_titles') or [])
+                titulos_necessarios = set()
+                suites_display = []
+                for plan in test_plans:
+                    for suite in plan.get('suites', []):
+                        casos_titulos = [t for t in suite.get('casos', []) if t not in excluded_titles]
+                        titulos_necessarios.update(casos_titulos)
+                        if casos_titulos:
+                            suites_display.append((suite.get('nome', ''), casos_titulos))
+                cases_to_create_titles = [
+                    tc.get('titulo') for tc in test_cases
+                    if tc.get('titulo') in titulos_necessarios
+                    and tc.get('titulo') not in existing_case_ids
+                    and tc.get('titulo') not in duplicate_titles_now
+                ]
+                self.state.set('ado_static_confirm_modal_params', (cases_to_create_titles, suites_display, plan_name.strip(), bool(existing_plan_id)))
+                self.state.set('show_static_confirm_modal', True)
+                st.rerun()
+
+        if self.state.get('show_static_confirm_modal'):
+            params = self.state.get('ado_static_confirm_modal_params') or ([], [], plan_name, False)
+            confirm_static_suites_push_modal(*params)
+
+        if self.state.get('current_action') == 'push_static_suites' and not self.state.get('show_interrupt_modal'):
+            self._push_static_suites_azure_devops(ado_client, fallback_area_path, plan_name.strip(), initial_state, existing_plan_id)
+
+        log = self.state.get('ado_static_push_log') or []
+        if log:
+            st.markdown("#### 📋 Resultado da integração")
+            for line in log:
+                st.write(line)
+
+    def _push_static_suites_azure_devops(self, ado_client, area_path: str, plan_name: str,
+                                           initial_state: str, existing_plan_id: int = None):
+        """
+        Push do modo "Sem Work Items": cria (ou reaproveita) o Test Plan,
+        cria/reaproveita uma Suíte Estática por Suíte gerada no Passo 5
+        (por nome, sem duplicar), cria os Casos de Teste que ainda não
+        existem no Azure DevOps, e adiciona cada um na Suíte
+        correspondente diretamente — sem nenhum vínculo a Work Item.
+        """
+        test_plans = self.state.get('test_plans') or []
+        test_cases = self.state.get('test_cases') or []
+        case_ids = dict(self.state.get('ado_test_case_ids') or {})
+        excluded_titles = set(self.state.get('ado_excluded_case_titles') or [])
+        duplicate_titles = set(self.state.get('ado_duplicate_case_titles') or [])
+        titled = AzureCsvFormatter._titled(test_cases, self.state.get('ambiente_testes', ''))
+        log = []
+
+        # 1) Test Plan: cria novo ou reaproveita existente.
+        if existing_plan_id:
+            plan_id = existing_plan_id
+            try:
+                with st.spinner(f"Buscando suite raiz do Test Plan existente '{plan_name}'..."):
+                    root_suite_id = ado_client.get_test_plan_root_suite(plan_id)
+                log.append(f"♻️ Reaproveitando Test Plan existente: **{plan_name}** (ID {plan_id})")
+                with st.spinner("Verificando Suítes já existentes neste Test Plan (evita duplicar)..."):
+                    existing_suite_by_name = ado_client.get_existing_static_suite_ids_by_name(plan_id)
+            except Exception as error:
+                log.append(f"❌ Falha ao preparar o Test Plan existente: {error}")
+                self.state.set('ado_static_push_log', log)
+                self.clear_action()
+                st.rerun()
+                return
+        else:
+            try:
+                plan = ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen (modo sem Work Items)")
+                plan_id = plan["id"]
+                root_suite_id = plan.get("root_suite_id")
+                log.append(f"✅ Test Plan criado: **{plan_name}** (ID {plan_id})")
+            except Exception as error:
+                log.append(f"❌ Falha ao criar Test Plan: {error}")
+                self.state.set('ado_static_push_log', log)
+                self.clear_action()
+                st.rerun()
+                return
+            existing_suite_by_name = {}
+
+        if not root_suite_id:
+            log.append("⚠️ Não recebi o ID da suite raiz do plano — não é possível continuar.")
+            self.state.set('ado_static_push_log', log)
+            self.clear_action()
+            st.rerun()
+            return
+
+        # 2) Garante que todos os Casos de Teste necessários existem no
+        # Azure DevOps (os já existentes/duplicados/excluídos são pulados —
+        # mesma regra do modo com Work Items).
+        titulos_necessarios = set()
+        for plan in test_plans:
+            for suite in plan.get('suites', []):
+                titulos_necessarios.update(suite.get('casos', []))
+
+        cases_to_create = [
+            tc for tc in test_cases
+            if tc.get('titulo') in titulos_necessarios
+            and tc.get('titulo') not in case_ids
+            and tc.get('titulo') not in duplicate_titles
+            and tc.get('titulo') not in excluded_titles
+        ]
+        if cases_to_create:
+            total = len(cases_to_create)
+            progress = st.progress(0, text=f"Criando Test Cases no Azure DevOps... (0/{total})")
+            done = 0
+
+            def _create_case(tc):
+                titulo = tc.get('titulo')
+                titulo_prefixado = titled.get(titulo, titulo)
+                result = ado_client.create_test_case(
+                    titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path, initial_state
+                )
+                return titulo, result["id"]
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(_create_case, tc): tc for tc in cases_to_create}
+                for future in as_completed(futures):
+                    try:
+                        titulo, new_id = future.result()
+                        case_ids[titulo] = new_id
+                        log.append(f"✅ Caso de Teste criado: {titulo} (ID {new_id})")
+                    except Exception as error:
+                        log.append(f"❌ Falha ao criar um Caso de Teste: {error}")
+                    done += 1
+                    progress.progress(done / total, text=f"Criando Test Cases no Azure DevOps... ({done}/{total})")
+            self.state.set('ado_test_case_ids', case_ids)
+
+        # 3) Suítes Estáticas — uma por Suíte gerada, reaproveitando por
+        # nome se já existir (regra do "merge"), e adicionando os Casos
+        # diretamente nela (Static Suite não "puxa" sozinha como a
+        # Requirement Suite — precisa do vínculo explícito).
+        suite_tasks = []
+        for plan in test_plans:
+            for suite in plan.get('suites', []):
+                nome_suite = suite.get('nome', '')
+                casos_titulos = [t for t in suite.get('casos', []) if t not in excluded_titles]
+                case_id_list = [case_ids[t] for t in casos_titulos if t in case_ids]
+                if nome_suite and case_id_list:
+                    suite_tasks.append((nome_suite, case_id_list))
+
+        if suite_tasks:
+            total_suites = len(suite_tasks)
+            progress2 = st.progress(0, text=f"Criando/atualizando Suítes no Azure DevOps... (0/{total_suites})")
+            for idx, (nome_suite, case_id_list) in enumerate(suite_tasks, start=1):
+                nome_norm = nome_suite.strip().lower()
+                try:
+                    if nome_norm in existing_suite_by_name:
+                        suite_id = existing_suite_by_name[nome_norm]
+                        log.append(f"♻️ Suíte '{nome_suite}' já existia neste Test Plan (ID {suite_id}) — Casos novos adicionados nela.")
+                    else:
+                        suite_id = ado_client.create_test_suite(plan_id, root_suite_id, nome_suite)
+                        log.append(f"✅ Suíte criada: '{nome_suite}' (ID {suite_id})")
+                    ado_client.add_cases_to_suite(plan_id, suite_id, case_id_list)
+                    log.append(f"　　→ {len(case_id_list)} Caso(s) vinculado(s) à Suíte '{nome_suite}'.")
+                except AzureDevOpsError as error:
+                    log.append(f"❌ Falha ao processar a Suíte '{nome_suite}': {error}")
+                except Exception as error:
+                    log.append(f"❌ Erro inesperado na Suíte '{nome_suite}': {error}")
+                progress2.progress(idx / total_suites, text=f"Criando/atualizando Suítes no Azure DevOps... ({idx}/{total_suites})")
+
+        log.append(f"\n🔗 Confira o Test Plan completo: {ado_client.test_plan_url(plan_id)}")
+        self._log(
+            "Integração com Azure DevOps (sem Work Items)", "Passo 7",
+            f"Test Plan '{plan_name}' — {len(cases_to_create)} caso(s) criado(s), {len(suite_tasks)} suíte(s) processada(s)",
+        )
+        self.state.set('ado_static_push_log', log)
+        self.clear_action()
+        st.rerun()
+
+    def _render_step7_reconciliation_mode(self, ado_client, ado_project: str, area_paths: list):
+        """
+        Modo alternativo de envio: liga Casos de Teste que JÁ EXISTEM num
+        Test Plan anterior (feito no modo "Sem Work Items", quando só havia
+        um Documento de Visão) a Work Items que foram criados depois. Não
+        cria Caso de Teste novo nenhum — só cria a Requirement Suite (se
+        ainda não existir) e o vínculo "Tests" entre o Caso já existente e
+        o Work Item novo.
+        """
+        st.markdown("### 📋 1. Escolha o Test Plan anterior")
+        st.caption("O Test Plan que já tem os Casos de Teste criados (do fluxo 'Sem Work Items').")
+
+        with st.container(key="azure_blue_btn_fetch_recon_plans"):
+            st.button(
+                "🔍 Buscar Test Plans do Projeto",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_recon_plans",
+                on_click=self.trigger_action,
+                args=("fetch_recon_plans",),
+            )
+        if self.state.get('current_action') == 'fetch_recon_plans' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Buscando Test Plans..."):
+                    plans = ado_client.list_test_plans()
+                self.state.set('ado_recon_available_plans', plans)
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar Test Plans: {error}")
+            self.clear_action()
+            st.rerun()
+
+        available_plans = self.state.get('ado_recon_available_plans') or []
+        if not available_plans:
+            return
+
+        plan_labels = {f"{p['id']} - {p['name']}": p for p in available_plans}
+        col_plan, col_btn_cases = st.columns(2)
+        with col_plan:
+            chosen_label = st.selectbox(
+                "Test Plan anterior", options=list(plan_labels.keys()),
+                disabled=self.state.get('is_processing'), key="ado_recon_plan_select",
+            )
+        old_plan = plan_labels[chosen_label]
+        old_plan_id = old_plan["id"]
+
+        with col_btn_cases:
+            with st.container(key="azure_blue_btn_fetch_recon_cases"):
+                st.button(
+                    "🔍 Buscar Casos de Teste deste Test Plan",
+                    disabled=self.state.get('is_processing'),
+                    key="btn_fetch_recon_cases",
+                    on_click=self.trigger_action,
+                    args=("fetch_recon_cases",),
+                    use_container_width=True,
+                )
+        if self.state.get('current_action') == 'fetch_recon_cases' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner(f"Buscando Casos de Teste do Test Plan '{old_plan['name']}'..."):
+                    summary = ado_client.get_test_plan_execution_summary(old_plan_id)
+                seen = {}
+                for point in summary.get("points", []):
+                    cid = point.get("case_id")
+                    if cid and cid not in seen:
+                        seen[cid] = point.get("case_title", f"Caso #{cid}")
+                old_cases = [{"id": cid, "titulo": titulo} for cid, titulo in seen.items()]
+                self.state.set('ado_recon_old_plan_id', old_plan_id)
+                self.state.set('ado_recon_old_cases', old_cases)
+                if not old_cases:
+                    st.warning("Nenhum Caso de Teste encontrado nesse Test Plan.")
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar os Casos de Teste: {error}")
+            self.clear_action()
+            st.rerun()
+
+        old_cases = (
+            self.state.get('ado_recon_old_cases') or []
+            if self.state.get('ado_recon_old_plan_id') == old_plan_id
+            else []
+        )
+        if not old_cases:
+            st.caption("Busque os Casos de Teste do Test Plan escolhido pra continuar.")
+            return
+        st.caption(f"✅ {len(old_cases)} Caso(s) de Teste encontrados neste Test Plan, prontos pra vincular.")
+
+        st.divider()
+        st.markdown("### 🎯 2. Busque os Work Items novos")
+        with st.container(key="azure_blue_btn_fetch_recon_wi"):
+            st.button(
+                "🔄 Buscar Work Items do Board",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_recon_wi",
+                on_click=self.trigger_action,
+                args=("fetch_recon_wi",),
+            )
+        if self.state.get('current_action') == 'fetch_recon_wi' and not self.state.get('show_interrupt_modal'):
+            try:
+                paths_to_search = area_paths or [ado_project]
+                with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
+                    items_by_id = {}
+                    for ap in paths_to_search:
+                        for item in ado_client.fetch_work_items_by_area_path(ap):
+                            items_by_id[item["id"]] = item
+                self.state.set('ado_recon_board_items', list(items_by_id.values()))
+                self.state.set('ado_recon_wi_case_links', {})
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar Work Items: {error}")
+            self.clear_action()
+            st.rerun()
+
+        board_items = self.state.get('ado_recon_board_items') or []
+        if not board_items:
+            return
+
+        st.divider()
+        st.markdown("### 🤖 3. Sugestão automática com IA")
+        st.caption(
+            "Compara os títulos dos Casos já existentes no Test Plan anterior com os Work Items "
+            "novos — a IA baseia a sugestão só no título de cada caso (não tem acesso aos passos "
+            "detalhados), então revise com atenção antes de confirmar."
+        )
+        wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
+        selected_labels = st.multiselect(
+            "🎯 Work Items considerados na análise da IA",
+            options=list(wi_labels.keys()),
+            disabled=self.state.get('is_processing'),
+            key="ado_recon_wi_multiselect",
+        )
+        selected_items = [wi_labels[l] for l in selected_labels]
+
+        with st.container(key="azure_blue_btn_suggest_recon"):
+            st.button(
+                "🤖 Sugerir Vínculos com IA", type="primary",
+                disabled=self.state.get('is_processing') or not selected_items,
+                key="btn_suggest_recon_links",
+                on_click=self.trigger_action,
+                args=("suggest_recon_links",),
+            )
+        if self.state.get('current_action') == 'suggest_recon_links' and not self.state.get('show_interrupt_modal'):
+            try:
+                payload_cases = [{"titulo": c["titulo"]} for c in old_cases]
+                with st.spinner("Consultando a IA para sugerir os vínculos..."):
+                    result = self.client.trigger_matching(selected_items, payload_cases, self.state.get('project_name'))
+                links = {}
+                for vinculo in result.get("vinculos", []):
+                    wid = str(vinculo.get("work_item_id"))
+                    links[wid] = vinculo.get("casos", [])
+                self.state.set('ado_recon_wi_case_links', links)
+                for item in selected_items:
+                    widget_key = f"ado_recon_multiselect_{item['id']}"
+                    st.session_state[widget_key] = [c for c in links.get(str(item['id']), []) if c in [oc['titulo'] for oc in old_cases]]
+            except Exception as error:
+                st.error(f"❌ Não foi possível obter a sugestão da IA: {error}")
+            self.clear_action()
+            st.rerun()
+
+        st.divider()
+        st.markdown("### ✏️ 4. Revisar e confirmar")
+        st.caption("Cada Caso só pode ser vinculado a UM Work Item — se já estiver escolhido em outro, some das opções aqui.")
+        links = dict(self.state.get('ado_recon_wi_case_links') or {})
+        ordered_wids = [str(item['id']) for item in selected_items]
+        links = self._dedupe_case_assignments(links, ordered_wids)
+        case_titles = [c["titulo"] for c in old_cases]
+        claimed_so_far = set()
+        for item in selected_items:
+            wid_key = str(item['id'])
+            widget_key = f"ado_recon_multiselect_{item['id']}"
+            if widget_key not in st.session_state:
+                st.session_state[widget_key] = [c for c in links.get(wid_key, []) if c in case_titles]
+            available_options = [c for c in case_titles if c not in claimed_so_far or c in st.session_state[widget_key]]
+            st.session_state[widget_key] = [c for c in st.session_state[widget_key] if c in available_options]
+            selected = st.multiselect(
+                f"{item['id']} - {item['title']} ({item['type']}, {item['state']})",
+                options=available_options, key=widget_key, disabled=self.state.get('is_processing'),
+                help="Casos já vinculados a outro Work Item não aparecem aqui.",
+            )
+            links[wid_key] = selected
+            claimed_so_far.update(selected)
+        self.state.set('ado_recon_wi_case_links', links)
+
+        total_links = sum(len(c) for c in links.values())
+        st.divider()
+        with st.container(key="azure_blue_btn_confirm_recon"):
+            if st.button(
+                "🔗 Confirmar e Vincular no Azure DevOps", type="primary", use_container_width=True,
+                disabled=self.state.get('is_processing') or total_links == 0,
+                key="btn_confirm_recon",
+            ):
+                items_by_id_lookup = {item['id']: item for item in selected_items}
+                items_display = []
+                for wid_str, casos in links.items():
+                    if not casos:
+                        continue
+                    item = items_by_id_lookup.get(int(wid_str))
+                    label = f"{wid_str} - {item['title']} ({item['type']}, {item['state']})" if item else wid_str
+                    items_display.append((label, casos))
+                self.state.set('ado_recon_confirm_modal_params', (items_display, old_plan['name']))
+                self.state.set('show_recon_confirm_modal', True)
+                st.rerun()
+        if total_links == 0:
+            st.caption("Selecione ao menos um vínculo acima pra habilitar a confirmação.")
+
+        if self.state.get('show_recon_confirm_modal'):
+            params = self.state.get('ado_recon_confirm_modal_params') or ([], old_plan['name'])
+            confirm_reconciliation_push_modal(*params)
+
+        if self.state.get('current_action') == 'push_reconciliation' and not self.state.get('show_interrupt_modal'):
+            self._push_reconciliation(ado_client, old_plan_id, old_cases, links)
+
+        log = self.state.get('ado_recon_push_log') or []
+        if log:
+            st.markdown("#### 📋 Resultado da reconciliação")
+            for line in log:
+                st.write(line)
+
+    def _push_reconciliation(self, ado_client, old_plan_id: int, old_cases: list, links: dict):
+        """Cria (se preciso) a Requirement Suite de cada Work Item e vincula os Casos já existentes a ele."""
+        case_id_by_title = {c["titulo"]: c["id"] for c in old_cases}
+        log = []
+        try:
+            with st.spinner("Verificando Suítes já existentes neste Test Plan..."):
+                root_suite_id = ado_client.get_test_plan_root_suite(old_plan_id)
+                existing_suite_by_wi = ado_client.get_existing_requirement_suite_ids(old_plan_id)
+        except Exception as error:
+            log.append(f"❌ Falha ao preparar o Test Plan: {error}")
+            self.state.set('ado_recon_push_log', log)
+            self.clear_action()
+            st.rerun()
+            return
+
+        tasks = [(int(wid), titulos) for wid, titulos in links.items() if titulos]
+        total = len(tasks)
+        if total:
+            progress = st.progress(0, text=f"Vinculando Casos aos Work Items... (0/{total})")
+            for idx, (work_item_id, titulos) in enumerate(tasks, start=1):
+                try:
+                    if work_item_id in existing_suite_by_wi:
+                        suite_id = existing_suite_by_wi[work_item_id]
+                        log.append(f"♻️ Work Item {work_item_id} já tinha Suite (ID {suite_id}).")
+                    else:
+                        suite_id = ado_client.create_requirement_based_suite(old_plan_id, root_suite_id, work_item_id)
+                        log.append(f"✅ Suite criada para Work Item {work_item_id} (ID {suite_id}).")
+                    for titulo in titulos:
+                        case_id = case_id_by_title.get(titulo)
+                        if not case_id:
+                            continue
+                        try:
+                            ado_client.link_test_case_to_work_item(case_id, work_item_id)
+                            log.append(f"　　→ '{titulo}' vinculado ao Work Item {work_item_id}.")
+                        except AzureDevOpsError as error:
+                            log.append(f"　　❌ Falha ao vincular '{titulo}': {error}")
+                except AzureDevOpsError as error:
+                    log.append(f"❌ Falha no Work Item {work_item_id}: {error}")
+                except Exception as error:
+                    log.append(f"❌ Erro inesperado no Work Item {work_item_id}: {error}")
+                progress.progress(idx / total, text=f"Vinculando Casos aos Work Items... ({idx}/{total})")
+
+        self._log(
+            "Reconciliação de Test Plan Anterior", "Passo 7",
+            f"Test Plan {old_plan_id} — {total} Work Item(s) processado(s)",
+        )
+        self.state.set('ado_recon_push_log', log)
+        self.clear_action()
+        st.rerun()
 
     def _render_step7_back_and_new(self, key_suffix: str, back_step: int = 6):
         c1, c2 = st.columns(2)
@@ -1975,7 +2667,10 @@ class UserInterface:
                 self.state.set('ado_board_items', items)
                 # Nova busca -> reseta a seleção de "quais entram no matching"
                 # pra não arrastar uma seleção antiga de um board diferente.
-                self.state.set('ado_wi_matching_selected_ids', [])
+                # None (não []) -> sinaliza "ainda não escolhida nesta busca",
+                # pra depois pré-selecionar automaticamente os Work Items com
+                # Caso pré-vinculado do Passo 1.
+                self.state.set('ado_wi_matching_selected_ids', None)
                 if 'ado_wi_matching_multiselect' in st.session_state:
                     del st.session_state['ado_wi_matching_multiselect']
                 if not items:
@@ -1987,8 +2682,93 @@ class UserInterface:
             self.clear_action()
             st.rerun()
 
+        board_items_fetched = self.state.get('ado_board_items') or []
+        if not board_items_fetched:
+            st.info("Busque os Work Items do Board (botão acima) antes de escolher o Modo de Envio.")
+            st.divider()
+            self._render_step7_back_and_new("waiting_wi")
+            return
+
+        st.divider()
+        st.markdown("##### 🔀 Modo de Envio")
+        modo_options = [
+            "🔗 Vincular a Work Items (Requirement Suites)",
+            "📋 Sem Work Items (Suítes Estáticas, a partir dos Planos gerados)",
+            "🔄 Reconciliar Test Plan Anterior (ligar Casos já criados a Work Items novos)",
+        ]
+        # Sugestão de modo baseada no Tipo de Documento escolhido no Passo 1
+        # — "Visão" geralmente significa que ainda não há Work Item pra
+        # vincular caso a caso (só um Épico/Backlog no máximo). A pessoa
+        # sempre pode trocar manualmente.
+        tipo_doc = self.state.get('tipo_documento', '')
+        default_modo_idx = 1 if tipo_doc == "Visão" else 0
+        modo_envio = st.radio(
+            "Como os Casos de Teste devem entrar no Azure DevOps?",
+            options=modo_options,
+            index=default_modo_idx,
+            disabled=self.state.get('is_processing'),
+            key="ado_modo_envio_radio",
+            help=(
+                "Sugestão baseada no Tipo de Documento do Passo 1 — mude se não fizer sentido pro seu caso. "
+                "'Sem Work Items' é indicado quando o projeto ainda não tem Work Items (ex.: só um Documento "
+                "de Visão). 'Reconciliar' é pra quando você já usou 'Sem Work Items' antes, e agora os Work "
+                "Items foram criados — liga os Casos já existentes a eles, sem duplicar."
+            ),
+        )
+
+        if modo_envio == modo_options[1]:
+            st.divider()
+            self._render_step7_static_suite_mode(ado_client, ado_project, fallback_area_path)
+            st.divider()
+            self._render_step7_back_and_new("main")
+            return
+
+        if modo_envio == modo_options[2]:
+            st.divider()
+            self._render_step7_reconciliation_mode(ado_client, ado_project, area_paths)
+            st.divider()
+            self._render_step7_back_and_new("main")
+            return
+
         board_items = self.state.get('ado_board_items') or []
         test_cases = self.state.get('test_cases') or []
+
+        # Pré-vínculos declarados no Passo 1 (documento já marcado com um
+        # Work Item) aparecem aqui IMEDIATAMENTE, assim que os Work Items
+        # são buscados — sem precisar clicar em "Sugerir Vínculos com IA"
+        # pra isso. Roda só uma vez por busca de board_items (não sobrescreve
+        # depois se você editar manualmente ou pedir uma sugestão da IA).
+        board_ids_tuple = tuple(sorted(item['id'] for item in board_items))
+        prelink_diag = {"com_marcacao": 0, "vinculados": 0, "nao_bateu": []}
+        if board_items and test_cases and self.state.get('ado_wi_prelinked_marker') != board_ids_tuple:
+            board_ids_set = set(board_ids_tuple)
+            existing_links = dict(self.state.get('ado_wi_case_links') or {})
+            for tc in test_cases:
+                wi_raw_full = str(tc.get("work_item_relacionado") or "").strip()
+                if not wi_raw_full:
+                    continue
+                prelink_diag["com_marcacao"] += 1
+                # Extrai só os dígitos — robusto a variações de formatação da
+                # IA (ex.: "#1234", "Work Item 1234", "1234.0").
+                digits = re.sub(r"[^\d]", "", wi_raw_full)
+                if not digits:
+                    prelink_diag["nao_bateu"].append(f"{tc.get('titulo', '')} (valor: '{wi_raw_full}')")
+                    continue
+                wi_id = int(digits)
+                if wi_id not in board_ids_set:
+                    prelink_diag["nao_bateu"].append(f"{tc.get('titulo', '')} (Work Item #{wi_id}, fora dos buscados agora)")
+                    continue
+                titulo = tc.get("titulo", "")
+                wid_key = str(wi_id)
+                existing_links.setdefault(wid_key, [])
+                if titulo not in existing_links[wid_key]:
+                    existing_links[wid_key].append(titulo)
+                    prelink_diag["vinculados"] += 1
+            self.state.set('ado_wi_case_links', existing_links)
+            self.state.set('ado_wi_prelinked_marker', board_ids_tuple)
+            self.state.set('ado_wi_prelink_diag', prelink_diag)
+        else:
+            prelink_diag = self.state.get('ado_wi_prelink_diag') or prelink_diag
 
         if not board_items:
             st.info("Busque os Work Items do Board (botão acima) antes de continuar.")
@@ -2007,7 +2787,18 @@ class UserInterface:
                 f"{item['id']} - {item['title']} ({item['type']}, {item['state']})": item
                 for item in board_items
             }
-            selected_ids = self.state.get('ado_wi_matching_selected_ids') or []
+            selected_ids = self.state.get('ado_wi_matching_selected_ids')
+            if selected_ids is None:
+                # Primeira vez nesta busca de board — pré-seleciona
+                # automaticamente os Work Items que já têm Caso pré-vinculado
+                # do Passo 1 (não faz sentido pedir pra escolher de novo algo
+                # que a pessoa já declarou lá).
+                pre_linked_wids = {
+                    int(wid) for wid, casos in (self.state.get('ado_wi_case_links') or {}).items()
+                    if casos
+                }
+                selected_ids = [item['id'] for item in board_items if item['id'] in pre_linked_wids]
+                self.state.set('ado_wi_matching_selected_ids', selected_ids)
             label_by_id = {item['id']: label for label, item in wi_labels.items()}
             current_labels = [label_by_id[wid] for wid in selected_ids if wid in label_by_id]
 
@@ -2017,7 +2808,7 @@ class UserInterface:
                 default=current_labels,
                 disabled=self.state.get('is_processing'),
                 key="ado_wi_matching_multiselect",
-                help="Clique em quantos quiser na lista — não precisa segurar Ctrl/Shift, o campo já aceita múltipla seleção.",
+                help="Work Items com Caso pré-vinculado do Passo 1 já vêm marcados automaticamente. Clique em quantos quiser — não precisa segurar Ctrl/Shift.",
             )
             selected_ids = [wi_labels[label]['id'] for label in selected_labels]
             self.state.set('ado_wi_matching_selected_ids', selected_ids)
@@ -2063,10 +2854,33 @@ class UserInterface:
             st.divider()
             st.markdown("### ✏️ Revisar e confirmar vínculos")
             st.caption(
-                "Adicione ou remova Casos de Teste livremente pra cada Work Item. Um caso pode "
-                "ser atribuído a mais de um Work Item. Work Items sem nenhum caso selecionado "
-                "não geram Suite no Azure DevOps."
+                "Adicione ou remova Casos de Teste livremente pra cada Work Item. Cada Caso só "
+                "pode ser vinculado a UM Work Item — se ele já estiver escolhido em outro, some "
+                "das opções aqui. Work Items sem nenhum caso selecionado não geram Suite no Azure DevOps."
             )
+
+            diag = self.state.get('ado_wi_prelink_diag') or {}
+            if diag.get("vinculados"):
+                st.success(
+                    f"✅ {diag['vinculados']} Caso(s) já vieram pré-vinculados desde o Passo 1 "
+                    "(documento marcado com Work Item) — já aparecem selecionados abaixo, sem "
+                    "precisar de sugestão da IA."
+                )
+            elif diag.get("com_marcacao"):
+                # Tem marcação, mas nada bateu — mostra o motivo, em vez de
+                # falhar silenciosamente (ajuda a diagnosticar rápido).
+                st.warning(
+                    f"⚠️ {diag['com_marcacao']} Caso(s) vieram com marcação de Work Item do Passo 1, "
+                    "mas nenhum bateu com os Work Items buscados agora nesta tela."
+                )
+                if diag.get("nao_bateu"):
+                    with st.expander("Ver detalhes"):
+                        for linha in diag["nao_bateu"]:
+                            st.caption(f"• {linha}")
+                        st.caption(
+                            "Confira se a Area Path escolhida aqui no Passo 7 é a mesma (ou inclui) "
+                            "a Area Path usada no Passo 1 pra buscar os Work Items."
+                        )
 
             ignored_ids = [item['id'] for item in board_items if item['id'] not in selected_ids]
             if ignored_ids:
@@ -2076,8 +2890,11 @@ class UserInterface:
                 )
 
             links = dict(self.state.get('ado_wi_case_links') or {})
+            ordered_wids = [str(item['id']) for item in selected_board_items]
+            links = self._dedupe_case_assignments(links, ordered_wids)
             case_titles = [tc.get('titulo', f'Caso #{i}') for i, tc in enumerate(test_cases, start=1)]
 
+            claimed_so_far = set()
             for item in selected_board_items:
                 wid_key = str(item['id'])
                 widget_key = f"ado_wi_multiselect_{item['id']}"
@@ -2089,13 +2906,20 @@ class UserInterface:
                 if widget_key not in st.session_state:
                     st.session_state[widget_key] = [c for c in links.get(wid_key, []) if c in case_titles]
 
+                # Um Caso já reivindicado por um Work Item ANTERIOR nesta
+                # mesma lista não aparece como opção aqui — exclusividade.
+                available_options = [c for c in case_titles if c not in claimed_so_far or c in st.session_state[widget_key]]
+                st.session_state[widget_key] = [c for c in st.session_state[widget_key] if c in available_options]
+
                 selected = st.multiselect(
                     f"{item['id']} - {item['title']} ({item['type']}, {item['state']})",
-                    options=case_titles,
+                    options=available_options,
                     key=widget_key,
                     disabled=self.state.get('is_processing'),
+                    help="Casos já vinculados a outro Work Item não aparecem aqui — um Caso pertence a só um Work Item por vez.",
                 )
                 links[wid_key] = selected
+                claimed_so_far.update(selected)
             self.state.set('ado_wi_case_links', links)
 
             assigned_titles = set()
@@ -2252,8 +3076,21 @@ class UserInterface:
                             self.state.set('ado_plan_name_error', "❌ Informe um nome para o Test Plan antes de continuar.")
                             st.rerun()
                         else:
-                            cases_count_for_modal = len([tc for tc in test_cases if tc.get('titulo') not in excluded_titles])
-                            self.state.set('ado_confirm_modal_params', (cases_count_for_modal, len(items_with_cases), total_links))
+                            existing_case_ids = self.state.get('ado_test_case_ids') or {}
+                            duplicate_titles_now = set(self.state.get('ado_duplicate_case_titles') or [])
+                            cases_to_create_titles = [
+                                tc.get('titulo') for tc in test_cases
+                                if tc.get('titulo') not in excluded_titles
+                                and tc.get('titulo') not in existing_case_ids
+                                and tc.get('titulo') not in duplicate_titles_now
+                            ]
+                            items_by_id_lookup = {item['id']: item for item in board_items}
+                            items_display = []
+                            for wid_str, casos in items_with_cases.items():
+                                item = items_by_id_lookup.get(int(wid_str))
+                                label = f"{wid_str} - {item['title']} ({item['type']}, {item['state']})" if item else wid_str
+                                items_display.append((label, casos))
+                            self.state.set('ado_confirm_modal_params', (cases_to_create_titles, items_display, plan_name.strip(), bool(existing_plan_id)))
                             self.state.set('ado_existing_plan_id_chosen', existing_plan_id)
                             if existing_plan_id:
                                 self.state.set('ado_plan_name_error', None)
@@ -2286,7 +3123,7 @@ class UserInterface:
                 st.rerun()
 
             if self.state.get('show_ado_confirm_modal'):
-                params = self.state.get('ado_confirm_modal_params') or (0, 0, 0)
+                params = self.state.get('ado_confirm_modal_params') or ([], [], plan_name, False)
                 confirm_azure_devops_full_push_modal(*params)
 
             if self.state.get('current_action') == 'push_azure_devops_full' and not self.state.get('show_interrupt_modal'):
@@ -3126,6 +3963,26 @@ class UserInterface:
         st.rerun()
 
     def _suggest_ado_links(self, ado_client, board_items: list, test_cases: list):
+        # Casos que já vieram marcados no Passo 1 (documento vinculado
+        # diretamente a um Work Item) não precisam de sugestão da IA — o
+        # vínculo já é conhecido, então pré-preenche direto.
+        board_ids = {item["id"] for item in board_items}
+        pre_linked = {}
+        pre_linked_titles = set()
+        for tc in test_cases:
+            wi_raw = str(tc.get("work_item_relacionado") or "").strip()
+            if not wi_raw:
+                continue
+            try:
+                wi_id = int(wi_raw)
+            except ValueError:
+                continue
+            if wi_id not in board_ids:
+                continue  # marcado pra um Work Item que não está nesta busca — ignora
+            titulo = tc.get("titulo", "")
+            pre_linked.setdefault(str(wi_id), []).append(titulo)
+            pre_linked_titles.add(titulo)
+
         # Busca, pra cada Work Item, quais Casos de Teste JÁ estão vinculados
         # a ele no Azure DevOps — isso vai como contexto pro n8n, pra IA
         # evitar sugerir um caso novo que já é essencialmente o que já existe.
@@ -3150,6 +4007,9 @@ class UserInterface:
             }
             for item in board_items
         ]
+        # Só manda pra IA os Casos que AINDA NÃO têm um Work Item conhecido
+        # — não faz sentido pedir sugestão pra algo que já foi declarado
+        # explicitamente lá no Passo 1.
         payload_cases = [
             {
                 "titulo": tc.get("titulo", ""),
@@ -3157,10 +4017,14 @@ class UserInterface:
                 "passos": tc.get("passos", []),
             }
             for tc in test_cases
+            if tc.get("titulo", "") not in pre_linked_titles
         ]
         try:
-            with st.spinner("Consultando a IA (n8n) para sugerir os vínculos..."):
-                result = self.client.trigger_matching(payload_items, payload_cases, self.state.get('project_name'))
+            if payload_cases:
+                with st.spinner("Consultando a IA (n8n) para sugerir os vínculos..."):
+                    result = self.client.trigger_matching(payload_items, payload_cases, self.state.get('project_name'))
+            else:
+                result = {"vinculos": []}
             links = {}
             skipped = 0
             for vinculo in result.get("vinculos", []):
@@ -3241,6 +4105,17 @@ class UserInterface:
                 if kept:
                     final_links[wid_key] = kept
             links = final_links
+
+            # Mescla os vínculos já conhecidos desde o Passo 1 (Casos vindos
+            # de documento marcado com Work Item) — esses não passaram pela
+            # IA, então entram direto, sem risco de conflito de exclusividade
+            # (já foram excluídos do que a IA recebeu pra sugerir).
+            for wid_key, titulos in pre_linked.items():
+                links.setdefault(wid_key, [])
+                for t in titulos:
+                    if t not in links[wid_key]:
+                        links[wid_key].append(t)
+
             self.state.set('ado_duplicate_case_titles', sorted(duplicate_case_titles))
 
             self.state.set('ado_wi_case_links', links)
@@ -3260,6 +4135,8 @@ class UserInterface:
                 msg = ("success", f"✅ IA sugeriu vínculos para {len(links)} Work Item(s). Revise abaixo antes de confirmar.")
             else:
                 msg = ("warning", "⚠️ A IA não sugeriu nenhum vínculo válido. Você pode montar manualmente abaixo.")
+            if pre_linked_titles:
+                msg = (msg[0], msg[1] + f" ({len(pre_linked_titles)} Caso(s) já vieram pré-vinculados do Passo 1, sem precisar da IA.)")
             if skipped:
                 msg = (msg[0], msg[1] + f" ({skipped} item(ns) da resposta da IA vieram em formato inesperado e foram ignorados.)")
             if duplicates_removed:
@@ -3548,8 +4425,38 @@ class UserInterface:
         st.divider()
 
         st.markdown("#### 📋 Os 7 passos do assistente")
-        st.caption("Do upload do documento até a integração automática com o Azure DevOps.")
+        st.caption(
+            "Do upload do documento até a integração com o Azure DevOps. No Passo 1, além do "
+            "Ambiente (Homologação/Produção), agora também se escolhe o Tipo de Documento — "
+            "isso calibra o nível de detalhe que a IA assume ao gerar Matriz e Casos."
+        )
         st.markdown(self._flatten_html(self._svg_steps_diagram()), unsafe_allow_html=True)
+
+        st.divider()
+
+        st.markdown("#### 🔀 Passo 7 — os 3 modos de envio")
+        st.caption(
+            "Escolhidos na hora, com uma sugestão automática baseada no Tipo de Documento do "
+            "Passo 1 — mas sempre trocável manualmente."
+        )
+        st.markdown(self._flatten_html(self._svg_modes_diagram()), unsafe_allow_html=True)
+        st.markdown(
+            "- **🔗 Vincular a Work Items**: o fluxo clássico — Casos novos são criados e "
+            "vinculados a Work Items já existentes no board, com a IA sugerindo os pares e "
+            "você revisando antes de confirmar\n"
+            "- **📋 Sem Work Items**: pra projetos no início (só um Documento de Visão, sem "
+            "Work Item ainda) — cria o Test Plan com Suítes Estáticas, a partir dos Planos que "
+            "o próprio Passo 5 gerou, sem depender de nenhum Work Item\n"
+            "- **🔄 Reconciliar Test Plan Anterior**: pra quando os Work Items finalmente forem "
+            "criados depois de um envio \"Sem Work Items\" — liga os Casos que **já existem** no "
+            "Azure DevOps aos Work Items novos, sem duplicar nenhum Caso"
+        )
+        st.info(
+            "**Regra importante nos 3 modos**: um mesmo Caso de Teste só pode ficar vinculado a "
+            "**um** Work Item por vez — se ele já estiver escolhido em algum, some das opções "
+            "dos outros. E antes de qualquer chamada real ao Azure DevOps, o app sempre mostra "
+            "uma **lista detalhada** do que vai ser criado/vinculado, pra você revisar."
+        )
 
         st.divider()
 
@@ -3566,12 +4473,17 @@ class UserInterface:
         st.markdown(
             "- **Login com aprovação**: só o dono do app entra direto — qualquer outra pessoa "
             "precisa ser aprovada por você ou por um aprovador cadastrado, a cada nova sessão\n"
-            "- **PAT pessoal**: cada pessoa usa o próprio token do Azure DevOps no Passo 7/8 — as "
-            "ações ficam registradas no nome de quem fez, não de uma conta compartilhada\n"
+            "- **Sessão via ID opaco na URL**: o link de sessão não revela usuário nem senha "
+            "nenhuma — o dado real fica guardado no n8n, e pode ser revogado remotamente a "
+            "qualquer momento (a sua própria sessão, ou a de outra pessoa) em Administração\n"
+            "- **PAT pessoal**: cada pessoa usa o próprio token do Azure DevOps — as ações ficam "
+            "registradas no nome de quem fez, não de uma conta compartilhada, e o token nunca é "
+            "salvo em disco\n"
             "- **Permissões granulares**: acesso à Integração com Azure DevOps e ao Relatório de "
             "Testes são liberados individualmente — quem não tem permissão nem vê o botão\n"
             "- **Logs de auditoria**: os últimos 500 eventos do app (login, aprovações, "
-            "integrações, relatórios gerados) ficam visíveis só pro dono, em Administração"
+            "integrações, relatórios gerados, sessões revogadas) ficam visíveis só pro dono, em "
+            "Administração"
         )
 
         st.divider()
@@ -3650,6 +4562,31 @@ class UserInterface:
             {node(453, 250, 185, "7. Azure DevOps", "PAT pessoal + merge")}
             <line x1="228" y1="278" x2="248" y2="278" {arrow} />
             <line x1="433" y1="278" x2="453" y2="278" {arrow} />
+        </svg>
+        </div>
+        """
+
+    @staticmethod
+    def _svg_modes_diagram() -> str:
+        box = "fill='#ffffff' stroke='#d8d8d8' stroke-width='1'"
+        title_style = "font-family:sans-serif;font-size:13px;font-weight:600;fill:#2d2d2d"
+        sub_style = "font-family:sans-serif;font-size:11px;fill:#7a7a7a"
+
+        def node(x, y, w, title, sub):
+            cx = x + w / 2
+            return f"""
+            <rect x="{x}" y="{y}" width="{w}" height="64" rx="8" {box} />
+            <text x="{cx}" y="{y+24}" text-anchor="middle" style="{title_style}">{title}</text>
+            <text x="{cx}" y="{y+42}" text-anchor="middle" style="{sub_style}">{sub[0]}</text>
+            <text x="{cx}" y="{y+58}" text-anchor="middle" style="{sub_style}">{sub[1] if len(sub) > 1 else ''}</text>
+            """
+
+        return f"""
+        <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
+        <svg width="100%" viewBox="0 0 680 140" style="max-width:680px;display:block;margin:0 auto;">
+            {node(20, 30, 210, "🔗 Vincular a Work Items", ["Work Items já existem", "IA sugere os pares"])}
+            {node(240, 30, 210, "📋 Sem Work Items", ["Só Documento de Visão", "Suítes Estáticas"])}
+            {node(460, 30, 210, "🔄 Reconciliar Anterior", ["Work Items criados depois", "Liga Casos já existentes"])}
         </svg>
         </div>
         """

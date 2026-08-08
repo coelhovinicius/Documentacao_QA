@@ -134,11 +134,29 @@ def confirm_discard_new_modal(discard_flag_key: str):
 
 
 @st.dialog("🔗 Confirmar Integração com Azure DevOps")
-def confirm_azure_devops_full_push_modal(num_cases_total: int, num_work_items: int, num_links: int):
-    st.markdown("Você está prestes a integrar com o Azure DevOps:")
-    st.markdown(f"- **{num_work_items}** Work Item(s) vão virar Requirement-based Suite(s)")
-    st.markdown(f"- **{num_links}** vínculo(s) Caso de Teste ↔ Work Item serão criados/confirmados")
-    st.markdown(f"- Casos de Teste ainda não existentes no Azure DevOps (de um total de {num_cases_total} gerados) serão criados agora")
+def confirm_azure_devops_full_push_modal(cases_to_create: list, items_display: list, plan_name: str, is_existing_plan: bool):
+    """
+    cases_to_create: [título, ...] — Casos que ainda não existem no Azure DevOps
+    items_display: [(rótulo_do_work_item, [títulos_de_caso]), ...]
+    """
+    st.markdown(
+        f"Você está prestes a integrar com o Azure DevOps, no Test Plan **{plan_name}**"
+        + (" *(já existente)*" if is_existing_plan else " *(novo)*") + ":"
+    )
+
+    if cases_to_create:
+        with st.expander(f"📝 {len(cases_to_create)} Caso(s) de Teste serão criados agora", expanded=True):
+            for t in cases_to_create:
+                st.write(f"- {t}")
+    else:
+        st.caption("Nenhum Caso de Teste novo será criado — todos já existem no Azure DevOps.")
+
+    if items_display:
+        with st.expander(f"🔗 {len(items_display)} Work Item(s) vão virar Suíte / receber vínculo", expanded=True):
+            for label, casos in items_display:
+                st.markdown(f"**{label}**")
+                for c in casos:
+                    st.write(f"　　- {c}")
 
     st.warning(
         "Essa ação cria itens reais no seu projeto do Azure DevOps (Test Plan, Suites, Test "
@@ -172,6 +190,76 @@ def confirm_azure_devops_full_push_modal(num_cases_total: int, num_work_items: i
     with c2:
         if st.button("❌ Cancelar", use_container_width=True, key="cancel_ado_full_push"):
             st.session_state['show_ado_confirm_modal'] = False
+            st.rerun()
+
+
+def confirm_static_suites_push_modal(cases_to_create: list, suites_display: list, plan_name: str, is_existing_plan: bool):
+    """
+    cases_to_create: [título, ...] — Casos que ainda não existem no Azure DevOps
+    suites_display: [(nome_da_suíte, [títulos_de_caso]), ...]
+    """
+    st.markdown(
+        f"Você está prestes a integrar com o Azure DevOps (sem Work Items), no Test Plan "
+        f"**{plan_name}**" + (" *(já existente)*" if is_existing_plan else " *(novo)*") + ":"
+    )
+
+    if cases_to_create:
+        with st.expander(f"📝 {len(cases_to_create)} Caso(s) de Teste serão criados agora", expanded=True):
+            for t in cases_to_create:
+                st.write(f"- {t}")
+    else:
+        st.caption("Nenhum Caso de Teste novo será criado — todos já existem no Azure DevOps.")
+
+    if suites_display:
+        with st.expander(f"📋 {len(suites_display)} Suíte(s) Estática(s) serão criadas ou reaproveitadas", expanded=True):
+            for nome, casos in suites_display:
+                st.markdown(f"**{nome}**")
+                for c in casos:
+                    st.write(f"　　- {c}")
+
+    st.warning(
+        "Essa ação cria itens reais no seu projeto do Azure DevOps e **não pode ser desfeita "
+        "automaticamente**. Tem certeza que deseja prosseguir?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="static_blue_btn_modal_confirm"):
+            st.session_state['show_static_confirm_modal'] = False
+            st.session_state['current_action'] = 'push_static_suites'
+            st.session_state['is_processing'] = True
+            st.rerun()
+    with c2:
+        if st.button("❌ Cancelar", use_container_width=True, key="cancel_static_push"):
+            st.session_state['show_static_confirm_modal'] = False
+            st.rerun()
+
+
+def confirm_reconciliation_push_modal(items_display: list, plan_name: str):
+    """items_display: [(rótulo_do_work_item, [títulos_de_caso_já_existentes]), ...]"""
+    st.markdown(f"Você está prestes a vincular Casos já existentes do Test Plan **{plan_name}** a Work Items novos:")
+
+    if items_display:
+        with st.expander(f"🔗 {len(items_display)} Work Item(s) vão virar Suíte / receber vínculo", expanded=True):
+            for label, casos in items_display:
+                st.markdown(f"**{label}**")
+                for c in casos:
+                    st.write(f"　　- {c}")
+
+    st.caption("Nenhum Caso de Teste novo é criado neste modo — só cria vínculo com Casos que já existem.")
+    st.warning(
+        "Essa ação cria Suítes e vínculos reais no seu projeto do Azure DevOps e **não pode ser "
+        "desfeita automaticamente**. Tem certeza que deseja prosseguir?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚀 Sim, Vincular", use_container_width=True, type="primary", key="recon_blue_btn_modal_confirm"):
+            st.session_state['show_recon_confirm_modal'] = False
+            st.session_state['current_action'] = 'push_reconciliation'
+            st.session_state['is_processing'] = True
+            st.rerun()
+    with c2:
+        if st.button("❌ Cancelar", use_container_width=True, key="cancel_recon_push"):
+            st.session_state['show_recon_confirm_modal'] = False
             st.rerun()
 
 

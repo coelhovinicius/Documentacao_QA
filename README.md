@@ -1,6 +1,6 @@
 # 🧪 QA Automation – Azure DevOps
 
-Aplicação Streamlit que automatiza a geração de documentação de QA (Matriz de Cobertura, Casos de Teste e Planos de Teste) a partir de documentos de requisitos ou de Work Items do Azure DevOps, usando IA (via n8n), e integra tudo diretamente com o Azure DevOps — com controle de acesso, PAT pessoal por usuário e relatórios de execução baseados em dados reais do board.
+Aplicação Streamlit que automatiza a geração de documentação de QA (Matriz de Cobertura, Casos de Teste e Planos de Teste) a partir de documentos de requisitos ou de Work Items do Azure DevOps, usando IA (via n8n), e integra tudo diretamente com o Azure DevOps — com controle de acesso, PAT pessoal por usuário, três modos de envio conforme o estágio do projeto, e relatórios de execução baseados em dados reais do board.
 
 Projeto da **Refuturiza**.
 
@@ -12,21 +12,15 @@ Projeto da **Refuturiza**.
 - [Arquitetura](#arquitetura)
 - [Funcionalidades](#funcionalidades)
   - [O assistente de 7 passos](#o-assistente-de-7-passos)
+  - [Passo 7 — os 3 modos de envio ao Azure DevOps](#passo-7--os-3-modos-de-envio-ao-azure-devops)
   - [Recursos adicionais (sidebar)](#recursos-adicionais-sidebar)
   - [Controle de acesso e governança](#controle-de-acesso-e-governança)
 - [Stack técnica](#stack-técnica)
 - [Estrutura do projeto](#estrutura-do-projeto)
 - [Configuração](#configuração)
-  - [Dependências Python](#dependências-python)
-  - [`secrets.toml`](#secretstoml)
-  - [Workflows do n8n](#workflows-do-n8n)
 - [Como rodar localmente](#como-rodar-localmente)
 - [Deploy](#deploy)
 - [Conceitos importantes](#conceitos-importantes)
-  - [Ambiente (Homologação/Produção)](#ambiente-homologaçãoprodução)
-  - [PAT pessoal](#pat-pessoal)
-  - [Permissões granulares](#permissões-granulares)
-  - [Status de QA via coluna do board](#status-de-qa-via-coluna-do-board)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Manutenção](#manutenção)
 
@@ -36,7 +30,7 @@ Projeto da **Refuturiza**.
 
 O app resolve um problema recorrente de QA: transformar uma especificação (documento, ou Work Items já existentes no Azure DevOps) em documentação de teste estruturada — Matriz de Cobertura, Casos de Teste e Planos de Teste — e publicar tudo isso diretamente no Azure DevOps, mantendo rastreabilidade, evitando duplicidade, e registrando quem fez o quê.
 
-A geração de conteúdo usa IA (5 provedores em cadeia de fallback: Gemini → Groq → OpenAI → Groq → Mistral, dependendo do workflow) orquestrada via **n8n**, que é o único lugar onde as chaves de API de IA ficam configuradas — o app Streamlit nunca lida com essas chaves diretamente, só troca dados com o n8n por webhook.
+A geração de conteúdo usa IA (até 5 provedores em cadeia de fallback, dependendo do workflow) orquestrada via **n8n**, que é o único lugar onde as chaves de API de IA ficam configuradas — o app Streamlit nunca lida com essas chaves diretamente, só troca dados com o n8n por webhook.
 
 ---
 
@@ -46,21 +40,22 @@ A geração de conteúdo usa IA (5 provedores em cadeia de fallback: Gemini → 
  Usuário (Time de QA)
         │
         ▼
- Login (aprovação + PAT pessoal)
+ Login (aprovação + sessão via ID opaco na URL)
         │
         ▼
- App QA Automation (Streamlit)
+ App QA Automation (Streamlit) — PAT pessoal de cada um
         │
         ▼
- n8n  (IA + Controle de Acesso/Logs)
+ n8n  (IA + Controle de Acesso/Logs/Sessões)
         │
         ▼
  Azure DevOps (Board, Test Plans, Queries)
 ```
 
-- O app nunca fala direto com nenhum provedor de IA — tudo passa pelo n8n, que decide qual provedor usar e faz o fallback entre eles se um falhar.
-- O n8n também guarda o **controle de acesso** (aprovadores, permissões, logs de auditoria) usando o recurso de *workflow static data* — não precisa de banco de dados separado.
-- A integração com o **Azure DevOps** é feita direto do app, usando o **PAT pessoal** de quem está logado (não uma chave compartilhada).
+- O app nunca fala direto com nenhum provedor de IA — tudo passa pelo n8n.
+- O n8n guarda **controle de acesso** (aprovadores, permissões, logs de auditoria, sessões) usando *workflow static data* — sem banco de dados separado.
+- A sessão do usuário é um **ID aleatório opaco** na URL — o dado real (quem é, quando expira) fica no n8n, revogável remotamente a qualquer momento.
+- A integração com o **Azure DevOps** é feita direto do app, usando o **PAT pessoal** de quem está logado.
 
 ---
 
@@ -70,32 +65,43 @@ A geração de conteúdo usa IA (5 provedores em cadeia de fallback: Gemini → 
 
 | Passo | O que faz |
 |---|---|
-| **1. Upload** | Envio de documento(s) (PDF/DOCX/TXT) **ou** geração a partir de Work Items existentes no Azure DevOps (ver [Gerar a partir de Work Items](#recursos-adicionais-sidebar)). Extrai texto e também **imagens do corpo do documento** (ignora cabeçalho/rodapé, ícones pequenos, logos repetidos), interpretando cada uma via IA e injetando a descrição no texto antes da análise. Exige escolher o **Ambiente** (Homologação/Produção) antes de prosseguir. |
-| **2. Dúvidas** | A IA faz até 7 perguntas de esclarecimento sobre a especificação, priorizadas por impacto. |
-| **3. Matriz** | Gera a Matriz de Cobertura (MC-001, MC-002...) com base no documento + respostas do Passo 2. IDs recebem a etiqueta do Ambiente escolhido (`MC-001 HML` / `MC-001 PROD`). Editável (adicionar/editar/remover linhas). |
-| **4. Casos** | Gera Casos de Teste a partir da Matriz, cada um com `requisitos_relacionados` apontando pra 1+ linha da Matriz. Editável. |
-| **5. Planos** | Organiza os Casos em Planos → Suítes, cobertura obrigatória (todo caso aparece em exatamente 1 suíte). Editável. |
-| **6. Download** | Exporta CSV (Casos; Planos+Suítes+Casos) e PDF "Documentação QA" (Matriz, Planos, Casos, com rastreabilidade e indicação de Ambiente). |
-| **7. Azure DevOps** | Integração completa: busca Organização/Projeto/Area Path pelo PAT pessoal, busca Work Items do board, sugere vínculos Caso↔Work Item via IA, e publica no Azure DevOps — cria Test Cases, cria ou **reaproveita** um Test Plan existente na Area Path (sem duplicar Suítes já existentes), e vincula tudo. |
+| **1. Upload** | Envio de documento(s) **ou** geração a partir de Work Items existentes. Exige escolher **Ambiente** (Homologação/Produção) **e Tipo de Documento** (Visão / Requisitos Funcionais / Especificações Funcionais / Outros) — o tipo calibra o nível de detalhe que a IA assume ao gerar Matriz/Casos, e sugere o modo de envio do Passo 7. Extrai imagens do corpo do documento e interpreta cada uma via IA. |
+| **2. Dúvidas** | A IA faz até 7 perguntas de esclarecimento sobre a especificação. |
+| **3. Matriz** | Gera a Matriz de Cobertura (MC-001...), com etiqueta de Ambiente (`MC-001 HML`/`PROD`). Editável. |
+| **4. Casos** | Gera Casos de Teste a partir da Matriz. Editável. |
+| **5. Planos** | Organiza os Casos em Planos → Suítes. Editável. |
+| **6. Download** | Exporta CSV e PDF "Documentação QA". |
+| **7. Azure DevOps** | Três modos de envio — ver seção abaixo. |
+
+### Passo 7 — os 3 modos de envio ao Azure DevOps
+
+Escolhidos na tela, com sugestão automática baseada no Tipo de Documento do Passo 1 (sempre trocável manualmente):
+
+**🔗 Vincular a Work Items** — o fluxo clássico, pra quando os Work Items já existem no board. A IA sugere quais Casos de Teste se relacionam a quais Work Items; a pessoa revisa e ajusta antes de confirmar. Cria Test Cases, cria ou **reaproveita** um Test Plan existente (sem duplicar Suítes já existentes), e vincula tudo via Requirement-based Suites.
+
+**📋 Sem Work Items** — pra projetos no início, quando só existe um Documento de Visão (e no máximo um Épico/Backlog genérico no board). Usa os Planos/Suítes/Casos que o próprio Passo 5 gerou e cria um Test Plan com **Suítes Estáticas**, sem depender de nenhum Work Item.
+
+**🔄 Reconciliar Test Plan Anterior** — pra quando os Work Items forem criados *depois* de um envio "Sem Work Items". Busca os Casos de Teste que já existem no Test Plan antigo, e a IA sugere quais Work Items novos correspondem a quais Casos já criados — sem duplicar nenhum Caso, só cria o vínculo e a Requirement Suite.
+
+**Regras que valem nos 3 modos:**
+- Um Caso de Teste só pode ficar vinculado a **um** Work Item por vez — uma vez escolhido em algum, some das opções dos demais.
+- Antes de qualquer chamada real à API do Azure DevOps, o app sempre mostra uma **lista detalhada** (quais Casos serão criados, quais Suítes/Work Items serão afetados) num modal de confirmação.
+- Dá pra excluir Casos específicos do envio (Casos sem nenhum Work Item vinculado já vêm pré-marcados pra exclusão, por padrão).
 
 ### Recursos adicionais (sidebar)
 
-Não fazem parte da sequência dos 7 passos — ficam sempre disponíveis na barra lateral, cada um liberado só pra quem tem a permissão certa.
-
-- **🎯 Gerar a partir de Work Items** — em vez de enviar um documento, escolhe Work Items existentes no Azure DevOps; a Descrição + Critérios de Aceite deles viram a especificação de entrada, e o resto do fluxo (Dúvidas → Matriz → Casos → Planos) segue normal.
-- **🔎 Criar Query com IA** — descreve em português o que quer consultar no Azure DevOps; a IA traduz pra WIQL, mostra um preview real dos Work Items retornados (não só a contagem) antes de qualquer coisa ser salva, e só cria a query de verdade após confirmação explícita.
-- **📊 Relatório de Testes** — documenta o que foi **executado** (diferente do PDF do Passo 6, que documenta o que foi planejado). Busca um ou mais Test Plans, calcula o Status por **coluna do board (Kanban)** do Work Item vinculado a cada caso (não pelo outcome do Test Point — ver [Status de QA via coluna do board](#status-de-qa-via-coluna-do-board)), busca evidências (imagens anexadas ao Work Item do Caso de Teste), e sugere Contexto/Escopo/Conclusão/Próximos Passos via IA com base nas descrições reais dos Work Items testados. Status final do relatório é escolhido manualmente (Aprovado/Cancelado/Pendente). Monta uma Matriz de Cobertura **independente** a partir dos Work Items vinculados quando a sessão não tem uma.
-- **🛡️ Administração** *(só o dono do app)* — cadastro de aprovadores de login, permissões granulares por área, e **Logs de Auditoria** (últimos 500 eventos: login, aprovações, integrações, relatórios gerados, permissões concedidas/revogadas etc.).
-- **🔔 Solicitações Pendentes** — vive dentro de Administração, visível a qualquer aprovador cadastrado (não só ao dono).
-- **ℹ️ Sobre o app** — esta mesma visão geral, com diagramas, dentro do próprio app.
+- **🎯 Gerar a partir de Work Items** — usa Descrição + Critérios de Aceite de Work Items existentes como especificação de entrada, em vez de um documento.
+- **🔎 Criar Query com IA** — descreve em português o que quer consultar no Azure DevOps; a IA traduz pra WIQL, mostra preview real dos resultados antes de criar a query de verdade.
+- **📊 Relatório de Testes** — documenta o que foi **executado**. Status calculado pela **coluna do board (Kanban)** de cada Work Item vinculado (não pelo outcome do Test Point), com Status geral escolhido manualmente. Monta uma Matriz de Cobertura independente quando a sessão não tem uma.
+- **🛡️ Administração** *(dono do app)* — aprovadores, permissões granulares, **Sessões Ativas** (revogação remota), e **Logs de Auditoria**.
 
 ### Controle de acesso e governança
 
-- **Login com aprovação**: só o dono do app (`APP_OWNER_USERNAME`) entra direto. Qualquer outra pessoa precisa ser aprovada a cada nova sessão (a aprovação é consumida no login — não fica valendo pra sempre).
-- **Sessão via cookie** (não mais via URL) — o token de sessão não aparece na barra de endereços.
-- **PAT pessoal**: cada pessoa informa o próprio Personal Access Token do Azure DevOps no Passo 7/8 — nunca fica salvo em disco, só na memória da sessão.
-- **Permissões granulares**: acesso à Integração com Azure DevOps (`azure_devops`) e ao Relatório de Testes (`execution_report`) são liberados individualmente pelo dono — quem não tem a permissão **nem vê o botão**.
-- **Logs de auditoria**: todo evento relevante é registrado (quem, quando, onde, o quê), visível só para o dono, em Administração.
+- **Login com aprovação**: só o dono entra direto; demais usuários precisam de aprovação a cada sessão.
+- **Sessão via ID opaco**: a URL não revela usuário nem senha — o dado fica no n8n, revogável a qualquer momento (a própria sessão, ou a de outra pessoa).
+- **PAT pessoal**: nunca salvo em disco, só na memória da sessão.
+- **Permissões granulares**: acesso à Integração com Azure DevOps e ao Relatório de Testes, liberados individualmente.
+- **Logs de auditoria**: últimos 500 eventos, visíveis só ao dono.
 
 ---
 
@@ -103,9 +109,7 @@ Não fazem parte da sequência dos 7 passos — ficam sempre disponíveis na bar
 
 - **Frontend/Backend**: [Streamlit](https://streamlit.io/) (Python)
 - **Orquestração de IA**: [n8n](https://n8n.io/) (self-hosted), com fallback entre até 5 provedores por workflow: Google Gemini, Groq (x2), OpenAI, Mistral
-- **Sessão**: cookie assinado (HMAC), via `extra-streamlit-components`
-- **PDF**: ReportLab
-- **Extração de documentos**: PyMuPDF (`fitz`) para PDF, `python-docx` para DOCX
+- **PDF**: ReportLab · **Extração de documentos**: PyMuPDF (PDF), python-docx (DOCX)
 - **Azure DevOps**: REST API (`dev.azure.com`), autenticação via PAT
 
 ---
@@ -118,35 +122,33 @@ app.py                              # ponto de entrada
 requirements.txt
 
 qa_testgen/
-├── config/
-│   └── settings.py                 # AppConfiguration (lê st.secrets)
+├── config/settings.py              # AppConfiguration (lê st.secrets)
 ├── ui/
 │   ├── application.py              # UserInterface — toda a lógica de tela
-│   ├── auth.py                     # login, sessão (cookie), permissões, logout
+│   ├── auth.py                     # login, sessão (ID opaco), permissões, logout
 │   └── dialogs.py                  # modais de confirmação
 ├── infrastructure/
 │   ├── webhook_client.py           # chamadas aos webhooks de IA do n8n
 │   ├── azure_devops_client.py      # cliente REST completo do Azure DevOps
-│   ├── access_control_client.py    # cliente do webhook de controle de acesso/logs
-│   ├── document_processor.py       # extração de texto + imagens dos documentos
+│   ├── access_control_client.py    # controle de acesso/logs/sessões (n8n)
+│   ├── document_processor.py       # extração de texto + imagens
 │   ├── csv_formatter.py            # exportação CSV
-│   └── pdf_report.py               # geração dos dois PDFs (Documentação QA e Relatório de Testes)
-└── application/
-    └── session.py                  # SessionState (defaults do st.session_state)
+│   └── pdf_report.py               # PDFs (Documentação QA e Relatório de Testes)
+└── application/session.py          # SessionState (defaults do st.session_state)
 ```
 
-### Workflows do n8n (fora do repositório Python, vivem no n8n)
+### Workflows do n8n
 
 | Workflow | Função |
 |---|---|
-| `Doc_QA_Analysis` | Gera as perguntas de esclarecimento (Passo 2) |
-| `Doc_QA_Matrix` | Gera a Matriz de Cobertura (Passo 3) |
-| `Doc_QA_Generation` | Gera os Casos de Teste (Passo 4) |
-| `Doc_QA_Plans` | Gera os Planos de Teste (Passo 5) |
-| `Doc_QA_Matching` | Sugere vínculos Caso↔Work Item (Passo 7) |
-| `Doc_QA_Access_Control` | Aprovações de login, permissões, logs de auditoria |
-| `Doc_QA_Image_Interpretation` | Interpreta imagens extraídas dos documentos (Passo 1) |
-| `Doc_QA_Execution_Report_Narrative` | Sugere Contexto/Escopo/Conclusão/Próximos Passos do Relatório de Testes |
+| `Doc_QA_Analysis` | Perguntas de esclarecimento (Passo 2) |
+| `Doc_QA_Matrix` | Matriz de Cobertura (Passo 3), calibrada pelo Tipo de Documento |
+| `Doc_QA_Generation` | Casos de Teste (Passo 4), calibrado pelo Tipo de Documento |
+| `Doc_QA_Plans` | Planos de Teste (Passo 5) |
+| `Doc_QA_Matching` | Sugere vínculos Caso↔Work Item (reaproveitado nos modos "Vincular" e "Reconciliar") |
+| `Doc_QA_Access_Control` | Aprovações de login, permissões, logs, sessões |
+| `Doc_QA_Image_Interpretation` | Interpreta imagens extraídas dos documentos |
+| `Doc_QA_Execution_Report_Narrative` | Sugere textos do Relatório de Testes |
 | `Doc_QA_WIQL_Generation` | Traduz descrição em linguagem natural para WIQL |
 
 ---
@@ -163,20 +165,11 @@ pymupdf
 python-docx
 pillow
 bcrypt
-extra-streamlit-components
-```
-
-Instalação:
-```bash
-pip install -r requirements.txt
 ```
 
 ### `secrets.toml`
 
-Local: `.streamlit/secrets.toml`. Produção: Secrets do Streamlit Community Cloud (mesmo conteúdo).
-
 ```toml
-# Webhooks do n8n
 N8N_WEBHOOK_URL_ANALYSIS = "http://SEU-N8N/webhook/qa-testgen-analysis"
 N8N_WEBHOOK_URL_MATRIX = "http://SEU-N8N/webhook/qa-testgen-matrix"
 N8N_WEBHOOK_URL_GENERATION = "http://SEU-N8N/webhook/qa-testgen-generation"
@@ -186,106 +179,73 @@ N8N_WEBHOOK_URL_ACCESS_CONTROL = "http://SEU-N8N/webhook/qa-testgen-access-contr
 N8N_WEBHOOK_URL_IMAGE_INTERPRETATION = "http://SEU-N8N/webhook/qa-testgen-image-interpretation"
 N8N_WEBHOOK_URL_EXECUTION_REPORT_NARRATIVE = "http://SEU-N8N/webhook/qa-testgen-execution-report-narrative"
 N8N_WEBHOOK_URL_WIQL_GENERATION = "http://SEU-N8N/webhook/qa-testgen-wiql-generation"
-
-# Autenticação dos webhooks (Header Auth no n8n) — use um valor longo e aleatório
 N8N_API_KEY = "GERE_UM_VALOR_ALEATORIO_LONGO"
-
-# Dono do app — esse usuário nunca precisa de aprovação de login
 APP_OWNER_USERNAME = "admin"
-
-# Valores padrão sugeridos no Passo 7 (opcional, mas AZURE_DEVOPS_ORG é
-# importante como fallback quando o PAT é restrito a uma única organização)
 AZURE_DEVOPS_ORG = "sua-organizacao"
-AZURE_DEVOPS_PROJECT = ""
 
 [credentials]
-cookie_secret = "GERE_OUTRO_VALOR_ALEATORIO_LONGO"
-
 [credentials.usernames]
 admin = "$2b$12$...hash-bcrypt-aqui..."
-outro_usuario = "$2b$12$...hash-bcrypt-aqui..."
 ```
 
-> ⚠️ Não existe mais `AZURE_DEVOPS_PAT` — cada pessoa usa o próprio PAT, informado na tela (nunca salvo).
+> Não existe `AZURE_DEVOPS_PAT` (cada pessoa usa o próprio) nem `cookie_secret` (a sessão não usa mais assinatura local — valida direto no n8n).
 
-Gerando um hash bcrypt de senha:
-```python
-import bcrypt
-print(bcrypt.hashpw(b"senha-da-pessoa", bcrypt.gensalt()).decode())
-```
+Gerando um hash bcrypt: `bcrypt.hashpw(b"senha", bcrypt.gensalt()).decode()`
 
 ### Workflows do n8n
 
-1. Importe cada workflow (`.json`) no n8n.
-2. Vincule as credenciais de IA em cada node (Gemini, Groq, OpenAI, Mistral) — os nomes de credencial precisam já existir na sua instância.
-3. Configure a credencial **Header Auth** (mesmo valor de `N8N_API_KEY`) no node Webhook de cada workflow.
-4. Ative todos.
+Importe cada workflow, vincule as credenciais de IA em cada node, configure a credencial Header Auth (mesmo valor de `N8N_API_KEY`), e ative todos.
 
 ---
 
 ## Como rodar localmente
 
 ```bash
-git clone <repo>
-cd Documentacao_QA
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -r requirements.txt --break-system-packages  # se necessário
+.venv\Scripts\activate
+pip install -r requirements.txt
 # preencha .streamlit/secrets.toml
 python -m streamlit run app.py
 ```
 
 ## Deploy
 
-Streamlit Community Cloud com auto-deploy a partir do `main` — basta configurar os Secrets (mesmo conteúdo do `secrets.toml`) nas configurações do app.
+Streamlit Community Cloud com auto-deploy a partir do `main` — Secrets configurados nas configurações do app.
 
 ---
 
 ## Conceitos importantes
 
-### Ambiente (Homologação/Produção)
+**Ambiente (Homologação/Produção)** — Passo 1, obrigatório, sem pré-seleção. Define a etiqueta HML/PROD em Casos, Matriz e documentação.
 
-Escolhido obrigatoriamente no Passo 1 (sem pré-seleção). Define a etiqueta usada:
-- Casos de Teste: `CT01 HML - <título>` / `CT01 PROD - <título>` (tela, CSV, PDF, e título real criado no Azure DevOps)
-- Matriz: `MC-008 HML` / `MC-008 PROD`
-- PDFs indicam o Ambiente no cabeçalho
+**Tipo de Documento** — Passo 1, obrigatório. Calibra o nível de detalhe da IA (Visão = mais exploratório; Especificações Funcionais = mais granular) e sugere o modo de envio do Passo 7.
 
-### PAT pessoal
+**PAT pessoal** — Work Items (Read & Write) + Test Management (Read & Write). Nunca salvo em disco.
 
-Informado no Passo 7 (e reaproveitado no Relatório de Testes / Gerar via Work Items / Criar Query, se já validado antes). Precisa dos escopos **Work Items (Read & Write)** e **Test Management (Read & Write)**. Nunca é salvo — só vive na sessão do navegador.
+**Permissões granulares** — `azure_devops` (Passo 7, Gerar via Work Items, Criar Query) e `execution_report` (Relatório de Testes), concedidas individualmente.
 
-### Permissões granulares
+**Status de QA via coluna do board** — no Relatório de Testes, vem da coluna do Kanban do Work Item vinculado, não do outcome do Test Point:
 
-Duas permissões, concedidas individualmente em Administração:
-- `azure_devops` — Passo 7, Gerar via Work Items, Criar Query com IA
-- `execution_report` — Relatório de Testes
-
-Quem não tem a permissão não vê o botão correspondente na sidebar nem na barra de progresso.
-
-### Status de QA via coluna do board
-
-No Relatório de Testes, o Status de cada Caso não vem do "outcome" do Test Point (aba Execute), e sim da **coluna do quadro Kanban** do Work Item vinculado a ele (e dos filhos diretos desse Work Item):
-
-| Status | Colunas do board |
+| Status | Colunas |
 |---|---|
 | **Aprovado** | Pronto para UAT, Teste UAT, Aguardando CAB, Aguardando Subida em Produção, Testes em Produção, Finalizado |
 | **Cancelado** | Cancelados |
 | **Pendente** | Backlog, Em/Pronto para Refinamento de Negócios/Técnico, Em/Pronto para Validação de Produtos, Pronto para Dev, Em Desenvolvimento, Pronto/Em Code Review, Pronto para QA, Teste QA |
-| **Fallback** | Se a coluna não bater com nenhuma lista acima, procura por "Aprovado/Reprovado em Homologação/Produção" na descrição do Work Item |
 
-O **Status geral** do relatório (resumo do topo) é escolhido manualmente antes de gerar — não é mais calculado automaticamente.
+O Status **geral** do relatório é escolhido manualmente.
+
+**Exclusividade Caso↔Work Item** — nos 3 modos do Passo 7, um Caso de Teste só pode estar vinculado a um Work Item por vez.
 
 ---
 
 ## Limitações conhecidas
 
-- **Matriz de Cobertura** nunca é enviada ao Azure DevOps — só existe no PDF quando gerada na mesma sessão (ou é reconstruída de forma independente, a partir dos Work Items vinculados, quando ausente).
-- **Bloqueio de F5** no navegador é best-effort (via JS) — navegadores modernos podem ignorá-lo. A proteção garantida contra perda de dados do Relatório de Testes é a confirmação antes de navegar pra outro lugar.
-- **Logs de auditoria** guardam só os últimos 500 eventos (armazenamento via n8n static data, sem banco de dados dedicado).
-- Algumas áreas da API do Azure DevOps (evidências em anexos de Work Item, status por Board Column, criação de query WIQL) foram implementadas com base na documentação pública e ajustadas a partir de testes reais — se o formato da resposta variar entre organizações/processos, pode precisar de ajuste fino.
+- **Matriz de Cobertura** nunca é enviada ao Azure DevOps — só existe no PDF quando gerada na mesma sessão, ou reconstruída de forma independente a partir dos Work Items vinculados.
+- **Reconciliação com Test Plan Anterior** faz o match por **título apenas** (não tem acesso fácil aos passos detalhados dos Casos já existentes) — revise as sugestões com mais atenção que no fluxo direto.
+- **Logs de auditoria e sessões** guardam um histórico limitado (armazenamento via n8n static data, sem banco de dados dedicado).
+- Algumas áreas da API do Azure DevOps foram implementadas com base na documentação pública e ajustadas a partir de testes reais — se o formato variar entre organizações/processos, pode precisar de ajuste fino.
 
 ## Manutenção
 
-- **PAT do time/organização** (se ainda usado em algum contexto administrativo): confira a validade periodicamente.
-- **Modelos de IA**: os workflows do n8n fixam versões de modelo (`gemini-3.5-flash`, `gpt-5.4-mini` etc.) — provedores mudam/depreciam modelos com frequência, vale checar de tempos em tempos.
-- **Credenciais do n8n**: se alguma credencial de IA expirar ou for revogada, o fallback para o próximo provedor da cadeia cobre a maioria dos casos, mas vale monitorar os logs de execução do n8n.
+- **Modelos de IA**: os workflows do n8n fixam versões de modelo — provedores mudam/depreciam modelos com frequência.
+- **Credenciais do n8n**: o fallback entre provedores cobre a maioria dos casos de expiração, mas vale monitorar os logs de execução do n8n.

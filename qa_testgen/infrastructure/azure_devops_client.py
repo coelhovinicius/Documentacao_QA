@@ -313,6 +313,24 @@ class AzureDevOpsClient:
                 mapping[int(requirement_id)] = suite.get("id")
         return mapping
 
+    def get_existing_static_suite_ids_by_name(self, plan_id: int) -> dict:
+        """
+        Mapeia nome_da_suite (minúsculo) -> suite_id das Static Suites que
+        já existem num Test Plan — mesma lógica de "merge" das Requirement
+        Suites, só que por nome em vez de Work Item vinculado (usado no
+        modo de envio "Sem Work Items", que usa os Planos/Suítes gerados
+        pelo próprio app em vez de vínculo a Work Item).
+        """
+        mapping = {}
+        url = f"{self._base_url()}/testplan/Plans/{plan_id}/suites?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Listar Suites existentes do Test Plan {plan_id}")
+        for suite in data.get("value", []):
+            nome = (suite.get("name") or "").strip().lower()
+            if nome and suite.get("suiteType") == "StaticTestSuite":
+                mapping[nome] = suite.get("id")
+        return mapping
+
     # ------------------------------------------------------------------ #
     # Queries WIQL — geração assistida por IA (descrição em linguagem
     # natural → WIQL → confirmação → query salva no Azure DevOps).

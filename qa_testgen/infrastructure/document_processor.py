@@ -35,20 +35,35 @@ class DocumentProcessor:
         return text.strip()
 
     @staticmethod
-    def extract_plain_text_multi(uploaded_files: list) -> str:
+    def extract_plain_text_multi(uploaded_files: list, file_work_item_map: dict = None) -> str:
         """
         Extrai e concatena o texto de múltiplos arquivos, mantendo marcadores
         claros de onde cada documento começa/termina — isso ajuda a IA a não
         misturar contexto entre documentos diferentes (ex.: dois anexos que
         descrevem módulos distintos do mesmo sistema).
+
+        file_work_item_map: opcional, {nome_do_arquivo: [{"id":..., "title":...}, ...]}
+        — quando presente, o marcador do documento também informa a quais
+        Work Item(s) ele se relaciona (pode ser mais de um), permitindo que
+        a IA rotule cada linha da Matriz/cada Caso de Teste gerado com o
+        Work Item mais específico entre eles (em vez de precisar "adivinhar"
+        o vínculo depois, no Passo 7).
         """
+        file_work_item_map = file_work_item_map or {}
         parts = []
         for uploaded_file in uploaded_files or []:
             text = DocumentProcessor.extract_plain_text(uploaded_file)
             if not text:
                 continue
+            wis = file_work_item_map.get(uploaded_file.name) or []
+            if wis:
+                wi_list = ", ".join(f'#{wi["id"]} - "{wi["title"]}"' for wi in wis)
+                label = "WORK ITEM" if len(wis) == 1 else "WORK ITEMS (escolha o mais específico por item gerado)"
+                wi_tag = f" (RELACIONADO AO(S) {label}: {wi_list})"
+            else:
+                wi_tag = ""
             parts.append(
-                f"===== INÍCIO DO DOCUMENTO: {uploaded_file.name} =====\n"
+                f"===== INÍCIO DO DOCUMENTO: {uploaded_file.name}{wi_tag} =====\n"
                 f"{text}\n"
                 f"===== FIM DO DOCUMENTO: {uploaded_file.name} ====="
             )

@@ -133,13 +133,14 @@ class WebhookClient:
         data = self._parse(response)
         return {"duvidas": self._extract_required_list(data, "duvidas")}
 
-    def trigger_matrix(self, doc_text: str, answers: dict, project: str) -> dict:
+    def trigger_matrix(self, doc_text: str, answers: dict, project: str, tipo_documento: str = "") -> dict:
         response = requests.post(
             self.config.webhook_matrix,
             json={
                 "document_text": doc_text,
                 "respostas_duvidas": json.dumps(answers, ensure_ascii=False),
                 "nome_projeto": project,
+                "tipo_documento": tipo_documento,
             },
             headers=self.headers,
             timeout=300,
@@ -148,7 +149,7 @@ class WebhookClient:
         data = self._parse(response)
         return {"matriz": self._extract_required_list(data, "matriz")}
 
-    def trigger_generation(self, doc_text: str, matriz: list, answers: dict, project: str) -> dict:
+    def trigger_generation(self, doc_text: str, matriz: list, answers: dict, project: str, tipo_documento: str = "") -> dict:
         response = requests.post(
             self.config.webhook_generation,
             json={
@@ -156,6 +157,7 @@ class WebhookClient:
                 "matriz_cobertura": json.dumps(matriz, ensure_ascii=False),
                 "respostas_duvidas": json.dumps(answers, ensure_ascii=False),
                 "nome_projeto": project,
+                "tipo_documento": tipo_documento,
             },
             headers=self.headers,
             timeout=300,
@@ -238,7 +240,13 @@ class WebhookClient:
         data = self._parse(response)
         descricao = data.get("descricao", "").strip() if isinstance(data, dict) else ""
         if not descricao:
-            raise ValueError("A IA não retornou nenhuma descrição para a imagem.")
+            # Diagnóstico: mostra o que voltou de verdade do n8n, em vez de
+            # só "vazio" — ajuda a identificar se foi um provedor específico
+            # que falhou, ou se a resposta veio num formato inesperado.
+            raw_preview = json.dumps(data, ensure_ascii=False)[:300] if data else "(resposta vazia)"
+            raise ValueError(
+                f"A IA não retornou nenhuma descrição para a imagem. Resposta recebida do n8n: {raw_preview}"
+            )
         return descricao
 
     def trigger_execution_report_narrative(self, nome_projeto: str, nome_plano: str,
