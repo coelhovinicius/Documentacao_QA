@@ -761,6 +761,40 @@ class AzureDevOpsClient:
             })
         return results
 
+    def get_test_cases_for_work_item(self, work_item_id: int) -> list:
+        """
+        Retorna os Test Cases (id + título) JÁ vinculados a esse Work Item
+        (relação 'TestedBy-Forward'). Igual a get_existing_test_case_titles,
+        mas devolve o ID também — usado no Relatório de Testes no modo
+        "selecionar por Work Items", onde o relatório é montado a partir
+        do Work Item, não de um Test Plan.
+        """
+        url = f"{self._base_url()}/wit/workitems/{work_item_id}?$expand=relations&api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Buscar relações do Work Item {work_item_id}")
+
+        case_ids = []
+        for rel in data.get("relations") or []:
+            if rel.get("rel") == "Microsoft.VSTS.Common.TestedBy-Forward":
+                url_ref = rel.get("url", "")
+                try:
+                    case_ids.append(int(url_ref.rstrip("/").split("/")[-1]))
+                except (ValueError, IndexError):
+                    continue
+
+        if not case_ids:
+            return []
+
+        ids_param = ",".join(str(c) for c in case_ids)
+        url2 = f"{self._base_url()}/wit/workitems?ids={ids_param}&fields=System.Title&api-version={API_VERSION}"
+        response2 = self.session.get(url2, headers=self.headers_json, timeout=60)
+        data2 = self._handle_response(response2, f"Buscar Test Cases vinculados ao Work Item {work_item_id}")
+        return [
+            {"id": wi.get("id"), "titulo": wi.get("fields", {}).get("System.Title", "")}
+            for wi in data2.get("value", [])
+            if wi.get("fields", {}).get("System.Title")
+        ]
+
     def get_existing_test_case_titles(self, work_item_id: int) -> list:
         """
         Retorna os títulos dos Test Cases JÁ vinculados a esse Work Item no

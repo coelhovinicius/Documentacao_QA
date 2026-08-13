@@ -456,23 +456,16 @@ class UserInterface:
             if st.button("ℹ️ Sobre o app", use_container_width=True, key="btn_about_sidebar", disabled=self.state.get('is_processing')):
                 self._navigate_or_confirm({
                     'show_about_page': True, 'show_admin_page': False,
-                    'show_execution_report_page': False, 'show_wi_generation_page': False,
+                    'show_execution_report_page': False,
                     'show_wiql_generation_page': False,
                 })
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
             if self._get_permission_cached("azure_devops"):
-                if st.button("🎯 Gerar a partir de Work Items", use_container_width=True, key="btn_wigen_sidebar", disabled=self.state.get('is_processing')):
-                    self._navigate_or_confirm({
-                        'show_wi_generation_page': True, 'show_about_page': False,
-                        'show_admin_page': False, 'show_execution_report_page': False,
-                        'show_wiql_generation_page': False,
-                    })
                 if st.button("🔎 Criar Query com IA", use_container_width=True, key="btn_wiql_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_wiql_generation_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
-                        'show_wi_generation_page': False,
                     })
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
@@ -481,7 +474,6 @@ class UserInterface:
                     self.state.set('show_execution_report_page', True)
                     self.state.set('show_about_page', False)
                     self.state.set('show_admin_page', False)
-                    self.state.set('show_wi_generation_page', False)
                     self.state.set('show_wiql_generation_page', False)
                     st.rerun()
             if is_approver(self.config, current_username):
@@ -493,7 +485,7 @@ class UserInterface:
                 if st.button("🛡️ Administração", use_container_width=True, key="btn_admin_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_admin_page': True, 'show_about_page': False,
-                        'show_execution_report_page': False, 'show_wi_generation_page': False,
+                        'show_execution_report_page': False,
                         'show_wiql_generation_page': False,
                     })
 
@@ -558,6 +550,9 @@ class UserInterface:
             'fetch_wi': 'Buscando Work Items do Board no Azure DevOps',
             'fetch_wi_step1': 'Buscando Work Items do Board no Azure DevOps',
             'fetch_report_plans': 'Buscando Test Plans do projeto',
+            'fetch_wi_report': 'Buscando Work Items do Board',
+            'suggest_report_narrative_wi': 'Consultando a IA para sugerir os textos',
+            'generate_execution_report_wi': 'Gerando o Relatório de Testes',
             'fetch_existing_plans': 'Buscando Test Plans existentes na Area Path',
             'fetch_recon_plans': 'Buscando Test Plans do projeto',
             'fetch_recon_cases': 'Buscando Casos de Teste do Test Plan anterior',
@@ -876,6 +871,20 @@ class UserInterface:
         if self.state.get('processing_interrupted'):
             st.info("⚠️ Processamento interrompido. Você pode continuar editando esta etapa.")
 
+        origem = st.radio(
+            "Como você quer fornecer a especificação?",
+            options=["📄 Enviar Documento(s)", "🎯 Gerar a partir de Work Items existentes no Azure DevOps"],
+            index=0,
+            key="step1_origem_radio",
+            disabled=self.state.get('is_processing'),
+            help="A segunda opção usa a Descrição e os Critérios de Aceite de Work Items já existentes como especificação — sem precisar enviar documento nenhum.",
+        )
+        st.divider()
+
+        if origem.startswith("🎯"):
+            self._step1_from_work_items()
+            return
+
         col1, col2 = st.columns(2)
         with col1:
             uploaded_new = st.file_uploader(
@@ -977,26 +986,56 @@ class UserInterface:
         )
         doc_work_item_map = {}
         if vincular_wi and uploaded:
-            conn = self._setup_azure_devops_connection(show_area_path_picker=True)
+            conn = self._setup_azure_devops_connection(show_area_path_picker=False)
             if conn is None:
                 return  # conexão com o Azure DevOps ainda incompleta — não mostra o resto do Passo 1 até terminar (ou desmarcar a opção)
-            ado_client, ado_org, ado_project, area_path = conn
+            ado_client, ado_org, ado_project, _default_area_path = conn
 
-            with st.container(key="azure_blue_btn_fetch_wi_step1"):
-                st.button(
-                    "🔄 Buscar Work Items do Board",
+            if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+                area_path_options = self.state.get('ado_available_area_paths') or []
+            else:
+                try:
+                    with st.spinner("Buscando Area Paths do projeto..."):
+                        area_path_options = ado_client.list_area_paths()
+                    self.state.set('ado_available_area_paths', area_path_options)
+                    self.state.set('ado_area_paths_project', ado_project)
+                except Exception as error:
+                    st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                    area_path_options = []
+
+            col_ap, col_btn = st.columns(2)
+            with col_ap:
+                area_paths_step1 = st.multiselect(
+                    "Area Path(s)",
+                    options=area_path_options,
                     disabled=self.state.get('is_processing'),
-                    key="btn_fetch_wi_step1",
-                    on_click=self.trigger_action,
-                    args=("fetch_wi_step1",),
+                    key="step1_area_paths_select",
+                    help="Selecione uma ou mais — a busca de Work Items considera todas juntas.",
                 )
+            area_path = area_paths_step1[0] if area_paths_step1 else ado_project
+
+            with col_btn:
+                with st.container(key="azure_blue_btn_fetch_wi_step1"):
+                    st.button(
+                        "🔄 Buscar Work Items do Board",
+                        disabled=self.state.get('is_processing'),
+                        key="btn_fetch_wi_step1",
+                        on_click=self.trigger_action,
+                        args=("fetch_wi_step1",),
+                        use_container_width=True,
+                    )
             if self.state.get('current_action') == 'fetch_wi_step1' and not self.state.get('show_interrupt_modal'):
                 try:
-                    with st.spinner(f"Buscando Work Items em '{area_path}'..."):
-                        items = ado_client.fetch_work_items_by_area_path(area_path)
+                    paths_to_search = area_paths_step1 or [ado_project]
+                    with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
+                        items_by_id = {}
+                        for ap in paths_to_search:
+                            for item in ado_client.fetch_work_items_by_area_path(ap):
+                                items_by_id[item["id"]] = item
+                        items = list(items_by_id.values())
                     self.state.set('step1_board_items', items)
                     if not items:
-                        st.warning("Nenhum Work Item encontrado nesse Area Path.")
+                        st.warning("Nenhum Work Item encontrado" + (" nessas Area Paths." if area_paths_step1 else " neste projeto."))
                 except Exception as error:
                     st.error(f"❌ Não foi possível buscar Work Items: {error}")
                 self.clear_action()
@@ -1021,7 +1060,7 @@ class UserInterface:
                 self.state.set('step1_doc_work_item_map', doc_work_item_map)
                 st.caption(
                     f"💡 Lembrete: no Passo 7, use uma Area Path que inclua estes Work Items "
-                    f"(buscados agora em '{area_path}') pra que o pré-vínculo funcione."
+                    f"pra que o pré-vínculo funcione."
                 )
             else:
                 st.caption("Busque os Work Items do board acima pra poder vinculá-los aos documentos.")
@@ -3193,28 +3232,40 @@ class UserInterface:
         )
 
         st.divider()
-        self._render_execution_report_section(ado_client, ado_project, area_paths)
+        st.markdown("##### 🧭 Como você quer montar este relatório?")
+        modo_relatorio = st.radio(
+            "Fonte dos dados",
+            options=[
+                "📋 Por Test Plan(s) (Suítes e Casos de dentro dele)",
+                "🎯 Por Work Items (ex.: User Stories, de qualquer coluna do board)",
+            ],
+            index=0,
+            key="report_source_mode_radio",
+            disabled=self.state.get('is_processing'),
+            help=(
+                "Por Test Plan: precisa que os Casos de Teste já tenham vínculo 'Tests' com um "
+                "Work Item pra aparecerem com status/Matriz. Por Work Items: você escolhe o "
+                "Work Item direto (de qualquer coluna), e o relatório usa os Casos já vinculados a ele."
+            ),
+        )
+        st.divider()
+
+        if modo_relatorio.startswith("🎯"):
+            self._render_execution_report_by_work_items(ado_client, ado_project, area_paths)
+        else:
+            self._render_execution_report_section(ado_client, ado_project, area_paths)
 
         st.divider()
         if st.button("← Voltar", key="btn_report_back_bottom"):
             self._navigate_or_confirm({'show_execution_report_page': False})
 
-    def _wi_generation_page(self):
-        st.subheader("🎯 Gerar Casos de Teste a partir de Work Items")
+    def _step1_from_work_items(self):
         st.caption(
             "Escolhe Work Items existentes no Azure DevOps pra usar como especificação, no lugar "
             "de enviar um documento — a Descrição e os Critérios de Aceite de cada um viram o "
-            "texto de entrada, e o resto do processo segue igual ao Passo 1 (Dúvidas → Matriz → "
-            "Casos → Planos)."
+            "texto de entrada, e o resto do processo segue igual (Dúvidas → Matriz → Casos → Planos). "
+            "Disponível pra qualquer pessoa logada — usa o seu PAT pessoal, igual ao Passo 7."
         )
-
-        if st.button("← Voltar", key="btn_wigen_back_top"):
-            self.state.set('show_wi_generation_page', False)
-            st.rerun()
-
-        if not self._get_permission_cached("azure_devops"):
-            st.error("❌ Você não tem permissão para acessar Work Items do Azure DevOps.")
-            return
 
         conn = self._setup_azure_devops_connection(show_area_path_picker=False)
         if conn is None:
@@ -3365,10 +3416,9 @@ class UserInterface:
                     text = "\n\n".join(text_parts)
 
                     self._log(
-                        "Gerar a partir de Work Items", "Gerar a partir de Work Items",
+                        "Gerar a partir de Work Items", "Passo 1",
                         f"Projeto '{project_name.strip()}' — {len(details)} Work Item(s): {', '.join(str(wi['id']) for wi in details)}",
                     )
-                    self.state.set('show_wi_generation_page', False)
                     self._run_analysis(text, project_name.strip())
             except Exception as error:
                 st.error(f"❌ Erro ao buscar detalhes dos Work Items: {error}")
@@ -3534,6 +3584,371 @@ class UserInterface:
         else:
             st.caption("Testa a query acima antes de poder confirmar a criação.")
 
+    def _render_execution_report_by_work_items(self, ado_client, ado_project: str, area_paths: list):
+        """
+        Modo alternativo de montar o Relatório de Testes: em vez de partir
+        de um Test Plan (e depender de que os Casos já tenham vínculo
+        'Tests' pra aparecer status/Matriz), a pessoa escolhe os Work Items
+        DIRETO — de qualquer coluna do board — e o relatório usa os Casos
+        de Teste que já estiverem vinculados a cada um deles.
+        """
+        st.caption(
+            "Escolha os Work Items (ex.: User Stories) que você quer reportar — de qualquer "
+            "coluna do board, qualquer status. O relatório usa os Casos de Teste já vinculados "
+            "a cada um (relação 'Tests' no Azure DevOps) e o status vem da coluna atual do "
+            "próprio Work Item selecionado."
+        )
+
+        with st.container(key="azure_blue_btn_fetch_wi_report"):
+            st.button(
+                "🔄 Buscar Work Items",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_wi_report",
+                on_click=self.trigger_action,
+                args=("fetch_wi_report",),
+            )
+        if self.state.get('current_action') == 'fetch_wi_report' and not self.state.get('show_interrupt_modal'):
+            try:
+                paths_to_search = area_paths or [ado_project]
+                with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
+                    items_by_id = {}
+                    for ap in paths_to_search:
+                        for item in ado_client.fetch_work_items_by_area_path(ap):
+                            items_by_id[item["id"]] = item
+                    items = list(items_by_id.values())
+                self.state.set('report_wi_board_items', items)
+                if not items:
+                    st.warning("Nenhum Work Item encontrado" + (" nessas Area Paths." if area_paths else " neste projeto."))
+            except AzureDevOpsError as error:
+                st.error(f"❌ {error}")
+            except Exception as error:
+                st.error(f"❌ Erro inesperado: {error}")
+            self.clear_action()
+            st.rerun()
+
+        board_items = self.state.get('report_wi_board_items') or []
+        if not board_items:
+            st.caption("Busque os Work Items acima pra continuar.")
+            return
+
+        all_types = sorted({item['type'] for item in board_items})
+        default_types = [t for t in all_types if t.strip().lower() in ("user story", "história de usuário", "historia de usuario")]
+        col_tipo, col_wi = st.columns(2)
+        with col_tipo:
+            tipos_filtro = st.multiselect(
+                "Filtrar por tipo (opcional)",
+                options=all_types,
+                default=default_types,
+                key="report_wi_type_filter",
+                disabled=self.state.get('is_processing'),
+                help="Deixe vazio pra ver todos os tipos.",
+            )
+        filtered_items = [item for item in board_items if not tipos_filtro or item['type'] in tipos_filtro]
+        wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in filtered_items}
+        with col_wi:
+            selected_labels = st.multiselect(
+                "🎯 Work Items a reportar",
+                options=list(wi_labels.keys()),
+                key="report_wi_select",
+                disabled=self.state.get('is_processing'),
+                help="Podem estar em qualquer coluna — o status de cada um vem da coluna em que estiver agora.",
+            )
+        selected_wis = [wi_labels[label] for label in selected_labels]
+
+        if not selected_wis:
+            st.caption("Selecione ao menos um Work Item acima.")
+            return
+
+        with st.container(key="azure_blue_btn_suggest_narrative_wi"):
+            st.button(
+                "🤖 Sugerir Contexto/Escopo/Conclusão com IA",
+                disabled=self.state.get('is_processing'),
+                key="btn_suggest_report_narrative_wi",
+                on_click=self.trigger_action,
+                args=("suggest_report_narrative_wi",),
+                help="A IA analisa os Work Items selecionados e sugere os textos abaixo.",
+            )
+        if self.state.get('current_action') == 'suggest_report_narrative_wi' and not self.state.get('show_interrupt_modal'):
+            self._suggest_report_narrative_from_work_items(ado_client, selected_wis)
+
+        contexto, ambiente, escopo_proposito, conclusao, proximos_passos, status_manual = self._render_report_narrative_fields()
+
+        with st.container(key="azure_blue_btn_generate_report_wi"):
+            st.button(
+                "📊 Buscar Resultados e Gerar Relatório",
+                type="primary",
+                use_container_width=True,
+                disabled=self.state.get('is_processing') or not contexto or not escopo_proposito or not conclusao or not status_manual,
+                key="btn_generate_execution_report_wi",
+                on_click=self.trigger_action,
+                args=("generate_execution_report_wi",),
+            )
+        if not (contexto and escopo_proposito and conclusao and status_manual):
+            st.caption("Preencha Contexto, Escopo e Propósito, Conclusão, e escolha o Status para habilitar a geração.")
+
+        if self.state.get('current_action') == 'generate_execution_report_wi' and not self.state.get('show_interrupt_modal'):
+            self._generate_execution_report_from_work_items(ado_client, selected_wis, contexto, ambiente, escopo_proposito, conclusao, proximos_passos, ado_project, area_paths, status_manual)
+
+        report_bytes = self.state.get('report_pdf_bytes')
+        if report_bytes:
+            safe_name = (self.state.get('project_name') or 'projeto').replace(' ', '_')
+            st.download_button(
+                "⬇️ Baixar Relatório de Testes (PDF)",
+                data=report_bytes,
+                file_name=f"Relatorio_Testes_{safe_name}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+                key="download_report_wi",
+            )
+            for warn in self.state.get('report_warnings') or []:
+                st.caption(f"ℹ️ {warn}")
+
+    def _suggest_report_narrative_from_work_items(self, ado_client, work_items: list):
+        EXCLUDE_TYPES = {"test plan", "test suite", "test case"}
+        try:
+            wi_names = ", ".join(wi['title'] for wi in work_items)
+            with st.spinner("Analisando os Work Items selecionados para sugerir os textos..."):
+                total_casos = 0
+                for wi in work_items:
+                    try:
+                        total_casos += len(ado_client.get_test_cases_for_work_item(wi['id']))
+                    except Exception:
+                        pass
+                resumo_resultados = (
+                    f"{len(work_items)} Work Item(s) selecionado(s) diretamente pra este relatório, "
+                    f"totalizando {total_casos} Caso(s) de Teste vinculado(s). Work Items: {wi_names}."
+                )
+
+                details = ado_client.get_work_items_full_details([wi['id'] for wi in work_items])
+                relevantes = [d for d in details if (d.get('type') or '').strip().lower() not in EXCLUDE_TYPES]
+                partes = []
+                for d in relevantes:
+                    desc = (d.get('description') or '').strip()
+                    if desc:
+                        partes.append(f"[{d.get('type')}] {d.get('title')}: {desc[:500]}")
+                descricoes_texto = "\n\n".join(partes)
+
+                resp = self.client.trigger_execution_report_narrative(
+                    nome_projeto=self.state.get('project_name') or wi_names,
+                    nome_plano=wi_names,
+                    resumo_resultados=resumo_resultados,
+                    matriz=self.state.get('matriz') or [],
+                    descricoes_work_items=descricoes_texto,
+                )
+
+            contexto = resp.get('contexto', '')
+            escopo = resp.get('escopo_proposito', '')
+            conclusao = resp.get('conclusao', '')
+            proximos = resp.get('proximos_passos', '')
+
+            self.state.set('report_contexto', contexto)
+            self.state.set('report_escopo', escopo)
+            self.state.set('report_conclusao', conclusao)
+            self.state.set('report_proximos', proximos)
+            st.session_state['report_contexto_input'] = contexto
+            st.session_state['report_escopo_input'] = escopo
+            st.session_state['report_conclusao_input'] = conclusao
+            st.session_state['report_proximos_input'] = proximos
+        except Exception as error:
+            st.error(f"❌ Não foi possível gerar a sugestão da IA: {error}")
+
+        self.clear_action()
+        st.rerun()
+
+    def _generate_execution_report_from_work_items(self, ado_client, work_items: list, contexto: str, ambiente: str,
+                                                      escopo_proposito: str, conclusao: str, proximos_passos: str,
+                                                      ado_project: str = "", area_paths: list = None, status_manual: str = ""):
+        area_paths = area_paths or []
+        warnings = []
+        evidencias_por_caso = {}
+        casos = []
+        wi_names = ", ".join(wi['title'] for wi in work_items)
+
+        if area_paths:
+            report_project_name = ", ".join(area_paths)
+        else:
+            report_project_name = self.state.get('project_name') or ado_project or wi_names
+
+        try:
+            wi_ids_with_cases = set()
+            with st.spinner(f"Buscando Casos de Teste vinculados a {len(work_items)} Work Item(s)..."):
+                for wi in work_items:
+                    try:
+                        cases = ado_client.get_test_cases_for_work_item(wi['id'])
+                    except Exception as error:
+                        warnings.append(f"Falha ao buscar Casos do Work Item {wi['id']} ({wi['title']}): {error}")
+                        continue
+                    if not cases:
+                        warnings.append(f"Work Item {wi['id']} ({wi['title']}) não tem nenhum Caso de Teste vinculado (relação 'Tests').")
+                        continue
+                    wi_ids_with_cases.add(wi['id'])
+                    for case in cases:
+                        titulo = case.get('titulo') or f"Caso #{case.get('id')}"
+                        casos.append({"titulo": titulo, "outcome": "Desconhecido", "suite_name": wi['title']})
+                        case_id = case.get('id')
+                        if case_id:
+                            try:
+                                imgs, img_warnings = ado_client.get_test_case_attachments(case_id)
+                                if imgs:
+                                    evidencias_por_caso[titulo] = imgs
+                                warnings.extend(img_warnings)
+                            except Exception as error:
+                                warnings.append(f"Falha ao buscar imagens de '{titulo}': {error}")
+
+            # Status vem direto da coluna do board de CADA Work Item
+            # selecionado — não precisa procurar vínculo nenhum, porque a
+            # seleção já partiu do próprio Work Item.
+            wi_status_by_title = {}
+            with st.spinner("Consultando status de QA (coluna do board) de cada Work Item..."):
+                for wi in work_items:
+                    try:
+                        wi_status_by_title[wi['title']] = ado_client.get_work_item_qa_status(wi['id'])
+                    except Exception as error:
+                        wi_status_by_title[wi['title']] = "Desconhecido"
+                        warnings.append(f"Falha ao checar status do Work Item {wi['id']}: {error}")
+            for caso in casos:
+                caso["outcome"] = wi_status_by_title.get(caso["suite_name"], "Desconhecido")
+
+            status_geral = status_manual or "Pendente"
+
+            # Matriz independente, direto a partir dos Work Items
+            # selecionados (já temos os IDs — sem precisar descobrir vínculo).
+            matriz_to_use = []
+            if wi_ids_with_cases:
+                try:
+                    with st.spinner(f"Montando Matriz de Cobertura a partir de {len(wi_ids_with_cases)} Work Item(s)..."):
+                        details = ado_client.get_work_items_full_details(list(wi_ids_with_cases))
+                        EXCLUDE_TYPES_MTX = {"test plan", "test suite", "test case"}
+                        relevantes = [d for d in details if (d.get('type') or '').strip().lower() not in EXCLUDE_TYPES_MTX]
+                        CATEGORIA_POR_TIPO = {
+                            "bug": "Correção de Defeito", "user story": "Fluxo Funcional",
+                            "product backlog item": "Fluxo Funcional", "feature": "Fluxo Funcional",
+                            "task": "Tarefa Técnica",
+                        }
+                        sigla = self._env_sigla()
+                        for idx, wi_detail in enumerate(relevantes, start=1):
+                            mc_id = f"MC-{idx:03d}" + (f" {sigla}" if sigla else "")
+                            wi_type_label = wi_detail.get('type', '') or ''
+                            categoria = CATEGORIA_POR_TIPO.get(wi_type_label.strip().lower(), wi_type_label or "—")
+                            descricao = (wi_detail.get('description') or '').strip()
+                            matriz_to_use.append({
+                                "id": mc_id,
+                                "funcionalidade": wi_detail.get('title', '') or '—',
+                                "requisito": f"{wi_type_label} #{wi_detail.get('id', '')}".strip(),
+                                "cenario": (descricao[:200] + "…") if len(descricao) > 200 else (descricao or "—"),
+                                "categoria": categoria,
+                                "prioridade": "—",
+                                "criticidade": "—",
+                            })
+                    if matriz_to_use:
+                        warnings.append(f"Matriz de Cobertura montada a partir dos {len(matriz_to_use)} Work Item(s) selecionado(s).")
+                except Exception as error:
+                    warnings.append(f"Não foi possível montar a Matriz independente: {error}")
+
+            with st.spinner("Gerando o PDF do Relatório de Testes..."):
+                pdf_bytes = PdfReportGenerator.generate_execution_report(
+                    project_name=report_project_name,
+                    contexto=contexto,
+                    ambiente=ambiente,
+                    status_geral=status_geral,
+                    escopo_proposito=escopo_proposito,
+                    casos=casos,
+                    evidencias_por_caso=evidencias_por_caso,
+                    conclusao=conclusao,
+                    proximos_passos=proximos_passos,
+                    matriz=matriz_to_use,
+                    author_name=self.state.get('author_name', ''),
+                )
+            self.state.set('report_pdf_bytes', pdf_bytes)
+            self.state.set('report_warnings', warnings)
+            self._log(
+                "Gerar Relatório de Testes (por Work Items)", "Relatório de Testes",
+                f"{len(work_items)} Work Item(s) — status: {status_geral}",
+            )
+        except AzureDevOpsError as error:
+            st.error(f"❌ {error}")
+        except Exception as error:
+            st.error(f"❌ Erro inesperado: {error}")
+        self.clear_action()
+        st.rerun()
+
+    def _render_report_narrative_fields(self, default_ambiente_guess: bool = False):
+        """
+        Campos compartilhados entre os dois modos do Relatório de Testes
+        (por Test Plan, ou por Work Items): Contexto, Ambiente, Escopo,
+        Conclusão, Próximos Passos, Status manual. Retorna
+        (contexto, ambiente, escopo_proposito, conclusao, proximos_passos, status_manual).
+        """
+        st.caption("Os campos abaixo já vêm com sugestão da IA (se você clicou no botão de sugestão acima) — revise e edite livremente antes de gerar o PDF.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if "report_contexto_input" not in st.session_state:
+                st.session_state["report_contexto_input"] = self.state.get('report_contexto', '')
+            contexto = st.text_input(
+                "Contexto",
+                key="report_contexto_input",
+                help="Ex.: 'Testes de regressão pós-deploy da Sprint 14'",
+            )
+        with col2:
+            ambiente_opts = ["Homologação", "Produção"]
+            session_ambiente = self.state.get('ambiente_testes', '')
+            if session_ambiente in ambiente_opts:
+                ambiente_default = ambiente_opts.index(session_ambiente)
+                help_text = "Pré-selecionado com base no Ambiente escolhido na geração desta sessão — confirme antes de gerar."
+            else:
+                ambiente_default = 0
+                help_text = "Confirme antes de gerar."
+            ambiente = st.selectbox(
+                "Ambiente",
+                options=ambiente_opts,
+                index=ambiente_default,
+                disabled=self.state.get('is_processing'),
+                key="report_ambiente_select",
+                help=help_text,
+            )
+        self.state.set('report_contexto', contexto)
+
+        if "report_escopo_input" not in st.session_state:
+            st.session_state["report_escopo_input"] = self.state.get('report_escopo', '')
+        escopo_proposito = st.text_area(
+            "Escopo e Propósito",
+            key="report_escopo_input",
+            help="Explique brevemente o escopo e o propósito dos testes executados.",
+            height=100,
+        )
+        self.state.set('report_escopo', escopo_proposito)
+
+        if "report_conclusao_input" not in st.session_state:
+            st.session_state["report_conclusao_input"] = self.state.get('report_conclusao', '')
+        conclusao = st.text_area(
+            "Conclusão",
+            key="report_conclusao_input",
+            height=100,
+        )
+        self.state.set('report_conclusao', conclusao)
+
+        if "report_proximos_input" not in st.session_state:
+            st.session_state["report_proximos_input"] = self.state.get('report_proximos', '')
+        proximos_passos = st.text_area(
+            "Próximos Passos e Sugestões (opcional)",
+            key="report_proximos_input",
+            height=80,
+        )
+        self.state.set('report_proximos', proximos_passos)
+
+        status_manual = st.radio(
+            "Status do Relatório *",
+            options=["Aprovado", "Cancelado", "Pendente"],
+            index=None,
+            key="report_status_manual_select",
+            disabled=self.state.get('is_processing'),
+            horizontal=True,
+            help="Você define o status final do relatório diretamente — não depende do cálculo automático pela coluna do board.",
+        )
+        return contexto, ambiente, escopo_proposito, conclusao, proximos_passos, status_manual
+
     def _render_execution_report_section(self, ado_client, ado_project: str = "", area_paths: list = None):
         area_paths = area_paths or []
         st.markdown("### 📊 Relatório de Testes (execução)")
@@ -3609,73 +4024,7 @@ class UserInterface:
         if self.state.get('current_action') == 'suggest_report_narrative' and not self.state.get('show_interrupt_modal'):
             self._suggest_report_narrative(ado_client, chosen_plans)
 
-        st.caption("Os campos abaixo já vêm com sugestão da IA (se você clicou no botão acima) — revise e edite livremente antes de gerar o PDF.")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if "report_contexto_input" not in st.session_state:
-                st.session_state["report_contexto_input"] = self.state.get('report_contexto', '')
-            contexto = st.text_input(
-                "Contexto",
-                key="report_contexto_input",
-                help="Ex.: 'Testes de regressão pós-deploy da Sprint 14'",
-            )
-        with col2:
-            ambiente_opts = ["Homologação", "Produção"]
-            session_ambiente = self.state.get('ambiente_testes', '')
-            if session_ambiente in ambiente_opts:
-                ambiente_default = ambiente_opts.index(session_ambiente)
-                help_text = "Pré-selecionado com base no Ambiente escolhido na geração desta sessão — confirme antes de gerar."
-            else:
-                ambiente_default = 1 if any("prod" in p["name"].lower() for p in chosen_plans) else 0
-                help_text = "Pré-selecionado por um palpite a partir do nome do Test Plan — confirme antes de gerar."
-            ambiente = st.selectbox(
-                "Ambiente",
-                options=ambiente_opts,
-                index=ambiente_default,
-                disabled=self.state.get('is_processing'),
-                key="report_ambiente_select",
-                help=help_text,
-            )
-        self.state.set('report_contexto', contexto)
-
-        if "report_escopo_input" not in st.session_state:
-            st.session_state["report_escopo_input"] = self.state.get('report_escopo', '')
-        escopo_proposito = st.text_area(
-            "Escopo e Propósito",
-            key="report_escopo_input",
-            help="Explique brevemente o escopo e o propósito dos testes executados.",
-            height=100,
-        )
-        self.state.set('report_escopo', escopo_proposito)
-
-        if "report_conclusao_input" not in st.session_state:
-            st.session_state["report_conclusao_input"] = self.state.get('report_conclusao', '')
-        conclusao = st.text_area(
-            "Conclusão",
-            key="report_conclusao_input",
-            height=100,
-        )
-        self.state.set('report_conclusao', conclusao)
-
-        if "report_proximos_input" not in st.session_state:
-            st.session_state["report_proximos_input"] = self.state.get('report_proximos', '')
-        proximos_passos = st.text_area(
-            "Próximos Passos e Sugestões (opcional)",
-            key="report_proximos_input",
-            height=80,
-        )
-        self.state.set('report_proximos', proximos_passos)
-
-        status_manual = st.radio(
-            "Status do Relatório *",
-            options=["Aprovado", "Cancelado", "Pendente"],
-            index=None,
-            key="report_status_manual_select",
-            disabled=self.state.get('is_processing'),
-            horizontal=True,
-            help="Você define o status final do relatório diretamente — não depende mais do cálculo automático pela coluna do board.",
-        )
+        contexto, ambiente, escopo_proposito, conclusao, proximos_passos, status_manual = self._render_report_narrative_fields()
 
         with st.container(key="azure_blue_btn_generate_report"):
             st.button(
@@ -4663,10 +5012,6 @@ class UserInterface:
 
         if self.state.get('show_execution_report_page'):
             self._execution_report_page()
-            return
-
-        if self.state.get('show_wi_generation_page'):
-            self._wi_generation_page()
             return
 
         if self.state.get('show_wiql_generation_page'):
