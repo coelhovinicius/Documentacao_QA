@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import bcrypt
 import streamlit as st
+import streamlit.components.v1 as components
 
 from qa_testgen.infrastructure.access_control_client import AccessControlClient
 
@@ -469,6 +470,28 @@ def _render_login_form(config):
             username = st.text_input("Usuário")
             password = st.text_input("Senha", type="password")
             submitted = st.form_submit_button("Entrar", use_container_width=True, type="primary")
+
+        # Coloca o cursor automaticamente no campo "Usuário" assim que a
+        # tela de login aparece — sem precisar clicar antes de digitar.
+        components.html(
+            """
+            <script>
+                (function () {
+                    try {
+                        var doc = window.parent.document;
+                        var inputs = doc.querySelectorAll('input[type="text"]');
+                        if (inputs.length > 0) {
+                            inputs[0].focus();
+                        }
+                    } catch (err) {
+                        // Se o navegador não permitir acessar window.parent,
+                        // só não foca automaticamente — sem quebrar a tela.
+                    }
+                })();
+            </script>
+            """,
+            height=0,
+        )
 
         if submitted:
             username = username.strip()
