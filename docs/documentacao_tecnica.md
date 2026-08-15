@@ -1,7 +1,7 @@
 # QA Automation – Azure DevOps
 ## Documentação Técnica Completa
 
-**Projeto:** Refuturiza — QA TestGen / QA Automation
+**Projeto:** QA TestGen / QA Automation
 **Última atualização:** Julho de 2026
 
 ---

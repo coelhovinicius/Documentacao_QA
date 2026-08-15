@@ -3,8 +3,8 @@ from pathlib import Path
 from reportlab.lib import colors
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-LOGO_PATH = BASE_DIR / "logo_refu_1.png"
-SIMBOLO_PATH = BASE_DIR / "simbolo_refu_1.png"
+LOGO_PATH = BASE_DIR / "logo.png"
+SIMBOLO_PATH = BASE_DIR / "simbolo.png"
 TZ_BR = pytz.timezone('America/Sao_Paulo')
 
 COR_LARANJA = colors.HexColor('#F15A24')

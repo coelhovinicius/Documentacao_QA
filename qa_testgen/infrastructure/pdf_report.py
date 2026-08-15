@@ -87,7 +87,7 @@ class PdfReportGenerator:
         canvas.line(0, h - 52, w, h - 52)
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(COR_CINZA_MED)
-        footer_left = "Refuturiza – Gerado automaticamente pelo QA TestGen"
+        footer_left = "Gerado automaticamente pelo QA TestGen"
         if author_name:
             footer_left += f" | Gerado por {PdfReportGenerator._esc(author_name)}"
         canvas.drawString(18, 20, footer_left)
@@ -123,7 +123,7 @@ class PdfReportGenerator:
             topMargin=3.2 * cm,
             bottomMargin=2.0 * cm,
             title=f"QA Report – {project_name}",
-            author="Refuturiza QA TestGen",
+            author="QA TestGen",
         )
         pw = doc.width
         story = []
@@ -413,7 +413,7 @@ class PdfReportGenerator:
             topMargin=3.2 * cm,
             bottomMargin=2.0 * cm,
             title=f"Relatório de Testes – {project_name}",
-            author=author_name or "Refuturiza QA TestGen",
+            author=author_name or "QA TestGen",
         )
         pw = doc.width
         story = []

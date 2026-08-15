@@ -2,8 +2,6 @@
 
 Aplicação Streamlit que automatiza a geração de documentação de QA (Matriz de Cobertura, Casos de Teste e Planos de Teste) a partir de documentos de requisitos ou de Work Items do Azure DevOps, usando IA (via n8n), e integra tudo diretamente com o Azure DevOps — com controle de acesso, PAT pessoal por usuário, três modos de envio conforme o estágio do projeto, e relatórios de execução baseados em dados reais do board.
 
-Projeto da **Refuturiza**.
-
 ---
 
 ## Sumário

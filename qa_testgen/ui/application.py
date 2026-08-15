@@ -914,7 +914,7 @@ class UserInterface:
             project = st.text_input(
                 "Nome do Test Plan *",
                 key='project_name_input',
-                placeholder="Ex: Passaporte Refuturiza",
+                placeholder="Ex: Sistema de Login",
                 disabled=self.state.get('is_processing'),
                 help="Preenchido automaticamente a partir do nome do primeiro documento enviado — altere livremente se quiser outro nome.",
             )
