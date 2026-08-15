@@ -1,10 +1,13 @@
 import secrets as _secrets_module
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import bcrypt
 import streamlit as st
 
 from qa_testgen.infrastructure.access_control_client import AccessControlClient
+
+TZ_BR = ZoneInfo("America/Sao_Paulo")
 
 SESSION_AUTH_KEY = "authenticated"
 SESSION_USER_KEY = "auth_user"
@@ -270,7 +273,10 @@ def _render_active_sessions(config, client):
         is_mine = sess.get("session_id") == my_session_id
         created = sess.get("created_at", "")
         try:
-            created_fmt = datetime.fromisoformat(created).strftime("%d/%m/%Y %H:%M")
+            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            created_fmt = created_dt.astimezone(TZ_BR).strftime("%d/%m/%Y %H:%M")
         except Exception:
             created_fmt = created
         c1, c2 = st.columns([4, 1])
@@ -322,7 +328,10 @@ def _render_audit_logs(config, client):
     for log in logs_filtrados:
         ts = log.get("timestamp", "")
         try:
-            ts_fmt = datetime.fromisoformat(ts.replace("Z", "+00:00")).strftime("%d/%m/%Y %H:%M:%S")
+            ts_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if ts_dt.tzinfo is None:
+                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+            ts_fmt = ts_dt.astimezone(TZ_BR).strftime("%d/%m/%Y %H:%M:%S")
         except Exception:
             ts_fmt = ts
         rows.append({
@@ -454,7 +463,7 @@ def _render_login_form(config):
 
     _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        st.markdown("## 🧪 QA Automation – DevOps")
+        st.markdown("## 🧪 QA Automation – Azure DevOps")
         st.caption("Acesso restrito. Informe suas credenciais para continuar.")
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Usuário")
