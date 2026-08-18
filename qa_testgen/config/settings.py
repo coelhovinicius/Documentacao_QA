@@ -42,6 +42,10 @@ class AppConfiguration:
             'N8N_WEBHOOK_URL_WIQL_GENERATION',
             'http://localhost:5678/webhook/qa-testgen-wiql-generation'
         )
+        self.webhook_manual_generation = self._get(
+            'N8N_WEBHOOK_URL_MANUAL_GENERATION',
+            'http://localhost:5678/webhook/qa-testgen-manual-generation'
+        )
         self.api_key = self._get('N8N_API_KEY', '')
 
         self.azure_devops_org = self._get('AZURE_DEVOPS_ORG', '')

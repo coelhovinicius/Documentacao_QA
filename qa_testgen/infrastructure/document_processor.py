@@ -32,6 +32,14 @@ class DocumentProcessor:
             uploaded_file.seek(0)
         elif ext == "txt":
             text = uploaded_file.getvalue().decode("utf-8")
+        elif ext == "csv":
+            # Mantém como texto tabular simples (linhas separadas por vírgula)
+            # — não precisa de parsing estruturado, a IA lida bem com CSV cru.
+            raw = uploaded_file.getvalue()
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("latin-1")
         return text.strip()
 
     @staticmethod
@@ -86,7 +94,7 @@ class DocumentProcessor:
     #   5. Limita a 12 imagens por documento (na ordem em que aparecem).
     # ------------------------------------------------------------------ #
     @classmethod
-    def extract_images_with_context(cls, uploaded_files: list) -> dict:
+    def extract_images_with_context(cls, uploaded_files: list, max_images: int = None) -> dict:
         """
         Retorna {"images": [...], "warnings": [...]}.
         Cada imagem: {
@@ -96,7 +104,15 @@ class DocumentProcessor:
             "context": trecho de texto próximo à imagem (ajuda a IA a entender o contexto),
             "location": descrição legível (ex.: "página 3"),
         }
+
+        max_images: limite de imagens a considerar. Por padrão usa
+        MAX_IMAGES_PER_ANALYSIS (pensado pro fluxo que manda cada imagem
+        pra IA interpretar — custo por chamada). Passe um valor maior (ou
+        0/None pra não limitar) em fluxos que só reaproveitam a imagem
+        direto, sem IA no meio — ex.: geração do Manual de Testes.
         """
+        limit = cls.MAX_IMAGES_PER_ANALYSIS if max_images is None else max_images
+
         all_images = []
         warnings = []
 
@@ -111,12 +127,12 @@ class DocumentProcessor:
             all_images.extend(imgs)
             warnings.extend(warns)
 
-        if len(all_images) > cls.MAX_IMAGES_PER_ANALYSIS:
+        if limit and len(all_images) > limit:
             warnings.append(
                 f"O documento tinha {len(all_images)} imagens elegíveis; só as primeiras "
-                f"{cls.MAX_IMAGES_PER_ANALYSIS} foram consideradas (limite por análise)."
+                f"{limit} foram consideradas (limite por análise)."
             )
-            all_images = all_images[:cls.MAX_IMAGES_PER_ANALYSIS]
+            all_images = all_images[:limit]
 
         return {"images": all_images, "warnings": warnings}
 

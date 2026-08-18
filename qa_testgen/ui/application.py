@@ -17,6 +17,7 @@ from qa_testgen.config import AppConfiguration, LOGO_PATH, SIMBOLO_PATH
 from qa_testgen.infrastructure.csv_formatter import AzureCsvFormatter
 from qa_testgen.infrastructure.document_processor import DocumentProcessor
 from qa_testgen.infrastructure.pdf_report import PdfReportGenerator
+from qa_testgen.infrastructure.manual_pdf import ManualPdfGenerator
 from qa_testgen.infrastructure.webhook_client import WebhookClient
 from qa_testgen.infrastructure.azure_devops_client import AzureDevOpsClient, AzureDevOpsError
 from qa_testgen.application.session import SessionState
@@ -457,15 +458,25 @@ class UserInterface:
                 self._navigate_or_confirm({
                     'show_about_page': True, 'show_admin_page': False,
                     'show_execution_report_page': False,
-                    'show_wiql_generation_page': False,
+                    'show_wiql_generation_page': False, 'show_manual_page': False,
                 })
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
+            if current_username == self.config.owner_username:
+                # Restrito ao dono do app de propósito — a geração usa IA
+                # (custo de token), então fica só com quem administra o app.
+                if st.button("📘 Manual de Testes (UAT)", use_container_width=True, key="btn_manual_sidebar", disabled=self.state.get('is_processing')):
+                    self._navigate_or_confirm({
+                        'show_manual_page': True, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wiql_generation_page': False,
+                    })
             if self._get_permission_cached("azure_devops"):
                 if st.button("🔎 Criar Query com IA", use_container_width=True, key="btn_wiql_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_wiql_generation_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_manual_page': False,
                     })
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
@@ -475,6 +486,7 @@ class UserInterface:
                     self.state.set('show_about_page', False)
                     self.state.set('show_admin_page', False)
                     self.state.set('show_wiql_generation_page', False)
+                    self.state.set('show_manual_page', False)
                     st.rerun()
             if is_approver(self.config, current_username):
                 # "Administração" agora fica visível pra qualquer aprovador,
@@ -486,7 +498,7 @@ class UserInterface:
                     self._navigate_or_confirm({
                         'show_admin_page': True, 'show_about_page': False,
                         'show_execution_report_page': False,
-                        'show_wiql_generation_page': False,
+                        'show_wiql_generation_page': False, 'show_manual_page': False,
                     })
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
@@ -553,6 +565,9 @@ class UserInterface:
             'fetch_wi_report': 'Buscando Work Items do Board',
             'suggest_report_narrative_wi': 'Consultando a IA para sugerir os textos',
             'generate_execution_report_wi': 'Gerando o Relatório de Testes',
+            'fetch_wi_manual': 'Buscando Work Items do Board',
+            'generate_manual': 'Escrevendo o Manual com IA',
+            'build_manual_pdf': 'Montando o PDF do Manual',
             'fetch_existing_plans': 'Buscando Test Plans existentes na Area Path',
             'fetch_recon_plans': 'Buscando Test Plans do projeto',
             'fetch_recon_cases': 'Buscando Casos de Teste do Test Plan anterior',
@@ -3360,14 +3375,14 @@ class UserInterface:
             st.caption("Nenhum Work Item selecionado ainda — escolha acima.")
             return
 
-        col_name, col_amb = st.columns(2)
-        with col_name:
-            project_name = st.text_input(
-                "Nome do Test Plan *",
-                value=self.state.get('project_name') or ado_project,
-                key="wigen_project_name_input",
-                disabled=self.state.get('is_processing'),
-            )
+        project_name = st.text_input(
+            "Nome do Test Plan *",
+            value=self.state.get('project_name') or ado_project,
+            key="wigen_project_name_input",
+            disabled=self.state.get('is_processing'),
+        )
+
+        col_amb, col_tipo = st.columns(2)
         with col_amb:
             ambiente = st.radio(
                 "Ambiente dos Testes *",
@@ -3381,18 +3396,38 @@ class UserInterface:
         if ambiente:
             self.state.set('ambiente_testes', ambiente)
 
+        with col_tipo:
+            tipo_documento = st.radio(
+                "Tipo de Documento *",
+                options=["Visão", "Requisitos Funcionais", "Especificações Funcionais", "Outros"],
+                index=None,
+                key="wigen_tipo_documento_input",
+                disabled=self.state.get('is_processing'),
+                horizontal=True,
+                help=(
+                    "Calibra o nível de detalhe que a IA assume ao gerar Matriz/Casos a partir da "
+                    "Descrição/Critérios de Aceite dos Work Items escolhidos — mesma lógica usada "
+                    "quando a especificação vem de um documento enviado. Work Items com descrição "
+                    "pouco detalhada (ex.: só um título e um parágrafo) tendem a se comportar como "
+                    "'Visão'; Work Items com Critérios de Aceite bem escritos tendem a 'Especificações "
+                    "Funcionais'."
+                ),
+            )
+        if tipo_documento:
+            self.state.set('tipo_documento', tipo_documento)
+
         with st.container(key="azure_blue_btn_confirm_wigen"):
             st.button(
                 "✅ Confirmar e Gerar Especificação",
                 type="primary",
                 use_container_width=True,
-                disabled=self.state.get('is_processing') or not project_name.strip() or not ambiente,
+                disabled=self.state.get('is_processing') or not project_name.strip() or not ambiente or not tipo_documento,
                 key="btn_confirm_wigen",
                 on_click=self.trigger_action,
                 args=("confirm_wigen",),
             )
-        if not ambiente:
-            st.caption("Selecione o Ambiente dos Testes para habilitar a confirmação.")
+        if not ambiente or not tipo_documento:
+            st.caption("Selecione o Ambiente dos Testes e o Tipo de Documento para habilitar a confirmação.")
 
         if self.state.get('current_action') == 'confirm_wigen' and not self.state.get('show_interrupt_modal'):
             try:
@@ -3423,6 +3458,313 @@ class UserInterface:
             except Exception as error:
                 st.error(f"❌ Erro ao buscar detalhes dos Work Items: {error}")
                 self.clear_action()
+
+    def _manual_generation_page(self):
+        st.subheader("📘 Manual de Testes (UAT)")
+        if st.button("← Voltar", key="btn_manual_back"):
+            self.state.set('show_manual_page', False)
+            st.rerun()
+
+        current_username = st.session_state.get(SESSION_USER_KEY, "")
+        if current_username != self.config.owner_username:
+            st.error("❌ Esta área é restrita ao administrador do app.")
+            return
+
+        st.caption(
+            "Gera um manual de reprodução passo a passo, escrito em linguagem simples pra quem "
+            "não é de TI (times de Produto/Marketing em UAT) — evita relatos de \"bug\" que na "
+            "real são passos executados fora de ordem ou mal interpretados."
+        )
+        st.info(
+            "📷 O app **não tira print de tela ao vivo** — ele só reaproveita imagens que **você "
+            "já tiver**, anexadas em documentos ou já existentes nos Work Items do Azure DevOps."
+        )
+
+        origem = st.radio(
+            "Origem do conteúdo",
+            options=["📄 Documentos", "🎯 Work Items do Azure DevOps", "🔀 Mesclado (Documentos + Work Items)"],
+            index=0,
+            key="manual_origem_radio",
+            disabled=self.state.get('is_processing'),
+            horizontal=True,
+        )
+        usa_documentos = origem.startswith("📄") or origem.startswith("🔀")
+        usa_work_items = origem.startswith("🎯") or origem.startswith("🔀")
+
+        texto_documentos = ""
+        texto_work_items = ""
+        imagens_coletadas = list(self.state.get('manual_collected_images') or [])
+        # Reseta a coleta de imagens a cada renderização — remonta a partir
+        # das fontes ativas agora (documentos/Work Items podem ter mudado).
+        imagens_coletadas = []
+
+        st.divider()
+        if usa_documentos:
+            st.markdown("##### 📄 Documentos")
+            uploaded_manual = st.file_uploader(
+                "Documento(s) (PDF, DOCX, TXT ou CSV — pode anexar mais de um, de formatos diferentes)",
+                type=["pdf", "docx", "txt", "csv"],
+                accept_multiple_files=True,
+                key="manual_uploaded_files_input",
+                disabled=self.state.get('is_processing'),
+            )
+            if uploaded_manual:
+                self.state.set('manual_uploaded_files', uploaded_manual)
+            uploaded_manual = self.state.get('manual_uploaded_files') or []
+
+            if uploaded_manual:
+                with st.spinner("Extraindo texto e imagens dos documentos..."):
+                    texto_documentos = DocumentProcessor.extract_plain_text_multi(uploaded_manual)
+                    img_result = DocumentProcessor.extract_images_with_context(uploaded_manual, max_images=0)
+                for warn in img_result.get("warnings", []):
+                    st.caption(f"ℹ️ {warn}")
+                for idx, img in enumerate(img_result.get("images", [])):
+                    fname = f"{img['source_file']}_{img['location']}_{idx}.jpg".replace(" ", "_")
+                    imagens_coletadas.append({"filename": fname, "bytes": img["bytes"], "origem": img["source_file"], "context": img.get("context", "")})
+                if imagens_coletadas:
+                    st.caption(f"✅ {len(imagens_coletadas)} imagem(ns) encontrada(s) nos documentos.")
+
+        if usa_work_items:
+            st.markdown("##### 🎯 Work Items do Azure DevOps")
+            conn = self._setup_azure_devops_connection(show_area_path_picker=False)
+            if conn is None:
+                return
+            ado_client, ado_org, ado_project, _default_area_path = conn
+
+            if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+                area_path_options = self.state.get('ado_available_area_paths') or []
+            else:
+                try:
+                    with st.spinner("Buscando Area Paths do projeto..."):
+                        area_path_options = ado_client.list_area_paths()
+                    self.state.set('ado_available_area_paths', area_path_options)
+                    self.state.set('ado_area_paths_project', ado_project)
+                except Exception as error:
+                    st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                    area_path_options = []
+
+            col_ap, col_btn = st.columns(2)
+            with col_ap:
+                area_paths_manual = st.multiselect(
+                    "Area Path(s)",
+                    options=area_path_options,
+                    disabled=self.state.get('is_processing'),
+                    key="manual_area_paths_select",
+                )
+            with col_btn:
+                with st.container(key="azure_blue_btn_fetch_wi_manual"):
+                    st.button(
+                        "🔄 Buscar Work Items do Board",
+                        disabled=self.state.get('is_processing'),
+                        key="btn_fetch_wi_manual",
+                        on_click=self.trigger_action,
+                        args=("fetch_wi_manual",),
+                        use_container_width=True,
+                    )
+            if self.state.get('current_action') == 'fetch_wi_manual' and not self.state.get('show_interrupt_modal'):
+                try:
+                    paths_to_search = area_paths_manual or [ado_project]
+                    with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
+                        items_by_id = {}
+                        for ap in paths_to_search:
+                            for item in ado_client.fetch_work_items_by_area_path(ap):
+                                items_by_id[item["id"]] = item
+                    self.state.set('manual_board_items', list(items_by_id.values()))
+                except Exception as error:
+                    st.error(f"❌ Não foi possível buscar Work Items: {error}")
+                self.clear_action()
+                st.rerun()
+
+            board_items = self.state.get('manual_board_items') or []
+            if board_items:
+                wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
+                selected_labels = st.multiselect(
+                    "Work Items a incluir no manual",
+                    options=list(wi_labels.keys()),
+                    key="manual_wi_select",
+                    disabled=self.state.get('is_processing'),
+                )
+                selected_wis = [wi_labels[l] for l in selected_labels]
+                if selected_wis:
+                    with st.spinner(f"Buscando detalhes e anexos de {len(selected_wis)} Work Item(s)..."):
+                        details = ado_client.get_work_items_full_details([wi['id'] for wi in selected_wis])
+                        text_parts = []
+                        for wi in details:
+                            part = f"===== WORK ITEM {wi['id']} - {wi['title']} ({wi['type']}) =====\n"
+                            if wi.get('description'):
+                                part += f"Descrição:\n{wi['description']}\n"
+                            if wi.get('acceptance_criteria'):
+                                part += f"\nCritérios de Aceite:\n{wi['acceptance_criteria']}\n"
+                            part += f"===== FIM DO WORK ITEM {wi['id']} ====="
+                            text_parts.append(part)
+                        texto_work_items = "\n\n".join(text_parts)
+
+                        for wi in selected_wis:
+                            try:
+                                imgs, _warns = ado_client.get_test_case_attachments(wi['id'])
+                                for idx, (fname, fbytes) in enumerate(imgs):
+                                    imagens_coletadas.append({"filename": f"WI{wi['id']}_{fname}", "bytes": fbytes, "origem": f"Work Item {wi['id']}", "context": ""})
+                            except Exception:
+                                pass
+                    if imagens_coletadas:
+                        st.caption(f"✅ {len(imagens_coletadas)} imagem(ns) encontrada(s) no total (documentos + Work Items).")
+
+        self.state.set('manual_collected_images', imagens_coletadas)
+
+        conteudo_origem = (texto_documentos + "\n\n" + texto_work_items).strip()
+        if not conteudo_origem:
+            st.caption("Adicione documento(s) e/ou selecione Work Items pra continuar.")
+            return
+
+        st.divider()
+        default_nome = self.state.get('project_name') or "Manual de Testes"
+        nome_manual = st.text_input(
+            "Nome do Manual *",
+            value=self.state.get('manual_nome') or default_nome,
+            key="manual_nome_input",
+            disabled=self.state.get('is_processing'),
+        )
+        self.state.set('manual_nome', nome_manual)
+
+        with st.container(key="azure_blue_btn_generate_manual"):
+            st.button(
+                "🤖 Gerar Manual com IA",
+                type="primary",
+                use_container_width=True,
+                disabled=self.state.get('is_processing') or not nome_manual.strip(),
+                key="btn_generate_manual",
+                on_click=self.trigger_action,
+                args=("generate_manual",),
+            )
+        if self.state.get('current_action') == 'generate_manual' and not self.state.get('show_interrupt_modal'):
+            try:
+                imagens_payload = [{"filename": img["filename"], "context": img.get("context", "")} for img in imagens_coletadas]
+                with st.spinner("Escrevendo o manual e sugerindo as imagens de cada passo (isso pode levar um minuto)..."):
+                    resp = self.client.trigger_manual_generation(conteudo_origem, nome_manual.strip(), imagens_payload)
+                self.state.set('manual_generated', resp)
+                # A IA já sugere quais imagens combinam com cada passo (via
+                # "imagens_sugeridas") — pré-popula a partir disso, mas só
+                # com nomes que realmente existem no pool coletado (nunca
+                # confia cegamente no que a IA "lembrou" do nome do arquivo).
+                nomes_validos = {img["filename"] for img in imagens_coletadas}
+                passo_images_sugeridas = {}
+                for passo in resp.get('passos', []):
+                    sugeridas = [f for f in (passo.get('imagens_sugeridas') or []) if f in nomes_validos]
+                    if sugeridas:
+                        passo_images_sugeridas[str(passo.get('numero'))] = sugeridas
+                self.state.set('manual_passo_images', passo_images_sugeridas)
+                self.state.set('manual_pdf_bytes', None)
+                total_sugeridas = sum(len(v) for v in passo_images_sugeridas.values())
+                if total_sugeridas:
+                    st.toast(f"✅ A IA já sugeriu {total_sugeridas} imagem(ns) distribuída(s) pelos passos — revise abaixo.")
+            except Exception as error:
+                st.error(f"❌ Não foi possível gerar o manual: {error}")
+            self.clear_action()
+            st.rerun()
+
+        self._render_manual_review()
+
+    def _render_manual_review(self):
+        generated = self.state.get('manual_generated')
+        if not generated:
+            return
+
+        st.divider()
+        st.markdown("### ✏️ Revisar o Manual")
+        st.caption("Edite os textos livremente e escolha quais imagens ilustram cada passo antes de gerar o PDF.")
+
+        if "manual_titulo_input" not in st.session_state:
+            st.session_state["manual_titulo_input"] = generated.get('titulo_manual', '')
+        titulo_manual = st.text_input("Título do Manual", key="manual_titulo_input")
+
+        if "manual_introducao_input" not in st.session_state:
+            st.session_state["manual_introducao_input"] = generated.get('introducao', '')
+        introducao = st.text_area("Introdução", key="manual_introducao_input", height=80)
+
+        imagens = self.state.get('manual_collected_images') or []
+        img_by_filename = {img["filename"]: img for img in imagens}
+        passo_images = dict(self.state.get('manual_passo_images') or {})
+
+        passos_editados = []
+        for passo in generated.get('passos', []):
+            numero = passo.get('numero')
+            with st.expander(f"Passo {numero} — {passo.get('titulo', '')}", expanded=True):
+                key_prefix = f"manual_passo_{numero}"
+                if f"{key_prefix}_titulo" not in st.session_state:
+                    st.session_state[f"{key_prefix}_titulo"] = passo.get('titulo', '')
+                p_titulo = st.text_input("Título do passo", key=f"{key_prefix}_titulo")
+
+                if f"{key_prefix}_descricao" not in st.session_state:
+                    st.session_state[f"{key_prefix}_descricao"] = passo.get('descricao', '')
+                p_descricao = st.text_area("Descrição", key=f"{key_prefix}_descricao", height=100)
+
+                if f"{key_prefix}_aviso" not in st.session_state:
+                    st.session_state[f"{key_prefix}_aviso"] = passo.get('aviso', '') or ''
+                p_aviso = st.text_input("Aviso (opcional)", key=f"{key_prefix}_aviso")
+
+                if imagens:
+                    default_imgs = passo_images.get(str(numero), [])
+                    chosen = st.multiselect(
+                        "Imagens deste passo",
+                        options=list(img_by_filename.keys()),
+                        default=[f for f in default_imgs if f in img_by_filename],
+                        key=f"{key_prefix}_imagens",
+                        disabled=self.state.get('is_processing'),
+                    )
+                    passo_images[str(numero)] = chosen
+                    for fname in chosen:
+                        st.image(img_by_filename[fname]["bytes"], caption=fname, width=200)
+                else:
+                    st.caption("Nenhuma imagem disponível pra atribuir (nenhuma foi encontrada nos documentos/Work Items).")
+
+                passos_editados.append({
+                    "numero": numero, "titulo": p_titulo, "descricao": p_descricao, "aviso": p_aviso,
+                })
+
+        self.state.set('manual_passo_images', passo_images)
+
+        st.divider()
+        with st.container(key="azure_blue_btn_build_manual_pdf"):
+            st.button(
+                "📄 Gerar PDF do Manual",
+                type="primary",
+                use_container_width=True,
+                disabled=self.state.get('is_processing'),
+                key="btn_build_manual_pdf",
+                on_click=self.trigger_action,
+                args=("build_manual_pdf",),
+            )
+
+        if self.state.get('current_action') == 'build_manual_pdf' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Montando o PDF do manual..."):
+                    pdf_bytes = ManualPdfGenerator.generate(
+                        titulo=titulo_manual,
+                        introducao=introducao,
+                        passos=passos_editados,
+                        passo_images=passo_images,
+                        img_by_filename={k: v["bytes"] for k, v in img_by_filename.items()},
+                        author_name=self.state.get('author_name', ''),
+                    )
+                self.state.set('manual_pdf_bytes', pdf_bytes)
+                self._log("Gerar Manual de Testes (UAT)", "Manual de Testes", f"'{titulo_manual}' — {len(passos_editados)} passo(s)")
+            except Exception as error:
+                st.error(f"❌ Não foi possível gerar o PDF: {error}")
+            self.clear_action()
+            st.rerun()
+
+        pdf_bytes = self.state.get('manual_pdf_bytes')
+        if pdf_bytes:
+            safe_name = (titulo_manual or 'manual').replace(' ', '_')
+            st.download_button(
+                "⬇️ Baixar Manual (PDF)",
+                data=pdf_bytes,
+                file_name=f"Manual_{safe_name}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+                key="download_manual_pdf",
+            )
 
     def _wiql_generation_page(self):
         st.subheader("🔎 Criar Query no Azure DevOps com IA")
@@ -5016,6 +5358,10 @@ class UserInterface:
 
         if self.state.get('show_wiql_generation_page'):
             self._wiql_generation_page()
+            return
+
+        if self.state.get('show_manual_page'):
+            self._manual_generation_page()
             return
 
         self._progress()

@@ -302,3 +302,38 @@ class WebhookClient:
             "titulo_sugerido": data.get("titulo_sugerido", ""),
             "explicacao": data.get("explicacao", ""),
         }
+
+    def trigger_manual_generation(self, conteudo_origem: str, nome_manual: str, imagens_disponiveis: list) -> dict:
+        """
+        Pede pra IA escrever um Manual de Testes pra usuários leigos (UAT,
+        não técnicos) — linguagem simples, um passo por ação, resultado
+        esperado explícito. A IA também SUGERE quais imagens disponíveis
+        combinam com cada passo (usando o contexto de texto ao redor de
+        cada imagem, quando disponível) — a pessoa revisa/ajusta depois,
+        não precisa montar tudo do zero manualmente.
+
+        imagens_disponiveis: [{"filename":..., "context":...}, ...]
+        Retorna {"titulo_manual", "introducao",
+        "passos": [{"numero","titulo","descricao","aviso","imagens_sugeridas"}, ...]}.
+        """
+        imagens_texto = "\n".join(
+            f'- "{img["filename"]}"' + (f' — contexto no documento: {img["context"][:200]}' if img.get("context") else " — sem contexto de texto disponível")
+            for img in imagens_disponiveis
+        )
+        response = requests.post(
+            self.config.webhook_manual_generation,
+            json={
+                "conteudo_origem": conteudo_origem,
+                "nome_manual": nome_manual,
+                "imagens_disponiveis": imagens_texto,
+            },
+            headers=self.headers,
+            timeout=300,
+        )
+        response.raise_for_status()
+        data = self._parse(response)
+        return {
+            "titulo_manual": data.get("titulo_manual", nome_manual),
+            "introducao": data.get("introducao", ""),
+            "passos": data.get("passos", []) or [],
+        }
