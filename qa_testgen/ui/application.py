@@ -3415,6 +3415,13 @@ class UserInterface:
             self.state.set('wigen_uploaded_files', uploaded_complementares)
         uploaded_complementares = self.state.get('wigen_uploaded_files') or []
 
+        MAX_FILE_MB_WIGEN = 20
+        oversized_wigen = [f.name for f in uploaded_complementares if f.size > MAX_FILE_MB_WIGEN * 1024 * 1024]
+        if oversized_wigen:
+            st.error(f"❌ Arquivo(s) excedem o limite de {MAX_FILE_MB_WIGEN}MB cada: {', '.join(oversized_wigen)}")
+            self.state.set('wigen_uploaded_files', [])
+            uploaded_complementares = []
+
         if uploaded_complementares:
             tipo_documento = st.multiselect(
                 "Tipo de Documento *",

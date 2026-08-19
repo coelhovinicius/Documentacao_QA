@@ -127,7 +127,7 @@ class WebhookClient:
             self.config.webhook_analysis,
             json={"document_text": doc_text, "nome_projeto": project},
             headers=self.headers,
-            timeout=120,
+            timeout=300,
         )
         response.raise_for_status()
         data = self._parse(response)
