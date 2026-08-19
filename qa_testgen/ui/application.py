@@ -972,14 +972,15 @@ class UserInterface:
             self.state.set('ambiente_testes', ambiente)
 
         with col_tipo:
-            tipo_documento = st.radio(
+            tipo_documento = st.multiselect(
                 "Tipo de Documento *",
                 options=["Visão", "Requisitos Funcionais", "Especificações Funcionais", "Outros"],
-                index=None,  # sem pré-seleção — obriga a pessoa a escolher conscientemente
                 key="tipo_documento_input",
                 disabled=self.state.get('is_processing'),
-                horizontal=True,
+                placeholder="Selecione um ou mais...",
                 help=(
+                    "Pode escolher mais de um se o conjunto de documentos misturar níveis de "
+                    "detalhe (ex.: um Documento de Visão + uma Especificação Funcional juntos). "
                     "Calibra o nível de detalhe que a IA assume ao gerar Matriz/Casos (Visão = mais "
                     "exploratório, Especificações = mais granular) e sugere o modo de envio pro Azure "
                     "DevOps no Passo 7 (com ou sem vínculo a Work Items)."
@@ -1206,7 +1207,7 @@ class UserInterface:
                         self.state.get('doc_text'),
                         self.state.get('step_2_answers', answers),
                         self.state.get('project_name'),
-                        self.state.get('tipo_documento', ''),
+                        ", ".join(self.state.get('tipo_documento') or []),
                     )
                     matriz = resp.get('matriz') or []
                     if not matriz:
@@ -1350,7 +1351,7 @@ class UserInterface:
                         self.state.get('matriz'),
                         self.state.get('user_answers'),
                         self.state.get('project_name'),
-                        self.state.get('tipo_documento', ''),
+                        ", ".join(self.state.get('tipo_documento') or []),
                     )
                     casos = resp.get('casos_de_teste') or []
                     if not casos:
@@ -2754,8 +2755,8 @@ class UserInterface:
         # — "Visão" geralmente significa que ainda não há Work Item pra
         # vincular caso a caso (só um Épico/Backlog no máximo). A pessoa
         # sempre pode trocar manualmente.
-        tipo_doc = self.state.get('tipo_documento', '')
-        default_modo_idx = 1 if tipo_doc == "Visão" else 0
+        tipo_doc = self.state.get('tipo_documento') or []
+        default_modo_idx = 1 if "Visão" in tipo_doc else 0
         modo_envio = st.radio(
             "Como os Casos de Teste devem entrar no Azure DevOps?",
             options=modo_options,
@@ -3375,14 +3376,14 @@ class UserInterface:
             st.caption("Nenhum Work Item selecionado ainda — escolha acima.")
             return
 
-        project_name = st.text_input(
-            "Nome do Test Plan *",
-            value=self.state.get('project_name') or ado_project,
-            key="wigen_project_name_input",
-            disabled=self.state.get('is_processing'),
-        )
-
-        col_amb, col_tipo = st.columns(2)
+        col_name, col_amb = st.columns(2)
+        with col_name:
+            project_name = st.text_input(
+                "Nome do Test Plan *",
+                value=self.state.get('project_name') or ado_project,
+                key="wigen_project_name_input",
+                disabled=self.state.get('is_processing'),
+            )
         with col_amb:
             ambiente = st.radio(
                 "Ambiente dos Testes *",
@@ -3396,38 +3397,67 @@ class UserInterface:
         if ambiente:
             self.state.set('ambiente_testes', ambiente)
 
-        with col_tipo:
-            tipo_documento = st.radio(
+        st.divider()
+        st.markdown("##### 📎 Documento(s) complementar(es) (opcional)")
+        st.caption(
+            "Além dos Work Items escolhidos acima, você pode anexar documento(s) pra "
+            "complementar a especificação — o texto de todos é combinado numa única análise, "
+            "junto com a Descrição e os Critérios de Aceite dos Work Items."
+        )
+        uploaded_complementares = st.file_uploader(
+            "Documento(s) complementar(es) (PDF, DOCX ou TXT)",
+            type=["pdf", "docx", "txt"],
+            accept_multiple_files=True,
+            key="wigen_uploaded_files_input",
+            disabled=self.state.get('is_processing'),
+        )
+        if uploaded_complementares:
+            self.state.set('wigen_uploaded_files', uploaded_complementares)
+        uploaded_complementares = self.state.get('wigen_uploaded_files') or []
+
+        if uploaded_complementares:
+            tipo_documento = st.multiselect(
                 "Tipo de Documento *",
                 options=["Visão", "Requisitos Funcionais", "Especificações Funcionais", "Outros"],
-                index=None,
+                placeholder="Selecione um ou mais...",
                 key="wigen_tipo_documento_input",
                 disabled=self.state.get('is_processing'),
-                horizontal=True,
                 help=(
-                    "Calibra o nível de detalhe que a IA assume ao gerar Matriz/Casos a partir da "
-                    "Descrição/Critérios de Aceite dos Work Items escolhidos — mesma lógica usada "
-                    "quando a especificação vem de um documento enviado. Work Items com descrição "
-                    "pouco detalhada (ex.: só um título e um parágrafo) tendem a se comportar como "
-                    "'Visão'; Work Items com Critérios de Aceite bem escritos tendem a 'Especificações "
-                    "Funcionais'."
+                    "Pode escolher mais de um se os Work Items/documentos complementares "
+                    "misturarem níveis de detalhe. Calibra o nível de detalhe que a IA assume ao "
+                    "gerar Matriz/Casos a partir da Descrição/Critérios de Aceite dos Work Items "
+                    "(e dos documentos complementares) — mesma lógica usada quando a especificação "
+                    "vem de um documento enviado. Work Items com descrição pouco detalhada (ex.: só "
+                    "um título e um parágrafo) tendem a se comportar como 'Visão'; Work Items com "
+                    "Critérios de Aceite bem escritos tendem a 'Especificações Funcionais'."
                 ),
             )
-        if tipo_documento:
-            self.state.set('tipo_documento', tipo_documento)
+            if tipo_documento:
+                self.state.set('tipo_documento', tipo_documento)
+        else:
+            tipo_documento = []
+            self.state.set('tipo_documento', [])
+
+        # Tipo de Documento só é obrigatório se realmente subiu algum
+        # documento complementar — sem documento nenhum (só Work Items),
+        # não faz sentido exigir essa calibração.
+        tipo_documento_obrigatorio = bool(uploaded_complementares)
+        falta_tipo_documento = tipo_documento_obrigatorio and not tipo_documento
 
         with st.container(key="azure_blue_btn_confirm_wigen"):
             st.button(
                 "✅ Confirmar e Gerar Especificação",
                 type="primary",
                 use_container_width=True,
-                disabled=self.state.get('is_processing') or not project_name.strip() or not ambiente or not tipo_documento,
+                disabled=self.state.get('is_processing') or not project_name.strip() or not ambiente or falta_tipo_documento,
                 key="btn_confirm_wigen",
                 on_click=self.trigger_action,
                 args=("confirm_wigen",),
             )
-        if not ambiente or not tipo_documento:
-            st.caption("Selecione o Ambiente dos Testes e o Tipo de Documento para habilitar a confirmação.")
+        if not ambiente or falta_tipo_documento:
+            msg = "Selecione o Ambiente dos Testes"
+            msg += " e o Tipo de Documento" if falta_tipo_documento else ""
+            st.caption(f"{msg} para habilitar a confirmação.")
 
         if self.state.get('current_action') == 'confirm_wigen' and not self.state.get('show_interrupt_modal'):
             try:
@@ -3450,10 +3480,15 @@ class UserInterface:
                         text_parts.append(part)
                     text = "\n\n".join(text_parts)
 
-                    self._log(
-                        "Gerar a partir de Work Items", "Passo 1",
-                        f"Projeto '{project_name.strip()}' — {len(details)} Work Item(s): {', '.join(str(wi['id']) for wi in details)}",
-                    )
+                    log_detail = f"Projeto '{project_name.strip()}' — {len(details)} Work Item(s): {', '.join(str(wi['id']) for wi in details)}"
+                    if uploaded_complementares:
+                        with st.spinner(f"Extraindo texto de {len(uploaded_complementares)} documento(s) complementar(es)..."):
+                            texto_docs = DocumentProcessor.extract_plain_text_multi(uploaded_complementares)
+                        if texto_docs:
+                            text = text + "\n\n" + texto_docs
+                            log_detail += f" + {len(uploaded_complementares)} documento(s) complementar(es)"
+
+                    self._log("Gerar a partir de Work Items", "Passo 1", log_detail)
                     self._run_analysis(text, project_name.strip())
             except Exception as error:
                 st.error(f"❌ Erro ao buscar detalhes dos Work Items: {error}")
