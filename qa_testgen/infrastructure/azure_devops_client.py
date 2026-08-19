@@ -795,6 +795,73 @@ class AzureDevOpsClient:
             if wi.get("fields", {}).get("System.Title")
         ]
 
+    def get_existing_test_cases_full(self, work_item_id: int) -> list:
+        """
+        Busca os Casos de Teste JÁ vinculados a um Work Item (mesma relação
+        usada em get_existing_test_case_titles), mas trazendo o CONTEÚDO
+        COMPLETO (pré-condições e passos), não só o título — usado pra
+        comparar qualidade contra um Caso recém-gerado que pareça
+        duplicado, e ajudar a decidir qual dos dois é melhor.
+        """
+        url = f"{self._base_url()}/wit/workitems/{work_item_id}?$expand=relations&api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Buscar relações do Work Item {work_item_id}")
+
+        case_ids = []
+        for rel in data.get("relations") or []:
+            if rel.get("rel") == "Microsoft.VSTS.Common.TestedBy-Forward":
+                url_ref = rel.get("url", "")
+                try:
+                    case_ids.append(int(url_ref.rstrip("/").split("/")[-1]))
+                except (ValueError, IndexError):
+                    continue
+        if not case_ids:
+            return []
+
+        ids_param = ",".join(str(c) for c in case_ids)
+        fields = f"System.Id,System.Title,{self.PRECONDICOES_FIELD},Microsoft.VSTS.TCM.Steps"
+        url2 = f"{self._base_url()}/wit/workitems?ids={ids_param}&fields={fields}&api-version={API_VERSION}"
+        response2 = self.session.get(url2, headers=self.headers_json, timeout=60)
+        data2 = self._handle_response(response2, f"Buscar Casos de Teste completos do Work Item {work_item_id}")
+
+        results = []
+        for wi in data2.get("value", []):
+            f = wi.get("fields", {})
+            results.append({
+                "id": wi.get("id"),
+                "titulo": f.get("System.Title", ""),
+                "pre_condicoes": f.get(self.PRECONDICOES_FIELD, "") or "",
+                "passos": self._parse_steps_xml(f.get("Microsoft.VSTS.TCM.Steps", "")),
+            })
+        return results
+
+    @staticmethod
+    def _parse_steps_xml(xml_str: str) -> list:
+        """
+        Caminho inverso de _build_steps_xml — extrai ação/resultado
+        esperado de cada <step> do campo Microsoft.VSTS.TCM.Steps. Feito
+        com regex simples (não um parser XML completo) porque o formato
+        gerado por esse app é sempre previsível; Casos criados manualmente
+        no Azure DevOps com formatação incomum podem não extrair perfeito
+        — nesse caso, o pior que acontece é a IA comparar com menos
+        detalhe, não um erro.
+        """
+        if not xml_str:
+            return []
+        steps = []
+        for match in re.finditer(r'<step[^>]*>(.*?)</step>', xml_str, re.DOTALL):
+            params = re.findall(r'<parameterizedString[^>]*>(.*?)</parameterizedString>', match.group(1), re.DOTALL)
+            if len(params) >= 2:
+                acao_html = saxutils.unescape(params[0])
+                esperado_html = saxutils.unescape(params[1])
+                acao = re.sub(r'<[^>]+>', ' ', acao_html)
+                esperado = re.sub(r'<[^>]+>', ' ', esperado_html)
+                steps.append({
+                    "acao": html.unescape(acao).strip(),
+                    "resultado_esperado": html.unescape(esperado).strip(),
+                })
+        return steps
+
     def get_existing_test_case_titles(self, work_item_id: int) -> list:
         """
         Retorna os títulos dos Test Cases JÁ vinculados a esse Work Item no

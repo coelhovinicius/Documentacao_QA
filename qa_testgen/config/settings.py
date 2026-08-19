@@ -46,6 +46,10 @@ class AppConfiguration:
             'N8N_WEBHOOK_URL_MANUAL_GENERATION',
             'http://localhost:5678/webhook/qa-testgen-manual-generation'
         )
+        self.webhook_duplicate_comparison = self._get(
+            'N8N_WEBHOOK_URL_DUPLICATE_COMPARISON',
+            'http://localhost:5678/webhook/qa-testgen-duplicate-comparison'
+        )
         self.api_key = self._get('N8N_API_KEY', '')
 
         self.azure_devops_org = self._get('AZURE_DEVOPS_ORG', '')

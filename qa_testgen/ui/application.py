@@ -2895,16 +2895,52 @@ class UserInterface:
                 {"success": st.success, "warning": st.warning, "error": st.error}.get(level, st.info)(text)
 
             duplicate_titles = self.state.get('ado_duplicate_case_titles') or []
-            if duplicate_titles:
-                with st.expander(f"🔁 {len(duplicate_titles)} Caso(s) considerados duplicados (não serão criados/vinculados)"):
+            duplicate_analysis = self.state.get('ado_duplicate_analysis') or {}
+            if duplicate_analysis:
+                confirmados = [t for t, info in duplicate_analysis.items() if info.get("mesmo_contexto")]
+                falsos_positivos = [t for t, info in duplicate_analysis.items() if not info.get("mesmo_contexto")]
+                with st.expander(f"🔁 {len(duplicate_analysis)} possível(is) duplicidade(s) — análise de contexto pela IA", expanded=True):
                     st.caption(
-                        "Esses casos pareceram muito parecidos com Casos de Teste que já existem no "
-                        "Work Item correspondente no Azure DevOps. Se algum desses NÃO for realmente "
-                        "duplicado, você pode vinculá-lo manualmente na revisão abaixo — só ele não vai "
-                        "aparecer pré-selecionado."
+                        "Esses Casos novos pareceram parecidos (por título) com Casos que já existem "
+                        "no Work Item correspondente. A IA analisou o **conteúdo real** (pré-condições "
+                        "e passos) de cada par pra confirmar se testam mesmo a mesma coisa. **Nada é "
+                        "excluído automaticamente no Azure DevOps** — a análise é só uma recomendação; "
+                        "casos confirmados como duplicados não aparecem pré-selecionados na revisão "
+                        "abaixo, mas você pode incluí-los manualmente se discordar da IA."
                     )
-                    for t in duplicate_titles:
-                        st.write(f"- {t}")
+                    for t in confirmados:
+                        info = duplicate_analysis[t]
+                        rec = info.get("recomendacao")
+                        if rec == "novo_melhor":
+                            badge = "🆕 A IA acha o Caso **novo** mais completo"
+                            sugestao = (
+                                f"Considere revisar e **excluir manualmente** o Caso antigo (ID "
+                                f"{info['existing_id']}) no Azure DevOps depois, se decidir usar o novo."
+                            )
+                        elif rec == "existente_melhor":
+                            badge = "📌 A IA acha o Caso **já existente** mais completo"
+                            sugestao = "Provavelmente não vale a pena subir o novo."
+                        else:
+                            badge = "⚖️ A IA considera os dois equivalentes em qualidade"
+                            sugestao = "Decisão mais neutra — os dois parecem cobrir o mesmo tanto."
+                        st.markdown(f"**{t}**")
+                        st.caption(
+                            f"{badge}. Comparado com o Caso já existente (ID {info['existing_id']} "
+                            f"- \"{info['existing_titulo']}\"). {sugestao}"
+                        )
+                        if info.get("motivo"):
+                            st.caption(f"💬 *{info['motivo']}*")
+                        st.divider()
+                    if falsos_positivos:
+                        st.success(
+                            f"✅ {len(falsos_positivos)} caso(s) pareciam duplicados pelo título, mas a "
+                            "IA confirmou que testam coisas diferentes de verdade — continuam disponíveis "
+                            "normalmente na revisão abaixo:"
+                        )
+                        for t in falsos_positivos:
+                            info = duplicate_analysis[t]
+                            st.caption(f"• **{t}** — {info.get('motivo', 'contexto diferente do Caso existente.')}")
+                        st.divider()
 
             st.divider()
             st.markdown("### ✏️ Revisar e confirmar vínculos")
@@ -4717,18 +4753,23 @@ class UserInterface:
             pre_linked_titles.add(titulo)
 
         # Busca, pra cada Work Item, quais Casos de Teste JÁ estão vinculados
-        # a ele no Azure DevOps — isso vai como contexto pro n8n, pra IA
-        # evitar sugerir um caso novo que já é essencialmente o que já existe.
-        existing_by_wid = {}
+        # a ele no Azure DevOps — com conteúdo completo (não só título),
+        # pra poder comparar qualidade contra um Caso novo que pareça
+        # duplicado, além de servir de contexto pra IA evitar sugerir algo
+        # que já existe.
+        existing_full_by_wid = {}
         try:
             with st.spinner("Verificando Casos de Teste já existentes nos Work Items..."):
                 for item in board_items:
                     try:
-                        existing_by_wid[item["id"]] = ado_client.get_existing_test_case_titles(item["id"])
+                        existing_full_by_wid[item["id"]] = ado_client.get_existing_test_cases_full(item["id"])
                     except AzureDevOpsError:
-                        existing_by_wid[item["id"]] = []
+                        existing_full_by_wid[item["id"]] = []
         except Exception:
-            existing_by_wid = {item["id"]: [] for item in board_items}
+            existing_full_by_wid = {item["id"]: [] for item in board_items}
+        existing_by_wid = {
+            wid: [c["titulo"] for c in casos] for wid, casos in existing_full_by_wid.items()
+        }
 
         payload_items = [
             {
@@ -4815,29 +4856,92 @@ class UserInterface:
                     deduped_links[wid_key] = kept
             links = deduped_links
 
-            # Rede de segurança #2: remove sugestões de casos muito
-            # parecidos com um Caso de Teste QUE JÁ EXISTE naquele Work Item
-            # no Azure DevOps (buscado no início desta função). Evita duplicar
-            # cobertura de teste que já foi feita antes.
+            # Rede de segurança #2: identifica casos muito parecidos com um
+            # Caso de Teste QUE JÁ EXISTE naquele Work Item no Azure DevOps.
+            # Continuam pré-desmarcados por padrão (não criamos/vinculamos
+            # sozinhos), mas agora com uma ANÁLISE DE CONTEXTO feita pela
+            # IA, comparando o conteúdo real dos dois Casos — não só título
+            # ou volume de texto. A similaridade de título aqui é só um
+            # FILTRO barato pra decidir quais pares vale a pena mandar pra
+            # IA analisar (evita mandar todo par de casos pra IA à toa).
+            # Nada é excluído automaticamente no Azure DevOps — só uma
+            # recomendação visível, com o motivo explicado pela IA.
             SIMILARITY_THRESHOLD = 0.80
-            duplicate_case_titles = set()
-            final_links = {}
+            candidatos = {}  # id_par -> {wid_key, novo_titulo, existente}
             for wid_key, casos in links.items():
-                existentes = existing_by_wid.get(int(wid_key), [])
-                kept = []
+                existentes_full = existing_full_by_wid.get(int(wid_key), [])
                 for c in casos:
                     c_norm = c.strip().lower()
-                    is_dup = any(
-                        difflib.SequenceMatcher(None, c_norm, e.strip().lower()).ratio() >= SIMILARITY_THRESHOLD
-                        for e in existentes
+                    melhor_match, melhor_ratio = None, 0.0
+                    for e in existentes_full:
+                        ratio = difflib.SequenceMatcher(None, c_norm, (e.get("titulo") or "").strip().lower()).ratio()
+                        if ratio > melhor_ratio:
+                            melhor_ratio, melhor_match = ratio, e
+                    if melhor_ratio >= SIMILARITY_THRESHOLD and melhor_match:
+                        id_par = str(uuid.uuid4())
+                        tc_novo = next((tc for tc in test_cases if tc.get("titulo") == c), {})
+                        candidatos[id_par] = {
+                            "wid_key": wid_key, "novo_titulo": c,
+                            "existing_id": melhor_match.get("id"),
+                            "existing_titulo": melhor_match.get("titulo", ""),
+                            "similaridade": round(melhor_ratio, 2),
+                        }
+
+            duplicate_case_titles = set()
+            duplicate_analysis = {}
+            if candidatos:
+                pares_payload = []
+                for id_par, info in candidatos.items():
+                    tc_novo = next((tc for tc in test_cases if tc.get("titulo") == info["novo_titulo"]), {})
+                    existente = next(
+                        (e for e in existing_full_by_wid.get(int(info["wid_key"]), []) if e.get("id") == info["existing_id"]),
+                        {}
                     )
-                    if is_dup:
-                        duplicate_case_titles.add(c)
-                    else:
-                        kept.append(c)
+                    pares_payload.append({
+                        "id_par": id_par,
+                        "novo": {
+                            "titulo": tc_novo.get("titulo", ""),
+                            "pre_condicoes": tc_novo.get("pre_condicoes", ""),
+                            "passos": tc_novo.get("passos", []),
+                        },
+                        "existente": {
+                            "titulo": existente.get("titulo", ""),
+                            "pre_condicoes": existente.get("pre_condicoes", ""),
+                            "passos": existente.get("passos", []),
+                        },
+                    })
+                try:
+                    with st.spinner(f"IA analisando o contexto de {len(pares_payload)} possível(is) duplicidade(s)..."):
+                        comp_result = self.client.trigger_duplicate_comparison(pares_payload)
+                    for comp in comp_result.get("comparacoes", []):
+                        id_par = comp.get("id_par")
+                        info = candidatos.get(id_par)
+                        if not info:
+                            continue
+                        mesmo_contexto = bool(comp.get("mesmo_contexto"))
+                        if mesmo_contexto:
+                            duplicate_case_titles.add(info["novo_titulo"])
+                        duplicate_analysis[info["novo_titulo"]] = {
+                            "existing_id": info["existing_id"],
+                            "existing_titulo": info["existing_titulo"],
+                            "similaridade": info["similaridade"],
+                            "mesmo_contexto": mesmo_contexto,
+                            "recomendacao": comp.get("recomendacao", "equivalentes"),
+                            "motivo": comp.get("motivo", ""),
+                        }
+                except Exception as error:
+                    # Se a IA de comparação falhar, não bloqueia o fluxo —
+                    # só não temos a análise de contexto desta vez; os
+                    # candidatos ficam disponíveis normalmente, sem marcação.
+                    st.warning(f"⚠️ Não foi possível comparar o contexto dos possíveis duplicados: {error}")
+
+            final_links = {}
+            for wid_key, casos in links.items():
+                kept = [c for c in casos if c not in duplicate_case_titles]
                 if kept:
                     final_links[wid_key] = kept
             links = final_links
+            self.state.set('ado_duplicate_analysis', duplicate_analysis)
 
             # Mescla os vínculos já conhecidos desde o Passo 1 (Casos vindos
             # de documento marcado com Work Item) — esses não passaram pela

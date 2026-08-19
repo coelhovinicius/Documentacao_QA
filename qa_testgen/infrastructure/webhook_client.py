@@ -337,3 +337,23 @@ class WebhookClient:
             "introducao": data.get("introducao", ""),
             "passos": data.get("passos", []) or [],
         }
+
+    def trigger_duplicate_comparison(self, pares: list) -> dict:
+        """
+        Compara pares de Casos de Teste (novo vs. já existente no Azure
+        DevOps) que pareceram duplicados por título — pede pra IA olhar o
+        CONTEÚDO (pré-condições/passos) e decidir se realmente testam a
+        mesma coisa, e qual dos dois é melhor, com motivo.
+
+        pares: [{"id_par": str, "novo": {...}, "existente": {...}}, ...]
+        Retorna {"comparacoes": [{"id_par","mesmo_contexto","recomendacao","motivo"}, ...]}
+        """
+        response = requests.post(
+            self.config.webhook_duplicate_comparison,
+            json={"pares": json.dumps(pares, ensure_ascii=False)},
+            headers=self.headers,
+            timeout=300,
+        )
+        response.raise_for_status()
+        data = self._parse(response)
+        return {"comparacoes": data.get("comparacoes", []) or []}

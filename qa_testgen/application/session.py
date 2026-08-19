@@ -60,6 +60,7 @@ class SessionState:
         'ado_wi_prelinked_marker': None,
         'ado_wi_prelink_diag': None,
         'ado_duplicate_case_titles': [],
+        'ado_duplicate_analysis': {},
         'ado_suggest_message': None,
         'ado_case_links': {},
         'ado_full_push_log': [],
