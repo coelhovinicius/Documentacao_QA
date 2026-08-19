@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -13,11 +14,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
-from qa_testgen.config import AppConfiguration, LOGO_PATH, SIMBOLO_PATH
+from qa_testgen.config import AppConfiguration, LOGO_PATH, SIMBOLO_PATH, TZ_BR
 from qa_testgen.infrastructure.csv_formatter import AzureCsvFormatter
 from qa_testgen.infrastructure.document_processor import DocumentProcessor
 from qa_testgen.infrastructure.pdf_report import PdfReportGenerator
 from qa_testgen.infrastructure.manual_pdf import ManualPdfGenerator
+from qa_testgen.infrastructure.document_store import DocumentStore, DocumentStoreError
 from qa_testgen.infrastructure.webhook_client import WebhookClient
 from qa_testgen.infrastructure.azure_devops_client import AzureDevOpsClient, AzureDevOpsError
 from qa_testgen.application.session import SessionState
@@ -197,6 +199,50 @@ class UserInterface:
             result[wid] = livres
             claimed.update(livres)
         return result
+
+    def _render_document_storage_section(self, fluxo_origem: str, nome_projeto: str, arquivos: list):
+        """
+        Seção "Armazenar esta documentação" — reaproveitada em qualquer
+        fluxo que gere CSV/PDF (Passo 6, Relatório de Testes, Manual de
+        Testes). Só aparece pro dono do app (feature admin-only). Salva
+        todos os arquivos de uma vez com o mesmo grupo_id no banco Turso,
+        pra ficarem organizados juntos (ex.: o CSV e o PDF do mesmo Passo 6).
+
+        arquivos: [{"tipo": "csv"|"pdf", "nome_arquivo": str, "conteudo": bytes}, ...]
+        """
+        current_username = st.session_state.get(SESSION_USER_KEY, "")
+        if current_username != self.config.owner_username or not arquivos:
+            return
+
+        st.divider()
+        with st.expander("🗄️ Armazenar esta documentação (admin)"):
+            st.caption(
+                f"Guarda {len(arquivos)} arquivo(s) deste fluxo no banco de documentos — "
+                "ficam organizados juntos (mesmo grupo) e disponíveis depois em "
+                "'🗄️ Documentos Armazenados', na barra lateral."
+            )
+            btn_key = f"btn_store_{fluxo_origem}_{hashlib.md5((nome_projeto or '').encode()).hexdigest()[:8]}"
+            with st.container(key="azure_blue_btn_store_docs"):
+                if st.button(
+                    "💾 Armazenar esta documentação",
+                    key=btn_key,
+                    disabled=self.state.get('is_processing'),
+                    use_container_width=True,
+                ):
+                    try:
+                        store = DocumentStore(self.config.turso_database_url, self.config.turso_auth_token)
+                        with st.spinner("Salvando no banco de documentos..."):
+                            store.ensure_schema()
+                            store.salvar_grupo(fluxo_origem, nome_projeto, arquivos, criado_por=current_username)
+                        st.success("✅ Documentação armazenada com sucesso.")
+                        self._log(
+                            "Armazenar Documentação", fluxo_origem,
+                            f"'{nome_projeto}' — {len(arquivos)} arquivo(s)",
+                        )
+                    except DocumentStoreError as error:
+                        st.error(f"❌ {error}")
+                    except Exception as error:
+                        st.error(f"❌ Não foi possível armazenar: {error}")
 
     def _navigate_or_confirm(self, pending_state_updates: dict):
         """
@@ -459,6 +505,7 @@ class UserInterface:
                     'show_about_page': True, 'show_admin_page': False,
                     'show_execution_report_page': False,
                     'show_wiql_generation_page': False, 'show_manual_page': False,
+                    'show_document_store_page': False,
                 })
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
@@ -469,14 +516,22 @@ class UserInterface:
                     self._navigate_or_confirm({
                         'show_manual_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
-                        'show_wiql_generation_page': False,
+                        'show_wiql_generation_page': False, 'show_document_store_page': False,
+                    })
+                # Área de arquivos guardados — também restrita ao dono, já
+                # que só ele pode escolher armazenar algo em primeiro lugar.
+                if st.button("🗄️ Documentos Armazenados", use_container_width=True, key="btn_document_store_sidebar", disabled=self.state.get('is_processing')):
+                    self._navigate_or_confirm({
+                        'show_document_store_page': True, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wiql_generation_page': False, 'show_manual_page': False,
                     })
             if self._get_permission_cached("azure_devops"):
                 if st.button("🔎 Criar Query com IA", use_container_width=True, key="btn_wiql_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_wiql_generation_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
-                        'show_manual_page': False,
+                        'show_manual_page': False, 'show_document_store_page': False,
                     })
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
@@ -487,6 +542,7 @@ class UserInterface:
                     self.state.set('show_admin_page', False)
                     self.state.set('show_wiql_generation_page', False)
                     self.state.set('show_manual_page', False)
+                    self.state.set('show_document_store_page', False)
                     st.rerun()
             if is_approver(self.config, current_username):
                 # "Administração" agora fica visível pra qualquer aprovador,
@@ -499,6 +555,7 @@ class UserInterface:
                         'show_admin_page': True, 'show_about_page': False,
                         'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
+                        'show_document_store_page': False,
                     })
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
@@ -1110,6 +1167,12 @@ class UserInterface:
                 st.error("Não foi possível extrair texto.")
                 self.clear_action()
             else:
+                doc_wi_map = self.state.get('step1_doc_work_item_map') or {}
+                log_detail = f"Projeto '{project}' — {len(uploaded)} documento(s): {', '.join(f.name for f in uploaded)}"
+                if doc_wi_map:
+                    log_detail += f" ({len(doc_wi_map)} vinculado(s) a Work Items)"
+                self._log("Analisar Documento(s)", "Passo 1", log_detail)
+
                 # Extrai imagens relevantes do corpo dos documentos (ignora
                 # cabeçalho/rodapé, ícones pequenos e logos repetidos) e
                 # interpreta cada uma via IA, inserindo a descrição de volta
@@ -1771,6 +1834,15 @@ class UserInterface:
                 if st.button("🔗 Ir para Integração com Azure DevOps →", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_goto_step7"):
                     self._set_step(7, allow_during_processing=True)
                     st.rerun()
+
+        self._render_document_storage_section(
+            "Documentação QA (Passo 6)", project,
+            [
+                {"tipo": "csv", "nome_arquivo": f"QA_Cases_{safe_name}.csv", "conteudo": csv_cases},
+                {"tipo": "csv", "nome_arquivo": f"QA_Plans_{safe_name}.csv", "conteudo": csv_plans},
+                {"tipo": "pdf", "nome_arquivo": f"QA_Report_{safe_name}.pdf", "conteudo": pdf_bytes},
+            ],
+        )
 
         st.divider()
         c1, c2 = st.columns(2)
@@ -3537,6 +3609,113 @@ class UserInterface:
                 st.error(f"❌ Erro ao buscar detalhes dos Work Items: {error}")
                 self.clear_action()
 
+    def _document_store_page(self):
+        st.subheader("🗄️ Documentos Armazenados")
+        if st.button("← Voltar", key="btn_document_store_back"):
+            self.state.set('show_document_store_page', False)
+            st.rerun()
+
+        current_username = st.session_state.get(SESSION_USER_KEY, "")
+        if current_username != self.config.owner_username:
+            st.error("❌ Esta área é restrita ao administrador do app.")
+            return
+
+        st.caption(
+            "Documentos (CSV/PDF) que você escolheu guardar ao longo do tempo, organizados por "
+            "fluxo de origem — mais recentes primeiro. Guardados num banco separado (Turso), "
+            "fora do app em si."
+        )
+
+        store = DocumentStore(self.config.turso_database_url, self.config.turso_auth_token)
+        try:
+            with st.spinner("Carregando documentos armazenados..."):
+                store.ensure_schema()
+                grupos = store.listar_grupos()
+        except DocumentStoreError as error:
+            st.error(f"❌ {error}")
+            return
+        except Exception as error:
+            st.error(f"❌ Não foi possível carregar os documentos: {error}")
+            return
+
+        if not grupos:
+            st.info(
+                "Nenhum documento armazenado ainda. Use o botão '💾 Armazenar esta "
+                "documentação' que aparece ao final de cada fluxo (Passo 6, Relatório de "
+                "Testes, Manual de Testes)."
+            )
+            return
+
+        fluxos_disponiveis = sorted({g['fluxo_origem'] for g in grupos})
+        filtro = st.multiselect(
+            "Filtrar por fluxo de origem", options=fluxos_disponiveis,
+            key="document_store_filter",
+        )
+        grupos_filtrados = [g for g in grupos if not filtro or g['fluxo_origem'] in filtro]
+        st.caption(f"{len(grupos_filtrados)} grupo(s) de documento(s).")
+
+        for grupo in grupos_filtrados:
+            criado_em_fmt = grupo['criado_em']
+            try:
+                dt = datetime.fromisoformat(criado_em_fmt.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                criado_em_fmt = dt.astimezone(TZ_BR).strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                pass
+            total_kb = sum(a['tamanho_bytes'] for a in grupo['arquivos']) / 1024
+            titulo_grupo = f"📁 {grupo['nome_projeto'] or '(sem nome)'} — {grupo['fluxo_origem']} — {criado_em_fmt} ({total_kb:.0f} KB)"
+            with st.expander(titulo_grupo):
+                st.caption(f"Armazenado por: {grupo['criado_por'] or 'desconhecido'}")
+                for arq in grupo['arquivos']:
+                    col_info, col_btn = st.columns([3, 1])
+                    with col_info:
+                        icone = "📄" if arq['tipo'] == 'csv' else "📑"
+                        st.write(f"{icone} {arq['nome_arquivo']} ({arq['tamanho_bytes'] / 1024:.0f} KB)")
+                    with col_btn:
+                        conteudo_pronto = self.state.get(f"document_store_content_{arq['id']}")
+                        if conteudo_pronto:
+                            mime = "text/csv" if arq['tipo'] == 'csv' else "application/pdf"
+                            st.download_button(
+                                "💾 Salvar", data=conteudo_pronto, file_name=arq['nome_arquivo'],
+                                mime=mime, key=f"dlbtn_{arq['id']}", use_container_width=True,
+                            )
+                        else:
+                            if st.button("⬇️ Buscar", key=f"btn_prep_{arq['id']}", use_container_width=True):
+                                try:
+                                    with st.spinner("Buscando arquivo..."):
+                                        conteudo = store.buscar_conteudo(arq['id'])
+                                    self.state.set(f"document_store_content_{arq['id']}", conteudo)
+                                    st.rerun()
+                                except Exception as error:
+                                    st.error(f"❌ {error}")
+                st.divider()
+                delete_flag_key = f"confirm_delete_group_{grupo['grupo_id']}"
+                if not self.state.get(delete_flag_key):
+                    if st.button("🗑️ Excluir este grupo", key=f"btn_delete_group_{grupo['grupo_id']}"):
+                        self.state.set(delete_flag_key, True)
+                        st.rerun()
+                else:
+                    st.warning("Tem certeza? Isso apaga os arquivos deste grupo permanentemente do banco.")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("✅ Sim, excluir", key=f"btn_confirm_delete_{grupo['grupo_id']}", type="primary", use_container_width=True):
+                            try:
+                                store.excluir_grupo(grupo['grupo_id'])
+                                st.success("Excluído.")
+                                self._log(
+                                    "Excluir Documentação Armazenada", grupo['fluxo_origem'],
+                                    grupo['nome_projeto'] or '',
+                                )
+                            except Exception as error:
+                                st.error(f"❌ {error}")
+                            self.state.set(delete_flag_key, False)
+                            st.rerun()
+                    with c2:
+                        if st.button("✖ Cancelar", key=f"btn_cancel_delete_{grupo['grupo_id']}", use_container_width=True):
+                            self.state.set(delete_flag_key, False)
+                            st.rerun()
+
     def _manual_generation_page(self):
         st.subheader("📘 Manual de Testes (UAT)")
         if st.button("← Voltar", key="btn_manual_back"):
@@ -3844,6 +4023,11 @@ class UserInterface:
                 key="download_manual_pdf",
             )
 
+            self._render_document_storage_section(
+                "Manual de Testes (UAT)", titulo_manual or nome_manual,
+                [{"tipo": "pdf", "nome_arquivo": f"Manual_{safe_name}.pdf", "conteudo": pdf_bytes}],
+            )
+
     def _wiql_generation_page(self):
         st.subheader("🔎 Criar Query no Azure DevOps com IA")
         st.caption(
@@ -4123,6 +4307,11 @@ class UserInterface:
             )
             for warn in self.state.get('report_warnings') or []:
                 st.caption(f"ℹ️ {warn}")
+
+            self._render_document_storage_section(
+                "Relatório de Testes (por Work Items)", self.state.get('project_name') or 'projeto',
+                [{"tipo": "pdf", "nome_arquivo": f"Relatorio_Testes_{safe_name}.pdf", "conteudo": report_bytes}],
+            )
 
     def _suggest_report_narrative_from_work_items(self, ado_client, work_items: list):
         EXCLUDE_TYPES = {"test plan", "test suite", "test case"}
@@ -4475,6 +4664,11 @@ class UserInterface:
             )
             for warn in self.state.get('report_warnings') or []:
                 st.caption(f"ℹ️ {warn}")
+
+            self._render_document_storage_section(
+                "Relatório de Testes (por Test Plan)", self.state.get('project_name') or 'projeto',
+                [{"tipo": "pdf", "nome_arquivo": f"Relatorio_Testes_{safe_name}.pdf", "conteudo": report_bytes}],
+            )
 
     def _suggest_report_narrative(self, ado_client, plans: list):
         EXCLUDE_TYPES = {"test plan", "test suite", "test case"}
@@ -5508,6 +5702,10 @@ class UserInterface:
 
         if self.state.get('show_manual_page'):
             self._manual_generation_page()
+            return
+
+        if self.state.get('show_document_store_page'):
+            self._document_store_page()
             return
 
         self._progress()

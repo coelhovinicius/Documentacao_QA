@@ -81,6 +81,7 @@ class SessionState:
         'wigen_uploaded_files': [],
         'show_wiql_generation_page': False,
         'show_manual_page': False,
+        'show_document_store_page': False,
         'manual_uploaded_files': [],
         'manual_board_items': [],
         'manual_collected_images': [],

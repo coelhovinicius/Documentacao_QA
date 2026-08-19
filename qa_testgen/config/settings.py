@@ -52,6 +52,9 @@ class AppConfiguration:
         )
         self.api_key = self._get('N8N_API_KEY', '')
 
+        self.turso_database_url = self._get('TURSO_DATABASE_URL', '')
+        self.turso_auth_token = self._get('TURSO_AUTH_TOKEN', '')
+
         self.azure_devops_org = self._get('AZURE_DEVOPS_ORG', '')
         self.azure_devops_project = self._get('AZURE_DEVOPS_PROJECT', '')
         self.azure_devops_pat = self._get('AZURE_DEVOPS_PAT', '')
