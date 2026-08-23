@@ -505,7 +505,7 @@ class UserInterface:
                     'show_about_page': True, 'show_admin_page': False,
                     'show_execution_report_page': False,
                     'show_wiql_generation_page': False, 'show_manual_page': False,
-                    'show_document_store_page': False,
+                    'show_document_store_page': False, 'show_mindmap_page': False,
                 })
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
@@ -517,6 +517,7 @@ class UserInterface:
                         'show_manual_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_document_store_page': False,
+                        'show_mindmap_page': False,
                     })
                 # Área de arquivos guardados — também restrita ao dono, já
                 # que só ele pode escolher armazenar algo em primeiro lugar.
@@ -525,6 +526,14 @@ class UserInterface:
                         'show_document_store_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
+                        'show_mindmap_page': False,
+                    })
+                if st.button("🧠 Mapa Mental", use_container_width=True, key="btn_mindmap_sidebar", disabled=self.state.get('is_processing')):
+                    self._navigate_or_confirm({
+                        'show_mindmap_page': True, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wiql_generation_page': False, 'show_manual_page': False,
+                        'show_document_store_page': False,
                     })
             if self._get_permission_cached("azure_devops"):
                 if st.button("🔎 Criar Query com IA", use_container_width=True, key="btn_wiql_sidebar", disabled=self.state.get('is_processing')):
@@ -532,6 +541,7 @@ class UserInterface:
                         'show_wiql_generation_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_manual_page': False, 'show_document_store_page': False,
+                        'show_mindmap_page': False,
                     })
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
@@ -543,6 +553,7 @@ class UserInterface:
                     self.state.set('show_wiql_generation_page', False)
                     self.state.set('show_manual_page', False)
                     self.state.set('show_document_store_page', False)
+                    self.state.set('show_mindmap_page', False)
                     st.rerun()
             if is_approver(self.config, current_username):
                 # "Administração" agora fica visível pra qualquer aprovador,
@@ -555,7 +566,7 @@ class UserInterface:
                         'show_admin_page': True, 'show_about_page': False,
                         'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
-                        'show_document_store_page': False,
+                        'show_document_store_page': False, 'show_mindmap_page': False,
                     })
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
@@ -3609,6 +3620,201 @@ class UserInterface:
                 st.error(f"❌ Erro ao buscar detalhes dos Work Items: {error}")
                 self.clear_action()
 
+    def _mind_map_page(self):
+        st.subheader("🧠 Mapa Mental")
+        if st.button("← Voltar", key="btn_mindmap_back"):
+            self.state.set('show_mindmap_page', False)
+            st.rerun()
+
+        current_username = st.session_state.get(SESSION_USER_KEY, "")
+        if current_username != self.config.owner_username:
+            st.error("❌ Esta área é restrita ao administrador do app.")
+            return
+
+        st.caption(
+            "Visualiza a hierarquia Plano → Suíte → Caso de Teste como um mapa mental — a "
+            "partir da sessão atual, ou de um grupo de documentos já armazenado."
+        )
+
+        origem = st.radio(
+            "Origem dos dados",
+            options=["📋 Sessão atual", "🗄️ Grupo armazenado"],
+            index=0,
+            key="mindmap_origem_radio",
+            horizontal=True,
+        )
+
+        raiz_nome = "Projeto"
+        hierarquia = {}  # {plano_nome: {suite_nome: [casos]}}
+
+        if origem.startswith("📋"):
+            test_plans = self.state.get('test_plans') or []
+            if not test_plans:
+                st.info("Nenhum Plano de Teste na sessão atual — gere Planos (Passo 5) primeiro, ou escolha 'Grupo armazenado'.")
+                return
+            raiz_nome = self.state.get('project_name') or "Projeto"
+            for plano in test_plans:
+                nome_plano = plano.get('nome', '(sem nome)')
+                hierarquia[nome_plano] = {}
+                for suite in plano.get('suites', []):
+                    nome_suite = suite.get('nome', '(sem nome)')
+                    hierarquia[nome_plano][nome_suite] = list(suite.get('casos', []))
+        else:
+            store = DocumentStore(self.config.turso_database_url, self.config.turso_auth_token)
+            try:
+                with st.spinner("Carregando grupos armazenados..."):
+                    store.ensure_schema()
+                    grupos = store.listar_grupos()
+            except DocumentStoreError as error:
+                st.error(f"❌ {error}")
+                return
+            except Exception as error:
+                st.error(f"❌ Não foi possível carregar os documentos: {error}")
+                return
+
+            grupos_com_planos = [
+                g for g in grupos
+                if any("plan" in a['nome_arquivo'].lower() and a['tipo'] == 'csv' for a in g['arquivos'])
+            ]
+            if not grupos_com_planos:
+                st.info(
+                    "Nenhum grupo armazenado tem um CSV de Planos (só o Passo 6 gera esse "
+                    "arquivo). Armazene uma Documentação QA primeiro, ou use 'Sessão atual'."
+                )
+                return
+
+            labels = {
+                f"{g['nome_projeto'] or '(sem nome)'} — {g['fluxo_origem']} — {g['criado_em'][:10]}": g
+                for g in grupos_com_planos
+            }
+            escolha = st.selectbox("Grupo armazenado", options=list(labels.keys()), key="mindmap_grupo_select")
+            grupo = labels[escolha]
+            raiz_nome = grupo['nome_projeto'] or "Projeto"
+
+            arq_planos = next(a for a in grupo['arquivos'] if "plan" in a['nome_arquivo'].lower() and a['tipo'] == 'csv')
+            try:
+                with st.spinner("Lendo o CSV de Planos armazenado..."):
+                    conteudo = store.buscar_conteudo(arq_planos['id'])
+                hierarquia = self._parse_plans_csv(conteudo)
+            except Exception as error:
+                st.error(f"❌ Não foi possível ler o CSV armazenado: {error}")
+                return
+
+        if not hierarquia:
+            st.warning("Não encontrei nenhum Plano/Suíte/Caso pra montar o mapa mental.")
+            return
+
+        total_planos = len(hierarquia)
+        total_suites = sum(len(s) for s in hierarquia.values())
+        total_casos = sum(len(c) for s in hierarquia.values() for c in s.values())
+        st.caption(f"{total_planos} Plano(s), {total_suites} Suíte(s), {total_casos} Caso(s) de Teste.")
+
+        svg = self._svg_mind_map(raiz_nome, hierarquia)
+        st.markdown(self._flatten_html(svg), unsafe_allow_html=True)
+
+        with st.expander("📋 Ver lista completa (texto)"):
+            for plano, suites in hierarquia.items():
+                st.markdown(f"**{plano}**")
+                for suite, casos in suites.items():
+                    st.write(f"　• {suite} ({len(casos)} caso(s))")
+                    for caso in casos:
+                        st.caption(f"　　　- {caso}")
+
+    @staticmethod
+    def _parse_plans_csv(conteudo: bytes) -> dict:
+        """
+        Lê de volta o CSV gerado por AzureCsvFormatter.plans_suites_cases
+        (colunas: CASES_HEADER + Suite + Plan) e reconstrói a hierarquia
+        {plano: {suite: [casos]}}. Linhas de Step (sem "Test Case" na
+        coluna de tipo) são ignoradas — só interessa o nível de Caso aqui.
+        """
+        import csv
+        import io
+        text = conteudo.decode("utf-8-sig", errors="replace")
+        reader = csv.reader(io.StringIO(text))
+        rows = list(reader)
+        if not rows:
+            return {}
+        hierarquia = {}
+        for row in rows[1:]:
+            if len(row) < 4 or row[1] != "Test Case":
+                continue
+            titulo = row[2]
+            suite_nome = row[-2] or "(sem suíte)"
+            plano_nome = row[-1] or "(sem plano)"
+            hierarquia.setdefault(plano_nome, {}).setdefault(suite_nome, []).append(titulo)
+        return hierarquia
+
+    @staticmethod
+    def _svg_mind_map(raiz_nome: str, hierarquia: dict) -> str:
+        """
+        Mapa mental radial simples: raiz no centro, Planos no primeiro
+        anel, Suítes no segundo anel (rótulo já mostra a contagem de
+        Casos). Lista de Casos completa fica disponível como texto, logo
+        abaixo do desenho — manter só 2 níveis no SVG evita poluição
+        visual quando há muitos Casos.
+        """
+        import math
+
+        W, H = 900, 900
+        cx, cy = W / 2, H / 2
+        cor_raiz = "#F15A24"
+        cor_plano = "#2D2D2D"
+        cor_suite = "#6B6B6B"
+
+        planos = list(hierarquia.items())
+        n_planos = max(len(planos), 1)
+        raio_planos = 220
+        raio_suites = 380
+
+        elementos = []
+        # Linhas (desenhadas primeiro, pra ficarem atrás dos nós)
+        linhas = []
+        nos = []
+
+        for i, (nome_plano, suites) in enumerate(planos):
+            ang_plano = (2 * math.pi * i) / n_planos - math.pi / 2
+            px = cx + raio_planos * math.cos(ang_plano)
+            py = cy + raio_planos * math.sin(ang_plano)
+            linhas.append(f'<line x1="{cx}" y1="{cy}" x2="{px}" y2="{py}" stroke="#d8d8d8" stroke-width="2"/>')
+            nos.append(
+                f'<circle cx="{px}" cy="{py}" r="10" fill="{cor_plano}"/>'
+                f'<text x="{px}" y="{py - 16}" text-anchor="middle" style="font-family:sans-serif;font-size:13px;font-weight:600;fill:{cor_plano}">{nome_plano[:28]}</text>'
+            )
+
+            n_suites = max(len(suites), 1)
+            spread = min(math.pi / 2.2, 0.35 * n_suites)  # abre um leque de suítes ao redor do ângulo do plano
+            for j, (nome_suite, casos) in enumerate(suites.items()):
+                if n_suites == 1:
+                    ang_suite = ang_plano
+                else:
+                    ang_suite = ang_plano - spread / 2 + spread * j / (n_suites - 1)
+                sx = cx + raio_suites * math.cos(ang_suite)
+                sy = cy + raio_suites * math.sin(ang_suite)
+                linhas.append(f'<line x1="{px}" y1="{py}" x2="{sx}" y2="{sy}" stroke="#e8e8e8" stroke-width="1.5"/>')
+                label = f"{nome_suite[:24]} ({len(casos)})"
+                anchor = "start" if math.cos(ang_suite) >= 0 else "end"
+                dx = 12 if anchor == "start" else -12
+                nos.append(
+                    f'<circle cx="{sx}" cy="{sy}" r="6" fill="{cor_suite}"/>'
+                    f'<text x="{sx + dx}" y="{sy + 4}" text-anchor="{anchor}" style="font-family:sans-serif;font-size:11px;fill:{cor_suite}">{label}</text>'
+                )
+
+        raiz_svg = (
+            f'<circle cx="{cx}" cy="{cy}" r="34" fill="{cor_raiz}"/>'
+            f'<text x="{cx}" y="{cy + 5}" text-anchor="middle" style="font-family:sans-serif;font-size:14px;font-weight:700;fill:white">{raiz_nome[:16]}</text>'
+        )
+
+        return f"""
+        <div style="width:100%;overflow:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
+        <svg width="100%" viewBox="0 0 {W} {H}" style="max-width:900px;display:block;margin:0 auto;">
+            {''.join(linhas)}
+            {raiz_svg}
+            {''.join(nos)}
+        </svg>
+        </div>
+        """
+
     def _document_store_page(self):
         st.subheader("🗄️ Documentos Armazenados")
         if st.button("← Voltar", key="btn_document_store_back"):
@@ -3750,7 +3956,6 @@ class UserInterface:
 
         texto_documentos = ""
         texto_work_items = ""
-        imagens_coletadas = list(self.state.get('manual_collected_images') or [])
         # Reseta a coleta de imagens a cada renderização — remonta a partir
         # das fontes ativas agora (documentos/Work Items podem ter mudado).
         imagens_coletadas = []
@@ -3859,8 +4064,20 @@ class UserInterface:
                         for wi in selected_wis:
                             try:
                                 imgs, _warns = ado_client.get_test_case_attachments(wi['id'])
+                                # Sem isso, a imagem chegava pra IA sem NENHUM
+                                # contexto — só o nome do arquivo, forçando a
+                                # IA a "chutar" a qual passo ela pertence.
+                                # Usar a Descrição/Critérios de Aceite do
+                                # próprio Work Item já dá um sinal real de
+                                # que conteúdo essa imagem provavelmente
+                                # ilustra, mesmo sem um trecho específico.
+                                contexto_wi = f"Anexo do Work Item {wi['id']} - \"{wi['title']}\"."
+                                if wi.get('description'):
+                                    contexto_wi += f" Descrição: {wi['description'][:300]}"
+                                if wi.get('acceptance_criteria'):
+                                    contexto_wi += f" Critérios de Aceite: {wi['acceptance_criteria'][:300]}"
                                 for idx, (fname, fbytes) in enumerate(imgs):
-                                    imagens_coletadas.append({"filename": f"WI{wi['id']}_{fname}", "bytes": fbytes, "origem": f"Work Item {wi['id']}", "context": ""})
+                                    imagens_coletadas.append({"filename": f"WI{wi['id']}_{fname}", "bytes": fbytes, "origem": f"Work Item {wi['id']}", "context": contexto_wi})
                             except Exception:
                                 pass
                     if imagens_coletadas:
@@ -5706,6 +5923,10 @@ class UserInterface:
 
         if self.state.get('show_document_store_page'):
             self._document_store_page()
+            return
+
+        if self.state.get('show_mindmap_page'):
+            self._mind_map_page()
             return
 
         self._progress()
