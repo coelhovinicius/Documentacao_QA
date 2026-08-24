@@ -2,6 +2,7 @@ import os
 import base64
 import difflib
 import hashlib
+import html
 import json
 import re
 import uuid
@@ -633,6 +634,7 @@ class UserInterface:
             'fetch_wi_report': 'Buscando Work Items do Board',
             'suggest_report_narrative_wi': 'Consultando a IA para sugerir os textos',
             'generate_execution_report_wi': 'Gerando o Relatório de Testes',
+            'fetch_wi_mindmap': 'Buscando Work Items do Board',
             'fetch_wi_manual': 'Buscando Work Items do Board',
             'generate_manual': 'Escrevendo o Manual com IA',
             'build_manual_pdf': 'Montando o PDF do Manual',
@@ -3632,13 +3634,13 @@ class UserInterface:
             return
 
         st.caption(
-            "Visualiza a hierarquia Plano → Suíte → Caso de Teste como um mapa mental — a "
-            "partir da sessão atual, ou de um grupo de documentos já armazenado."
+            "Visualiza a hierarquia como um mapa mental — a partir da sessão atual, de um "
+            "grupo de documentos já armazenado, ou de Work Items escolhidos direto no Azure DevOps."
         )
 
         origem = st.radio(
             "Origem dos dados",
-            options=["📋 Sessão atual", "🗄️ Grupo armazenado"],
+            options=["📋 Sessão atual", "🗄️ Grupo armazenado", "🎯 Work Items escolhidos"],
             index=0,
             key="mindmap_origem_radio",
             horizontal=True,
@@ -3659,7 +3661,7 @@ class UserInterface:
                 for suite in plano.get('suites', []):
                     nome_suite = suite.get('nome', '(sem nome)')
                     hierarquia[nome_plano][nome_suite] = list(suite.get('casos', []))
-        else:
+        elif origem.startswith("🗄️"):
             store = DocumentStore(self.config.turso_database_url, self.config.turso_auth_token)
             try:
                 with st.spinner("Carregando grupos armazenados..."):
@@ -3700,6 +3702,107 @@ class UserInterface:
                 st.error(f"❌ Não foi possível ler o CSV armazenado: {error}")
                 return
 
+        else:  # 🎯 Work Items escolhidos
+            conn = self._setup_azure_devops_connection(show_area_path_picker=False)
+            if conn is None:
+                return
+            ado_client, ado_org, ado_project, _default_area_path = conn
+            raiz_nome = ado_project
+
+            st.markdown("##### 📁 Area Path(s) (opcional)")
+            if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+                area_path_options = self.state.get('ado_available_area_paths') or []
+            else:
+                try:
+                    with st.spinner("Buscando Area Paths do projeto..."):
+                        area_path_options = ado_client.list_area_paths()
+                    self.state.set('ado_available_area_paths', area_path_options)
+                    self.state.set('ado_area_paths_project', ado_project)
+                except Exception as error:
+                    st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                    area_path_options = []
+
+            col_ap, col_btn = st.columns(2)
+            with col_ap:
+                area_paths = st.multiselect(
+                    "Area Path(s)", options=area_path_options,
+                    key="mindmap_area_paths_select",
+                    help="Deixe vazio pra considerar o projeto inteiro.",
+                )
+            with col_btn:
+                with st.container(key="azure_blue_btn_fetch_wi_mindmap"):
+                    st.button(
+                        "🔄 Buscar Work Items",
+                        key="btn_fetch_wi_mindmap",
+                        on_click=self.trigger_action,
+                        args=("fetch_wi_mindmap",),
+                        use_container_width=True,
+                    )
+            if self.state.get('current_action') == 'fetch_wi_mindmap' and not self.state.get('show_interrupt_modal'):
+                try:
+                    paths_to_search = area_paths or [ado_project]
+                    with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
+                        items_by_id = {}
+                        for ap in paths_to_search:
+                            for item in ado_client.fetch_work_items_by_area_path(ap):
+                                items_by_id[item["id"]] = item
+                        self.state.set('mindmap_board_items', list(items_by_id.values()))
+                    self.state.set('mindmap_wi_hierarquia', {})
+                    if not items_by_id:
+                        st.warning("Nenhum Work Item encontrado.")
+                except Exception as error:
+                    st.error(f"❌ Não foi possível buscar Work Items: {error}")
+                self.clear_action()
+                st.rerun()
+
+            board_items = self.state.get('mindmap_board_items') or []
+            if not board_items:
+                st.caption("Busque os Work Items acima pra continuar.")
+                return
+
+            wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
+            selected_labels = st.multiselect(
+                "🎯 Work Items a incluir no mapa mental",
+                options=list(wi_labels.keys()),
+                key="mindmap_wi_select",
+                help="O mapa usa os Casos de Teste já vinculados a cada Work Item selecionado (relação 'Tests').",
+            )
+            selected_wis = [wi_labels[l] for l in selected_labels]
+
+            with st.container(key="azure_blue_btn_gerar_mindmap_wi"):
+                st.button(
+                    "🧠 Gerar Mapa Mental",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=self.state.get('is_processing') or not selected_wis,
+                    key="btn_gerar_mindmap_wi",
+                    on_click=self.trigger_action,
+                    args=("gerar_mindmap_wi",),
+                )
+            if not selected_wis:
+                st.caption("Selecione ao menos um Work Item acima pra habilitar o botão.")
+
+            if self.state.get('current_action') == 'gerar_mindmap_wi' and not self.state.get('show_interrupt_modal'):
+                hierarquia_wi = {}
+                with st.spinner(f"Buscando Casos de Teste vinculados a {len(selected_wis)} Work Item(s)..."):
+                    for wi in selected_wis:
+                        try:
+                            casos = ado_client.get_test_cases_for_work_item(wi['id'])
+                        except Exception:
+                            casos = []
+                        nome_plano = f"{wi['id']} - {wi['title']}"
+                        hierarquia_wi[nome_plano] = {"Casos vinculados": [c['titulo'] for c in casos]}
+                self.state.set('mindmap_wi_hierarquia', hierarquia_wi)
+                self.state.set('mindmap_wi_raiz_nome', raiz_nome)
+                self.clear_action()
+                st.rerun()
+
+            hierarquia = self.state.get('mindmap_wi_hierarquia') or {}
+            raiz_nome = self.state.get('mindmap_wi_raiz_nome') or raiz_nome
+            if not hierarquia:
+                st.caption("Clique em '🧠 Gerar Mapa Mental' acima pra montar o mapa a partir dos Work Items escolhidos.")
+                return
+
         if not hierarquia:
             st.warning("Não encontrei nenhum Plano/Suíte/Caso pra montar o mapa mental.")
             return
@@ -3709,8 +3812,8 @@ class UserInterface:
         total_casos = sum(len(c) for s in hierarquia.values() for c in s.values())
         st.caption(f"{total_planos} Plano(s), {total_suites} Suíte(s), {total_casos} Caso(s) de Teste.")
 
-        svg = self._svg_mind_map(raiz_nome, hierarquia)
-        st.markdown(self._flatten_html(svg), unsafe_allow_html=True)
+        arvore = self._html_collapsible_tree(raiz_nome, hierarquia)
+        st.markdown(self._flatten_html(arvore), unsafe_allow_html=True)
 
         with st.expander("📋 Ver lista completa (texto)"):
             for plano, suites in hierarquia.items():
@@ -3746,72 +3849,74 @@ class UserInterface:
         return hierarquia
 
     @staticmethod
-    def _svg_mind_map(raiz_nome: str, hierarquia: dict) -> str:
+    def _html_collapsible_tree(raiz_nome: str, hierarquia: dict) -> str:
         """
-        Mapa mental radial simples: raiz no centro, Planos no primeiro
-        anel, Suítes no segundo anel (rótulo já mostra a contagem de
-        Casos). Lista de Casos completa fica disponível como texto, logo
-        abaixo do desenho — manter só 2 níveis no SVG evita poluição
-        visual quando há muitos Casos.
+        Árvore recolhível: raiz -> Planos/Work Items (expandíveis
+        independentemente, um por um) -> Suítes (se houver mais de uma)
+        -> Casos. Puro HTML/CSS (<details>/<summary> nativos do
+        navegador) — sem JavaScript nenhum, funciona só com st.markdown.
+
+        Cresce verticalmente (com scroll natural do navegador), não em
+        círculo — escala bem pra qualquer quantidade de Work
+        Items/Planos, diferente da versão radial anterior (que ficava
+        enorme e ilegível a partir de ~20 nós).
         """
-        import math
+        def esc(s):
+            return html.escape(str(s))
 
-        W, H = 900, 900
-        cx, cy = W / 2, H / 2
-        cor_raiz = "#F15A24"
-        cor_plano = "#2D2D2D"
-        cor_suite = "#6B6B6B"
+        linhas_planos = []
+        for nome_plano, suites in hierarquia.items():
+            total_casos = sum(len(c) for c in suites.values())
+            n_suites = len(suites)
 
-        planos = list(hierarquia.items())
-        n_planos = max(len(planos), 1)
-        raio_planos = 220
-        raio_suites = 380
-
-        elementos = []
-        # Linhas (desenhadas primeiro, pra ficarem atrás dos nós)
-        linhas = []
-        nos = []
-
-        for i, (nome_plano, suites) in enumerate(planos):
-            ang_plano = (2 * math.pi * i) / n_planos - math.pi / 2
-            px = cx + raio_planos * math.cos(ang_plano)
-            py = cy + raio_planos * math.sin(ang_plano)
-            linhas.append(f'<line x1="{cx}" y1="{cy}" x2="{px}" y2="{py}" stroke="#d8d8d8" stroke-width="2"/>')
-            nos.append(
-                f'<circle cx="{px}" cy="{py}" r="10" fill="{cor_plano}"/>'
-                f'<text x="{px}" y="{py - 16}" text-anchor="middle" style="font-family:sans-serif;font-size:13px;font-weight:600;fill:{cor_plano}">{nome_plano[:28]}</text>'
-            )
-
-            n_suites = max(len(suites), 1)
-            spread = min(math.pi / 2.2, 0.35 * n_suites)  # abre um leque de suítes ao redor do ângulo do plano
-            for j, (nome_suite, casos) in enumerate(suites.items()):
-                if n_suites == 1:
-                    ang_suite = ang_plano
-                else:
-                    ang_suite = ang_plano - spread / 2 + spread * j / (n_suites - 1)
-                sx = cx + raio_suites * math.cos(ang_suite)
-                sy = cy + raio_suites * math.sin(ang_suite)
-                linhas.append(f'<line x1="{px}" y1="{py}" x2="{sx}" y2="{sy}" stroke="#e8e8e8" stroke-width="1.5"/>')
-                label = f"{nome_suite[:24]} ({len(casos)})"
-                anchor = "start" if math.cos(ang_suite) >= 0 else "end"
-                dx = 12 if anchor == "start" else -12
-                nos.append(
-                    f'<circle cx="{sx}" cy="{sy}" r="6" fill="{cor_suite}"/>'
-                    f'<text x="{sx + dx}" y="{sy + 4}" text-anchor="{anchor}" style="font-family:sans-serif;font-size:11px;fill:{cor_suite}">{label}</text>'
-                )
-
-        raiz_svg = (
-            f'<circle cx="{cx}" cy="{cy}" r="34" fill="{cor_raiz}"/>'
-            f'<text x="{cx}" y="{cy + 5}" text-anchor="middle" style="font-family:sans-serif;font-size:14px;font-weight:700;fill:white">{raiz_nome[:16]}</text>'
-        )
+            if n_suites <= 1:
+                # Só uma "Suíte" (comum no modo Work Items, que usa uma
+                # única Suíte sintética) — lista os Casos direto, sem uma
+                # camada intermediária redundante.
+                casos = next(iter(suites.values())) if suites else []
+                itens_casos = "".join(f'<li class="caso">✅ {esc(c)}</li>' for c in casos) or '<li class="vazio">Nenhum Caso vinculado</li>'
+                linhas_planos.append(f"""
+                    <details class="plano">
+                        <summary>🔹 {esc(nome_plano)} <span class="contagem">({total_casos})</span></summary>
+                        <ul class="lista-casos">{itens_casos}</ul>
+                    </details>
+                """)
+            else:
+                blocos_suites = []
+                for nome_suite, casos in suites.items():
+                    itens_casos = "".join(f'<li class="caso">✅ {esc(c)}</li>' for c in casos) or '<li class="vazio">Nenhum Caso</li>'
+                    blocos_suites.append(f"""
+                        <details class="suite">
+                            <summary>▫️ {esc(nome_suite)} <span class="contagem">({len(casos)})</span></summary>
+                            <ul class="lista-casos">{itens_casos}</ul>
+                        </details>
+                    """)
+                linhas_planos.append(f"""
+                    <details class="plano">
+                        <summary>🔹 {esc(nome_plano)} <span class="contagem">({total_casos})</span></summary>
+                        <div class="suites-container">{"".join(blocos_suites)}</div>
+                    </details>
+                """)
 
         return f"""
-        <div style="width:100%;overflow:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
-        <svg width="100%" viewBox="0 0 {W} {H}" style="max-width:900px;display:block;margin:0 auto;">
-            {''.join(linhas)}
-            {raiz_svg}
-            {''.join(nos)}
-        </svg>
+        <style>
+            .qa-tree {{ font-family: sans-serif; background: #fdfcf8; border-radius: 8px; padding: 16px 20px; }}
+            .qa-tree .raiz {{ font-size: 18px; font-weight: 700; color: white; background: #F15A24;
+                               display: inline-block; padding: 8px 18px; border-radius: 8px; margin-bottom: 12px; }}
+            .qa-tree details.plano {{ border-left: 3px solid #F15A24; margin: 6px 0 6px 8px; padding-left: 14px; }}
+            .qa-tree details.suite {{ border-left: 2px solid #d8d8d8; margin: 4px 0 4px 8px; padding-left: 12px; }}
+            .qa-tree summary {{ cursor: pointer; font-size: 14px; font-weight: 600; color: #2D2D2D; padding: 4px 0; }}
+            .qa-tree details.suite summary {{ font-size: 13px; font-weight: 500; color: #6B6B6B; }}
+            .qa-tree summary::marker {{ color: #F15A24; }}
+            .qa-tree .contagem {{ color: #999; font-weight: 400; font-size: 12px; }}
+            .qa-tree .lista-casos {{ list-style: none; margin: 4px 0 8px 22px; padding: 0; }}
+            .qa-tree .lista-casos li.caso {{ font-size: 13px; color: #444; padding: 3px 0; border-left: 2px solid #ececec; padding-left: 10px; margin-bottom: 2px; }}
+            .qa-tree .lista-casos li.vazio {{ font-size: 12px; color: #aaa; font-style: italic; padding-left: 10px; }}
+            .qa-tree .suites-container {{ margin-left: 6px; }}
+        </style>
+        <div class="qa-tree">
+            <div class="raiz">🗂️ {esc(raiz_nome)}</div>
+            {''.join(linhas_planos)}
         </div>
         """
 
