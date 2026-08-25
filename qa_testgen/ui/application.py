@@ -3812,8 +3812,12 @@ class UserInterface:
         total_casos = sum(len(c) for s in hierarquia.values() for c in s.values())
         st.caption(f"{total_planos} Plano(s), {total_suites} Suíte(s), {total_casos} Caso(s) de Teste.")
 
-        arvore = self._html_collapsible_tree(raiz_nome, hierarquia)
-        st.markdown(self._flatten_html(arvore), unsafe_allow_html=True)
+        # Altura dinâmica: com tudo recolhido por padrão, só a raiz +
+        # Planos aparecem de cara — dá uma folga extra pra quando a
+        # pessoa for expandindo ramos.
+        altura_estimada = max(500, 90 + total_planos * 62)
+        componente_html = self._d3_mind_map_html(raiz_nome, hierarquia)
+        components.html(componente_html, height=altura_estimada, scrolling=True)
 
         with st.expander("📋 Ver lista completa (texto)"):
             for plano, suites in hierarquia.items():
@@ -3849,76 +3853,228 @@ class UserInterface:
         return hierarquia
 
     @staticmethod
-    def _html_collapsible_tree(raiz_nome: str, hierarquia: dict) -> str:
+    def _d3_mind_map_html(raiz_nome: str, hierarquia: dict) -> str:
         """
-        Árvore recolhível: raiz -> Planos/Work Items (expandíveis
-        independentemente, um por um) -> Suítes (se houver mais de uma)
-        -> Casos. Puro HTML/CSS (<details>/<summary> nativos do
-        navegador) — sem JavaScript nenhum, funciona só com st.markdown.
+        Mapa mental horizontal, expandível ramo a ramo — raiz -> Planos/
+        Work Items -> Suítes (se houver mais de uma) -> Casos. Usa D3.js
+        (via CDN) pra layout em árvore com conectores curvos e clique
+        pra expandir/recolher, no estilo do NotebookLM.
 
-        Cresce verticalmente (com scroll natural do navegador), não em
-        círculo — escala bem pra qualquer quantidade de Work
-        Items/Planos, diferente da versão radial anterior (que ficava
-        enorme e ilegível a partir de ~20 nós).
+        Cresce da esquerda pra direita; tudo começa recolhido (só a raiz
+        aberta) e cada ramo expande independente. Título de cada nó quebra
+        em até 2 linhas (e trunca com "…" só se ainda não couber) — some
+        com tooltip nativo do navegador mostrando o texto completo, como
+        reforço extra. Zoom com Ctrl+scroll (ou pinça de trackpad, que o
+        navegador reporta como wheel+ctrlKey) e arrastar pra mover; botão
+        de resetar o zoom/posição.
+
+        Testado com screenshot real de navegador (Playwright): título
+        longo quebrando em 2 linhas sem estourar a caixa, tooltip com
+        texto completo presente, Ctrl+scroll aplicando zoom corretamente
+        (e scroll comum SEM Ctrl não fazendo nada), e o botão de reset
+        restaurando a visão original.
         """
-        def esc(s):
-            return html.escape(str(s))
-
-        linhas_planos = []
-        for nome_plano, suites in hierarquia.items():
+        def montar_no(nome, suites=None, casos=None):
+            if casos is not None:
+                return {"name": nome}
             total_casos = sum(len(c) for c in suites.values())
             n_suites = len(suites)
-
             if n_suites <= 1:
-                # Só uma "Suíte" (comum no modo Work Items, que usa uma
-                # única Suíte sintética) — lista os Casos direto, sem uma
-                # camada intermediária redundante.
-                casos = next(iter(suites.values())) if suites else []
-                itens_casos = "".join(f'<li class="caso">✅ {esc(c)}</li>' for c in casos) or '<li class="vazio">Nenhum Caso vinculado</li>'
-                linhas_planos.append(f"""
-                    <details class="plano">
-                        <summary>🔹 {esc(nome_plano)} <span class="contagem">({total_casos})</span></summary>
-                        <ul class="lista-casos">{itens_casos}</ul>
-                    </details>
-                """)
-            else:
-                blocos_suites = []
-                for nome_suite, casos in suites.items():
-                    itens_casos = "".join(f'<li class="caso">✅ {esc(c)}</li>' for c in casos) or '<li class="vazio">Nenhum Caso</li>'
-                    blocos_suites.append(f"""
-                        <details class="suite">
-                            <summary>▫️ {esc(nome_suite)} <span class="contagem">({len(casos)})</span></summary>
-                            <ul class="lista-casos">{itens_casos}</ul>
-                        </details>
-                    """)
-                linhas_planos.append(f"""
-                    <details class="plano">
-                        <summary>🔹 {esc(nome_plano)} <span class="contagem">({total_casos})</span></summary>
-                        <div class="suites-container">{"".join(blocos_suites)}</div>
-                    </details>
-                """)
+                casos_unicos = next(iter(suites.values())) if suites else []
+                return {
+                    "name": nome, "count": total_casos,
+                    "children": [montar_no(c, casos=True) for c in casos_unicos],
+                }
+            return {
+                "name": nome, "count": total_casos,
+                "children": [
+                    {
+                        "name": nome_suite, "count": len(casos_suite),
+                        "children": [montar_no(c, casos=True) for c in casos_suite],
+                    }
+                    for nome_suite, casos_suite in suites.items()
+                ],
+            }
 
-        return f"""
-        <style>
-            .qa-tree {{ font-family: sans-serif; background: #fdfcf8; border-radius: 8px; padding: 16px 20px; }}
-            .qa-tree .raiz {{ font-size: 18px; font-weight: 700; color: white; background: #F15A24;
-                               display: inline-block; padding: 8px 18px; border-radius: 8px; margin-bottom: 12px; }}
-            .qa-tree details.plano {{ border-left: 3px solid #F15A24; margin: 6px 0 6px 8px; padding-left: 14px; }}
-            .qa-tree details.suite {{ border-left: 2px solid #d8d8d8; margin: 4px 0 4px 8px; padding-left: 12px; }}
-            .qa-tree summary {{ cursor: pointer; font-size: 14px; font-weight: 600; color: #2D2D2D; padding: 4px 0; }}
-            .qa-tree details.suite summary {{ font-size: 13px; font-weight: 500; color: #6B6B6B; }}
-            .qa-tree summary::marker {{ color: #F15A24; }}
-            .qa-tree .contagem {{ color: #999; font-weight: 400; font-size: 12px; }}
-            .qa-tree .lista-casos {{ list-style: none; margin: 4px 0 8px 22px; padding: 0; }}
-            .qa-tree .lista-casos li.caso {{ font-size: 13px; color: #444; padding: 3px 0; border-left: 2px solid #ececec; padding-left: 10px; margin-bottom: 2px; }}
-            .qa-tree .lista-casos li.vazio {{ font-size: 12px; color: #aaa; font-style: italic; padding-left: 10px; }}
-            .qa-tree .suites-container {{ margin-left: 6px; }}
-        </style>
-        <div class="qa-tree">
-            <div class="raiz">🗂️ {esc(raiz_nome)}</div>
-            {''.join(linhas_planos)}
-        </div>
-        """
+        dados = {
+            "name": raiz_nome,
+            "children": [montar_no(nome_plano, suites) for nome_plano, suites in hierarquia.items()],
+        }
+        dados_json = json.dumps(dados, ensure_ascii=False)
+
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  body {{ margin: 0; font-family: sans-serif; background: #fdfcf8; overflow: hidden; }}
+  .node rect {{ fill: #2D2D2D; stroke: none; rx: 6; ry: 6; }}
+  .node.raiz rect {{ fill: #F15A24; }}
+  .node text {{ fill: white; font-size: 12px; font-weight: 600; }}
+  .node .contagem {{ fill: #cfcfcf; font-size: 11px; font-weight: 400; }}
+  .link {{ fill: none; stroke: #bbb; stroke-width: 1.5px; }}
+  .toggle {{ cursor: pointer; }}
+  .toggle circle {{ fill: #555; }}
+  .toggle text {{ fill: white; font-size: 11px; text-anchor: middle; dominant-baseline: middle; }}
+  svg {{ cursor: grab; }}
+  #btn-reset-zoom {{
+    position: fixed; top: 8px; right: 8px; z-index: 10; padding: 6px 12px;
+    border-radius: 6px; border: 1px solid #ccc; background: white; cursor: pointer; font-size: 12px;
+  }}
+</style></head>
+<body>
+<button id="btn-reset-zoom">🔍 Resetar zoom</button>
+<div id="tree-container"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+const dadosMapa = {dados_json};
+const largura_no = 280, altura_no = 52, espaco_vertical = 60, espaco_horizontal = 340;
+
+function quebrarTexto(textSelection, larguraMax, maxLinhas) {{
+  textSelection.each(function () {{
+    const text = d3.select(this);
+    const textoOriginal = text.text();
+    const palavras = textoOriginal.split(/\\s+/);
+    text.text(null);
+
+    const tspanTeste = text.append("tspan");
+    let linhas = [];
+    let linhaAtual = [];
+
+    for (const palavra of palavras) {{
+      const tentativa = [...linhaAtual, palavra].join(" ");
+      tspanTeste.text(tentativa);
+      if (tspanTeste.node().getComputedTextLength() > larguraMax && linhaAtual.length > 0) {{
+        linhas.push(linhaAtual.join(" "));
+        linhaAtual = [palavra];
+        if (linhas.length >= maxLinhas) break;
+      }} else {{
+        linhaAtual = [...linhaAtual, palavra];
+      }}
+    }}
+    if (linhas.length < maxLinhas) {{
+      linhas.push(linhaAtual.join(" "));
+    }}
+    linhas = linhas.slice(0, maxLinhas);
+
+    const palavrasUsadas = linhas.join(" ").split(/\\s+/).length;
+    if (palavrasUsadas < palavras.length) {{
+      let ultimaLinha = linhas[linhas.length - 1];
+      tspanTeste.text(ultimaLinha + "…");
+      while (tspanTeste.node().getComputedTextLength() > larguraMax && ultimaLinha.length > 1) {{
+        ultimaLinha = ultimaLinha.slice(0, -1);
+        tspanTeste.text(ultimaLinha + "…");
+      }}
+      linhas[linhas.length - 1] = ultimaLinha + "…";
+    }}
+    tspanTeste.remove();
+
+    const lineHeight = 1.15;
+    linhas.forEach((linha, i) => {{
+      text.append("tspan")
+        .attr("x", 12).attr("y", 0)
+        .attr("dy", (i * lineHeight - (linhas.length - 1) * lineHeight / 2 + 0.35) + "em")
+        .text(linha);
+    }});
+  }});
+}}
+
+function construir(dados) {{
+  const root = d3.hierarchy(dados);
+  root.x0 = 0;
+  root.y0 = 0;
+  root.descendants().forEach((d, i) => {{
+    d.id = i;
+    d._children = d.children;
+    if (d.depth > 0) d.children = null;
+  }});
+
+  const svg = d3.select("#tree-container").append("svg")
+    .attr("width", "100vw").attr("height", "100vh");
+
+  const gZoom = svg.append("g");    // recebe o transform de zoom/pan
+  const gTree = gZoom.append("g");  // recebe o transform de posicionamento da árvore
+
+  const zoom = d3.zoom()
+    .filter((event) => {{
+      if (event.type === "wheel") return event.ctrlKey;  // só zoom com Ctrl+scroll (pinça de trackpad chega como wheel+ctrlKey no navegador)
+      return !event.button;  // arrastar (pan) sempre liberado
+    }})
+    .scaleExtent([0.3, 2.5])
+    .on("zoom", (event) => {{ gZoom.attr("transform", event.transform); }});
+
+  svg.call(zoom);
+  document.getElementById("btn-reset-zoom").addEventListener("click", () => {{
+    svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+  }});
+
+  const treeLayout = d3.tree().nodeSize([altura_no + espaco_vertical, espaco_horizontal]);
+
+  function bezier(d) {{
+    const sx = d.source.y + largura_no, sy = d.source.x;
+    const tx = d.target.y, ty = d.target.x;
+    const mx = (sx + tx) / 2;
+    return `M${{sx}},${{sy}} C${{mx}},${{sy}} ${{mx}},${{ty}} ${{tx}},${{ty}}`;
+  }}
+
+  const alturaViewport = document.querySelector("#tree-container").getBoundingClientRect().height || 600;
+
+  function atualizar(source) {{
+    const duracao = 300;
+    treeLayout(root);
+    const nos = root.descendants();
+    const links = root.links();
+
+    // Recentraliza verticalmente TODA VEZ (não só na primeira
+    // renderização) — sem isso, expandir um ramo cujos filhos se
+    // espalham bastante pra cima/baixo do pai deixava parte deles fora
+    // da área visível, sem rolar automaticamente pra mostrar.
+    let minX = Infinity, maxX = -Infinity;
+    nos.forEach(d => {{ minX = Math.min(minX, d.x); maxX = Math.max(maxX, d.x); }});
+    const centroAtual = (minX + maxX) / 2;
+    gTree.transition().duration(duracao).attr("transform", `translate(40, ${{alturaViewport / 2 - centroAtual}})`);
+
+    const node = gTree.selectAll("g.node").data(nos, d => d.id);
+    const nodeEnter = node.enter().append("g")
+      .attr("class", d => "node" + (d.depth === 0 ? " raiz" : ""))
+      .attr("transform", d => `translate(${{source.y0 || 0}},${{source.x0 || 0}})`);
+
+    nodeEnter.append("rect").attr("width", largura_no).attr("height", altura_no).attr("y", -altura_no / 2);
+    nodeEnter.append("title").text(d => d.data.name);  // tooltip nativo com o texto completo
+
+    const texto = nodeEnter.append("text").attr("x", 12).text(d => d.data.name);
+    texto.call(quebrarTexto, largura_no - (24 + 34), 2);
+
+    nodeEnter.filter(d => d.data.count !== undefined).append("text")
+      .attr("class", "contagem").attr("x", largura_no - 34).attr("y", -8).attr("dy", "0.35em")
+      .text(d => `(${{d.data.count}})`);
+
+    const toggle = nodeEnter.filter(d => d._children).append("g")
+      .attr("class", "toggle").attr("transform", `translate(${{largura_no + 10}}, 0)`)
+      .on("click", (event, d) => {{ d.children = d.children ? null : d._children; atualizar(d); }});
+    toggle.append("circle").attr("r", 10);
+    toggle.append("text").text(d => d.children ? "−" : "+");
+
+    const nodeUpdate = nodeEnter.merge(node);
+    nodeUpdate.transition().duration(duracao).attr("transform", d => `translate(${{d.y}},${{d.x}})`);
+    nodeUpdate.select(".toggle text").text(d => d.children ? "−" : "+");
+
+    node.exit().transition().duration(duracao)
+      .attr("transform", d => `translate(${{source.y}},${{source.x}})`).remove();
+
+    const link = gTree.selectAll("path.link").data(links, d => d.target.id);
+    const linkEnter = link.enter().insert("path", "g").attr("class", "link")
+      .attr("d", d => bezier({{source: {{x: source.x0 || 0, y: source.y0 || 0}}, target: {{x: source.x0 || 0, y: source.y0 || 0}}}}));
+    linkEnter.merge(link).transition().duration(duracao).attr("d", bezier);
+    link.exit().transition().duration(duracao)
+      .attr("d", d => bezier({{source: {{x: source.x, y: source.y}}, target: {{x: source.x, y: source.y}}}})).remove();
+
+    nos.forEach(d => {{ d.x0 = d.x; d.y0 = d.y; }});
+  }}
+
+  atualizar(root);
+}}
+
+construir(dadosMapa);
+</script>
+</body></html>"""
 
     def _document_store_page(self):
         st.subheader("🗄️ Documentos Armazenados")
