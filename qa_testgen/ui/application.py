@@ -201,6 +201,29 @@ class UserInterface:
             claimed.update(livres)
         return result
 
+    def _render_project_name_field(self, default_value: str, field_key: str, label: str = "Nome do Projeto *") -> str:
+        """
+        Campo obrigatório de nome de projeto, pré-preenchido com um
+        valor padrão (ex.: nome do projeto no Azure DevOps) — com
+        destaque visual discreto (borda colorida na lateral, via CSS
+        compartilhado), sinalizando "isso foi puxado automaticamente,
+        confira se é o que você quer" sem precisar de texto explicativo.
+
+        field_key: chave única por fluxo (cada um usa a sua, sem misturar)
+        Retorna o valor atual do campo.
+        """
+        if f"{field_key}_input" not in st.session_state:
+            st.session_state[f"{field_key}_input"] = self.state.get(field_key) or default_value or ""
+
+        with st.container(key=f"project_name_highlight_{field_key}"):
+            valor = st.text_input(
+                label,
+                key=f"{field_key}_input",
+                disabled=self.state.get('is_processing'),
+            )
+        self.state.set(field_key, valor)
+        return valor
+
     def _render_document_storage_section(self, fluxo_origem: str, nome_projeto: str, arquivos: list):
         """
         Seção "Armazenar esta documentação" — reaproveitada em qualquer
@@ -397,6 +420,16 @@ class UserInterface:
                     background-color: #99C7EA !important;
                     border-color: #99C7EA !important;
                     color: #FFFFFF !important;
+                }
+
+                /* Destaque discreto pra campos pré-preenchidos automaticamente
+                   (ex.: Nome do Projeto puxado do Azure DevOps) — sinaliza
+                   visualmente "confira/ajuste isso" sem precisar de texto
+                   explicativo, e sem destoar do resto da UI. */
+                div[class*="st-key-project_name_highlight_"] {
+                    border-left: 3px solid #F15A24;
+                    padding-left: 10px;
+                    margin-bottom: 4px;
                 }
 
                 .stMarkdown table, .stMarkdown table th, .stMarkdown table td,
@@ -3497,14 +3530,11 @@ class UserInterface:
             st.caption("Nenhum Work Item selecionado ainda — escolha acima.")
             return
 
+        selected_wis_full = [wi_labels[label] for label in selected_labels]
+
         col_name, col_amb = st.columns(2)
         with col_name:
-            project_name = st.text_input(
-                "Nome do Test Plan *",
-                value=self.state.get('project_name') or ado_project,
-                key="wigen_project_name_input",
-                disabled=self.state.get('is_processing'),
-            )
+            project_name = self._render_project_name_field(ado_project, "project_name", "Nome do Test Plan *")
         with col_amb:
             ambiente = st.radio(
                 "Ambiente dos Testes *",
@@ -3769,18 +3799,27 @@ class UserInterface:
             )
             selected_wis = [wi_labels[l] for l in selected_labels]
 
+            if selected_wis:
+                raiz_nome_sugerida = self._render_project_name_field(
+                    ado_project, "mindmap_wi_nome_raiz", "Nome do Projeto/Iniciativa *"
+                )
+            else:
+                raiz_nome_sugerida = ""
+
             with st.container(key="azure_blue_btn_gerar_mindmap_wi"):
                 st.button(
                     "🧠 Gerar Mapa Mental",
                     type="primary",
                     use_container_width=True,
-                    disabled=self.state.get('is_processing') or not selected_wis,
+                    disabled=self.state.get('is_processing') or not selected_wis or not raiz_nome_sugerida.strip(),
                     key="btn_gerar_mindmap_wi",
                     on_click=self.trigger_action,
                     args=("gerar_mindmap_wi",),
                 )
             if not selected_wis:
                 st.caption("Selecione ao menos um Work Item acima pra habilitar o botão.")
+            elif not raiz_nome_sugerida.strip():
+                st.caption("Preencha o Nome do Projeto/Iniciativa acima pra habilitar o botão.")
 
             if self.state.get('current_action') == 'gerar_mindmap_wi' and not self.state.get('show_interrupt_modal'):
                 hierarquia_wi = {}
@@ -3793,7 +3832,7 @@ class UserInterface:
                         nome_plano = f"{wi['id']} - {wi['title']}"
                         hierarquia_wi[nome_plano] = {"Casos vinculados": [c['titulo'] for c in casos]}
                 self.state.set('mindmap_wi_hierarquia', hierarquia_wi)
-                self.state.set('mindmap_wi_raiz_nome', raiz_nome)
+                self.state.set('mindmap_wi_raiz_nome', raiz_nome_sugerida.strip())
                 self.clear_action()
                 st.rerun()
 
@@ -4217,6 +4256,7 @@ construir(dadosMapa);
 
         texto_documentos = ""
         texto_work_items = ""
+        selected_wis = []
         # Reseta a coleta de imagens a cada renderização — remonta a partir
         # das fontes ativas agora (documentos/Work Items podem ter mudado).
         imagens_coletadas = []
@@ -4352,14 +4392,10 @@ construir(dadosMapa);
             return
 
         st.divider()
-        default_nome = self.state.get('project_name') or "Manual de Testes"
-        nome_manual = st.text_input(
-            "Nome do Manual *",
-            value=self.state.get('manual_nome') or default_nome,
-            key="manual_nome_input",
-            disabled=self.state.get('is_processing'),
-        )
-        self.state.set('manual_nome', nome_manual)
+        if usa_work_items:
+            nome_manual = self._render_project_name_field(ado_project, "manual_nome", "Nome do Manual *")
+        else:
+            nome_manual = self._render_project_name_field("", "manual_nome", "Nome do Manual *")
 
         with st.container(key="azure_blue_btn_generate_manual"):
             st.button(
@@ -4741,6 +4777,9 @@ construir(dadosMapa);
             st.caption("Selecione ao menos um Work Item acima.")
             return
 
+        default_nome_relatorio = ", ".join(area_paths) if area_paths else ado_project
+        nome_relatorio = self._render_project_name_field(default_nome_relatorio, "report_wi_project_name", "Nome do Projeto *")
+
         with st.container(key="azure_blue_btn_suggest_narrative_wi"):
             st.button(
                 "🤖 Sugerir Contexto/Escopo/Conclusão com IA",
@@ -4760,16 +4799,16 @@ construir(dadosMapa);
                 "📊 Buscar Resultados e Gerar Relatório",
                 type="primary",
                 use_container_width=True,
-                disabled=self.state.get('is_processing') or not contexto or not escopo_proposito or not conclusao or not status_manual,
+                disabled=self.state.get('is_processing') or not nome_relatorio.strip() or not contexto or not escopo_proposito or not conclusao or not status_manual,
                 key="btn_generate_execution_report_wi",
                 on_click=self.trigger_action,
                 args=("generate_execution_report_wi",),
             )
-        if not (contexto and escopo_proposito and conclusao and status_manual):
-            st.caption("Preencha Contexto, Escopo e Propósito, Conclusão, e escolha o Status para habilitar a geração.")
+        if not nome_relatorio.strip() or not (contexto and escopo_proposito and conclusao and status_manual):
+            st.caption("Preencha o Nome do Projeto, Contexto, Escopo e Propósito, Conclusão, e escolha o Status para habilitar a geração.")
 
         if self.state.get('current_action') == 'generate_execution_report_wi' and not self.state.get('show_interrupt_modal'):
-            self._generate_execution_report_from_work_items(ado_client, selected_wis, contexto, ambiente, escopo_proposito, conclusao, proximos_passos, ado_project, area_paths, status_manual)
+            self._generate_execution_report_from_work_items(ado_client, selected_wis, contexto, ambiente, escopo_proposito, conclusao, proximos_passos, ado_project, area_paths, status_manual, nome_relatorio.strip())
 
         report_bytes = self.state.get('report_pdf_bytes')
         if report_bytes:
@@ -4845,17 +4884,17 @@ construir(dadosMapa);
 
     def _generate_execution_report_from_work_items(self, ado_client, work_items: list, contexto: str, ambiente: str,
                                                       escopo_proposito: str, conclusao: str, proximos_passos: str,
-                                                      ado_project: str = "", area_paths: list = None, status_manual: str = ""):
+                                                      ado_project: str = "", area_paths: list = None, status_manual: str = "",
+                                                      nome_relatorio: str = ""):
         area_paths = area_paths or []
         warnings = []
         evidencias_por_caso = {}
         casos = []
-        wi_names = ", ".join(wi['title'] for wi in work_items)
 
-        if area_paths:
-            report_project_name = ", ".join(area_paths)
-        else:
-            report_project_name = self.state.get('project_name') or ado_project or wi_names
+        # Nome já confirmado pela pessoa na tela (com sugestão da IA
+        # baseada nos Work Items disponível) — não recorre mais a um
+        # nome genérico do Azure DevOps como valor de fallback silencioso.
+        report_project_name = nome_relatorio or "Projeto"
 
         try:
             wi_ids_with_cases = set()
