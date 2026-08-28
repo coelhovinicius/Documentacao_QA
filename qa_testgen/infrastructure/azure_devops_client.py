@@ -52,11 +52,11 @@ class AzureDevOpsClient:
         # transitória (rede local, throttling do lado do Azure DevOps) e
         # passa numa segunda tentativa, sem precisar que o usuário reenvie.
         retry_strategy = Retry(
-            total=4,
-            connect=4,
-            read=4,
-            status=4,
-            backoff_factor=0.8,  # 0.8s, 1.6s, 3.2s, 6.4s entre tentativas
+            total=2,
+            connect=2,
+            read=2,
+            status=2,
+            backoff_factor=0.5,  # 0.5s, 1s entre tentativas — antes era até 12s de espera somada (4 tentativas, 0.8/1.6/3.2/6.4s), o que multiplicava demais qualquer lentidão real da API
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET", "POST", "PATCH"],
             raise_on_status=False,
@@ -644,17 +644,24 @@ class AzureDevOpsClient:
     # nomes de estado (ex.: "Done", "Closed", "Removed").
     EXCLUDED_STATES = {"Finalizado", "Backlog"}
 
-    def fetch_work_items_by_area_path(self, area_path: str) -> list:
+    def fetch_work_items_by_area_path(self, area_path: str, excluded_states: set = None) -> list:
         """
         Busca (via WIQL) todos os Work Items dentro do Area Path informado,
-        exceto os tipos em EXCLUDED_TYPES e os estados em EXCLUDED_STATES.
+        exceto os tipos em EXCLUDED_TYPES e os estados em excluded_states
+        (usa EXCLUDED_STATES por padrão, se não for passado outro conjunto
+        — fluxos de geração/vínculo de Casos usam o padrão, já que não faz
+        sentido gerar Caso novo pra algo "Finalizado"; fluxos de
+        visualização/relatório devem passar um conjunto mais permissivo,
+        já que "Finalizado" costuma ser justamente o status mais
+        importante de aparecer ali).
         Retorna uma lista de dicts: {'id': int, 'title': str, 'type': str, 'state': str}
         """
+        excluded_states = self.EXCLUDED_STATES if excluded_states is None else excluded_states
         project_esc = self._wiql_escape(self.project)
         area_esc = self._wiql_escape(area_path or self.project)
 
         state_filters = " ".join(
-            f"AND [System.State] <> '{self._wiql_escape(s)}'" for s in self.EXCLUDED_STATES
+            f"AND [System.State] <> '{self._wiql_escape(s)}'" for s in excluded_states
         )
         type_filters = " ".join(
             f"AND [System.WorkItemType] <> '{self._wiql_escape(t)}'" for t in self.EXCLUDED_TYPES
@@ -699,7 +706,7 @@ class AzureDevOpsClient:
             f = wi.get("fields", {})
             state = f.get("System.State", "")
             wi_type = f.get("System.WorkItemType", "")
-            if state in self.EXCLUDED_STATES or wi_type in self.EXCLUDED_TYPES:
+            if state in excluded_states or wi_type in self.EXCLUDED_TYPES:
                 # Rede de segurança: mesmo que o filtro do WIQL falhe por
                 # algum motivo (nome de campo customizado, cache, etc.),
                 # ainda garante que esses itens nunca aparecem na lista.

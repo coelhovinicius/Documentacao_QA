@@ -16,8 +16,39 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
+from reportlab.pdfgen import canvas as _reportlab_canvas
 
 from qa_testgen.config import TZ_BR, LOGO_PATH, COR_LARANJA, COR_LARANJA_CLARO, COR_CINZA_ESC, COR_BRANCO
+
+
+class _NumberedCanvas(_reportlab_canvas.Canvas):
+    """
+    Canvas que guarda cada página em vez de finalizar na hora — só no
+    save() final (quando o total de páginas do documento inteiro já é
+    conhecido) é que desenha o "Página X de Y" em cada uma. Sem isso,
+    o rodapé só consegue saber a página ATUAL, nunca o total.
+    """
+    def __init__(self, *args, **kwargs):
+        _reportlab_canvas.Canvas.__init__(self, *args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self._draw_page_count(total_pages)
+            _reportlab_canvas.Canvas.showPage(self)
+        _reportlab_canvas.Canvas.save(self)
+
+    def _draw_page_count(self, total_pages):
+        w, _h = A4
+        self.setFont('Helvetica', 9)
+        self.setFillColor(colors.HexColor('#8A8A8A'))
+        self.drawRightString(w - 18, 18, f"Página {self._pageNumber} de {total_pages}")
 
 COR_AVISO_FUNDO = colors.HexColor('#FFF4E5')
 COR_AVISO_BORDA = colors.HexColor('#F5A623')
@@ -67,10 +98,8 @@ class ManualPdfGenerator:
         canvas.line(18, h - 52, w - 18, h - 52)
 
         canvas.setFont('Helvetica', 9)
-        footer = f"Página {doc.page}"
         if author_name:
-            footer += f"  —  Gerado por {author_name}"
-        canvas.drawCentredString(w / 2, 18, footer)
+            canvas.drawString(18, 18, f"Gerado por {author_name}")
         canvas.restoreState()
 
     @classmethod
@@ -161,5 +190,5 @@ class ManualPdfGenerator:
 
             story.append(Spacer(1, 22))
 
-        doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+        doc.build(story, onFirstPage=on_page, onLaterPages=on_page, canvasmaker=_NumberedCanvas)
         return buffer.getvalue()

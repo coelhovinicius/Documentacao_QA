@@ -268,6 +268,34 @@ class UserInterface:
                     except Exception as error:
                         st.error(f"❌ Não foi possível armazenar: {error}")
 
+    def _flash_error(self, message: str) -> None:
+        """
+        Guarda uma mensagem de erro pra mostrar DEPOIS do próximo rerun.
+        NUNCA use st.error() direto bem antes de um st.rerun() na mesma
+        passada — o rerun descarta a mensagem antes da pessoa conseguir
+        ver (ela pisca por uma fração de segundo, ou nem isso). Use isso
+        no lugar, e a mensagem aparece corretamente na resposta seguinte.
+        """
+        self.state.set('_flash_message', {'kind': 'error', 'text': message})
+
+    def _flash_warning(self, message: str) -> None:
+        """Mesma ideia de _flash_error, mas pra st.warning()."""
+        self.state.set('_flash_message', {'kind': 'warning', 'text': message})
+
+    def _render_flash_message(self) -> None:
+        """
+        Mostra (uma única vez) a mensagem guardada por _flash_error/
+        _flash_warning, se houver — chamado no topo do render principal,
+        depois de qualquer st.rerun() já ter acontecido.
+        """
+        flash = self.state.get('_flash_message')
+        if flash:
+            self.state.set('_flash_message', None)
+            if flash['kind'] == 'error':
+                st.error(f"❌ {flash['text']}")
+            elif flash['kind'] == 'warning':
+                st.warning(flash['text'])
+
     def _navigate_or_confirm(self, pending_state_updates: dict):
         """
         Aplica as mudanças de estado em `pending_state_updates` (ex.: trocar
@@ -1154,9 +1182,9 @@ class UserInterface:
                         items = list(items_by_id.values())
                     self.state.set('step1_board_items', items)
                     if not items:
-                        st.warning("Nenhum Work Item encontrado" + (" nessas Area Paths." if area_paths_step1 else " neste projeto."))
+                        self._flash_warning("Nenhum Work Item encontrado" + (" nessas Area Paths." if area_paths_step1 else " neste projeto."))
                 except Exception as error:
-                    st.error(f"❌ Não foi possível buscar Work Items: {error}")
+                    self._flash_error(f"Não foi possível buscar Work Items: {error}")
                 self.clear_action()
                 st.rerun()
 
@@ -1464,7 +1492,7 @@ class UserInterface:
                     )
                     casos = resp.get('casos_de_teste') or []
                     if not casos:
-                        st.error("❌ Lista de casos vazia.")
+                        self._flash_error("Lista de casos vazia.")
                         self.clear_action()
                     else:
                         self.state.set('test_cases', casos)
@@ -1636,7 +1664,7 @@ class UserInterface:
                     )
                     plans = resp.get('planos_de_teste') or []
                     if not plans:
-                        st.error("❌ Nenhum Plano de Teste retornado. Valide a chave JSON de saída no n8n.")
+                        self._flash_error("Nenhum Plano de Teste retornado. Valide a chave JSON de saída no n8n.")
                         self.clear_action()
                     else:
                         self.state.set('test_plans', plans)
@@ -1943,9 +1971,9 @@ class UserInterface:
                 self.state.set('ado_static_existing_plans', existing)
                 self.state.set('ado_static_existing_plans_path', fallback_area_path)
             except AzureDevOpsError as error:
-                st.error(f"❌ Não foi possível buscar Test Plans existentes: {error}")
+                self._flash_error(f"Não foi possível buscar Test Plans existentes: {error}")
             except Exception as error:
-                st.error(f"❌ Erro inesperado: {error}")
+                self._flash_error(f"Erro inesperado: {error}")
             self.clear_action()
             st.rerun()
 
@@ -2198,7 +2226,7 @@ class UserInterface:
                     plans = ado_client.list_test_plans()
                 self.state.set('ado_recon_available_plans', plans)
             except Exception as error:
-                st.error(f"❌ Não foi possível buscar Test Plans: {error}")
+                self._flash_error(f"Não foi possível buscar Test Plans: {error}")
             self.clear_action()
             st.rerun()
 
@@ -2239,9 +2267,9 @@ class UserInterface:
                 self.state.set('ado_recon_old_plan_id', old_plan_id)
                 self.state.set('ado_recon_old_cases', old_cases)
                 if not old_cases:
-                    st.warning("Nenhum Caso de Teste encontrado nesse Test Plan.")
+                    self._flash_warning("Nenhum Caso de Teste encontrado nesse Test Plan.")
             except Exception as error:
-                st.error(f"❌ Não foi possível buscar os Casos de Teste: {error}")
+                self._flash_error(f"Não foi possível buscar os Casos de Teste: {error}")
             self.clear_action()
             st.rerun()
 
@@ -2276,7 +2304,7 @@ class UserInterface:
                 self.state.set('ado_recon_board_items', list(items_by_id.values()))
                 self.state.set('ado_recon_wi_case_links', {})
             except Exception as error:
-                st.error(f"❌ Não foi possível buscar Work Items: {error}")
+                self._flash_error(f"Não foi possível buscar Work Items: {error}")
             self.clear_action()
             st.rerun()
 
@@ -2322,7 +2350,7 @@ class UserInterface:
                     widget_key = f"ado_recon_multiselect_{item['id']}"
                     st.session_state[widget_key] = [c for c in links.get(str(item['id']), []) if c in [oc['titulo'] for oc in old_cases]]
             except Exception as error:
-                st.error(f"❌ Não foi possível obter a sugestão da IA: {error}")
+                self._flash_error(f"Não foi possível obter a sugestão da IA: {error}")
             self.clear_action()
             st.rerun()
 
@@ -2655,10 +2683,10 @@ class UserInterface:
                 self.state.set('ado_available_projects', projects)
                 self.state.set('ado_projects_org', ado_org)
             except AzureDevOpsError as error:
-                st.error(f"❌ Não foi possível listar projetos de '{ado_org}': {error}")
+                self._flash_error(f"Não foi possível listar projetos de '{ado_org}': {error}")
                 self.state.set('ado_available_projects', [])
             except Exception as error:
-                st.error(f"❌ Erro inesperado ao listar projetos: {error}")
+                self._flash_error(f"Erro inesperado ao listar projetos: {error}")
                 self.state.set('ado_available_projects', [])
             self.clear_action()
             st.rerun()
@@ -2730,7 +2758,7 @@ class UserInterface:
                 st.error(f"❌ Não foi possível listar os Area Paths de '{ado_project}': {error}")
                 self.state.set('ado_available_area_paths', [])
             except Exception as error:
-                st.error(f"❌ Erro inesperado ao listar Area Paths: {error}")
+                self._flash_error(f"Erro inesperado ao listar Area Paths: {error}")
                 self.state.set('ado_available_area_paths', [])
             self.state.set('ado_area_paths_project', ado_project)
             self.state.set('ado_area_path_choice', PLACEHOLDER)
@@ -2847,11 +2875,11 @@ class UserInterface:
                 if 'ado_wi_matching_multiselect' in st.session_state:
                     del st.session_state['ado_wi_matching_multiselect']
                 if not items:
-                    st.warning("Nenhum Work Item encontrado" + (" nessas Area Paths (além de Test Cases)." if area_paths else " nesse projeto (além de Test Cases)."))
+                    self._flash_warning("Nenhum Work Item encontrado" + (" nessas Area Paths (além de Test Cases)." if area_paths else " nesse projeto (além de Test Cases)."))
             except AzureDevOpsError as error:
-                st.error(f"❌ {error}")
+                self._flash_error(f"{error}")
             except Exception as error:
-                st.error(f"❌ Erro inesperado: {error}")
+                self._flash_error(f"Erro inesperado: {error}")
             self.clear_action()
             st.rerun()
 
@@ -3198,9 +3226,9 @@ class UserInterface:
                     self.state.set('ado_existing_plans_in_path', existing)
                     self.state.set('ado_existing_plans_area_path', paths_key)
                 except AzureDevOpsError as error:
-                    st.error(f"❌ Não foi possível buscar Test Plans existentes: {error}")
+                    self._flash_error(f"Não foi possível buscar Test Plans existentes: {error}")
                 except Exception as error:
-                    st.error(f"❌ Erro inesperado: {error}")
+                    self._flash_error(f"Erro inesperado: {error}")
                 self.clear_action()
                 st.rerun()
 
@@ -3495,10 +3523,10 @@ class UserInterface:
                 if not items:
                     st.warning("Nenhum Work Item encontrado" + (" nessas Area Paths." if area_paths else " neste projeto."))
             except AzureDevOpsError as error:
-                st.error(f"❌ {error}")
+                self._flash_error(f"{error}")
                 self.state.set('wigen_board_items', [])
             except Exception as error:
-                st.error(f"❌ Erro inesperado: {error}")
+                self._flash_error(f"Erro inesperado: {error}")
                 self.state.set('wigen_board_items', [])
             self.clear_action()
             st.rerun()
@@ -3649,7 +3677,7 @@ class UserInterface:
                     self._log("Gerar a partir de Work Items", "Passo 1", log_detail)
                     self._run_analysis(text, project_name.strip())
             except Exception as error:
-                st.error(f"❌ Erro ao buscar detalhes dos Work Items: {error}")
+                self._flash_error(f"Erro ao buscar detalhes dos Work Items: {error}")
                 self.clear_action()
 
     def _mind_map_page(self):
@@ -3774,14 +3802,14 @@ class UserInterface:
                     with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
                         items_by_id = {}
                         for ap in paths_to_search:
-                            for item in ado_client.fetch_work_items_by_area_path(ap):
+                            for item in ado_client.fetch_work_items_by_area_path(ap, excluded_states=set()):
                                 items_by_id[item["id"]] = item
                         self.state.set('mindmap_board_items', list(items_by_id.values()))
                     self.state.set('mindmap_wi_hierarquia', {})
                     if not items_by_id:
-                        st.warning("Nenhum Work Item encontrado.")
+                        self._flash_warning("Nenhum Work Item encontrado.")
                 except Exception as error:
-                    st.error(f"❌ Não foi possível buscar Work Items: {error}")
+                    self._flash_error(f"Não foi possível buscar Work Items: {error}")
                 self.clear_action()
                 st.rerun()
 
@@ -4330,11 +4358,11 @@ construir(dadosMapa);
                     with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
                         items_by_id = {}
                         for ap in paths_to_search:
-                            for item in ado_client.fetch_work_items_by_area_path(ap):
+                            for item in ado_client.fetch_work_items_by_area_path(ap, excluded_states=set()):
                                 items_by_id[item["id"]] = item
                     self.state.set('manual_board_items', list(items_by_id.values()))
                 except Exception as error:
-                    st.error(f"❌ Não foi possível buscar Work Items: {error}")
+                    self._flash_error(f"Não foi possível buscar Work Items: {error}")
                 self.clear_action()
                 st.rerun()
 
@@ -4429,7 +4457,7 @@ construir(dadosMapa);
                 if total_sugeridas:
                     st.toast(f"✅ A IA já sugeriu {total_sugeridas} imagem(ns) distribuída(s) pelos passos — revise abaixo.")
             except Exception as error:
-                st.error(f"❌ Não foi possível gerar o manual: {error}")
+                self._flash_error(f"Não foi possível gerar o manual: {error}")
             self.clear_action()
             st.rerun()
 
@@ -4520,7 +4548,7 @@ construir(dadosMapa);
                 self.state.set('manual_pdf_bytes', pdf_bytes)
                 self._log("Gerar Manual de Testes (UAT)", "Manual de Testes", f"'{titulo_manual}' — {len(passos_editados)} passo(s)")
             except Exception as error:
-                st.error(f"❌ Não foi possível gerar o PDF: {error}")
+                self._flash_error(f"Não foi possível gerar o PDF: {error}")
             self.clear_action()
             st.rerun()
 
@@ -4594,7 +4622,7 @@ construir(dadosMapa);
                 st.session_state['wiql_titulo_input'] = resp.get('titulo_sugerido', '')
                 st.session_state['wiql_text_input'] = resp.get('wiql', '')
             except Exception as error:
-                st.error(f"❌ Não foi possível gerar a query: {error}")
+                self._flash_error(f"Não foi possível gerar a query: {error}")
             self.clear_action()
             st.rerun()
 
@@ -4647,10 +4675,10 @@ construir(dadosMapa);
                     preview['details'] = ado_client.get_work_items_basic_fields(ids_to_show) if ids_to_show else []
                 self.state.set('wiql_preview_result', preview)
             except AzureDevOpsError as error:
-                st.error(f"❌ Erro na query: {error}")
+                self._flash_error(f"Erro na query: {error}")
                 self.state.set('wiql_preview_result', None)
             except Exception as error:
-                st.error(f"❌ Erro inesperado: {error}")
+                self._flash_error(f"Erro inesperado: {error}")
                 self.state.set('wiql_preview_result', None)
             self.clear_action()
             st.rerun()
@@ -4731,16 +4759,16 @@ construir(dadosMapa);
                 with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
                     items_by_id = {}
                     for ap in paths_to_search:
-                        for item in ado_client.fetch_work_items_by_area_path(ap):
+                        for item in ado_client.fetch_work_items_by_area_path(ap, excluded_states={"Backlog"}):
                             items_by_id[item["id"]] = item
                     items = list(items_by_id.values())
                 self.state.set('report_wi_board_items', items)
                 if not items:
-                    st.warning("Nenhum Work Item encontrado" + (" nessas Area Paths." if area_paths else " neste projeto."))
+                    self._flash_warning("Nenhum Work Item encontrado" + (" nessas Area Paths." if area_paths else " neste projeto."))
             except AzureDevOpsError as error:
-                st.error(f"❌ {error}")
+                self._flash_error(str(error))
             except Exception as error:
-                st.error(f"❌ Erro inesperado: {error}")
+                self._flash_error(f"Erro inesperado: {error}")
             self.clear_action()
             st.rerun()
 
@@ -4877,7 +4905,7 @@ construir(dadosMapa);
             st.session_state['report_conclusao_input'] = conclusao
             st.session_state['report_proximos_input'] = proximos
         except Exception as error:
-            st.error(f"❌ Não foi possível gerar a sugestão da IA: {error}")
+            self._flash_error(f"Não foi possível gerar a sugestão da IA: {error}")
 
         self.clear_action()
         st.rerun()
@@ -4993,9 +5021,9 @@ construir(dadosMapa);
                 f"{len(work_items)} Work Item(s) — status: {status_geral}",
             )
         except AzureDevOpsError as error:
-            st.error(f"❌ {error}")
+            self._flash_error(f"{error}")
         except Exception as error:
-            st.error(f"❌ Erro inesperado: {error}")
+            self._flash_error(f"Erro inesperado: {error}")
         self.clear_action()
         st.rerun()
 
@@ -5112,10 +5140,10 @@ construir(dadosMapa);
                 if not plans:
                     st.warning("Nenhum Test Plan encontrado" + (" nessas Area Paths." if area_paths else " neste projeto."))
             except AzureDevOpsError as error:
-                st.error(f"❌ {error}")
+                self._flash_error(f"{error}")
                 self.state.set('report_available_plans', [])
             except Exception as error:
-                st.error(f"❌ Erro inesperado: {error}")
+                self._flash_error(f"Erro inesperado: {error}")
                 self.state.set('report_available_plans', [])
             self.clear_action()
             st.rerun()
@@ -5275,7 +5303,7 @@ construir(dadosMapa);
             st.session_state['report_conclusao_input'] = conclusao
             st.session_state['report_proximos_input'] = proximos
         except Exception as error:
-            st.error(f"❌ Não foi possível gerar a sugestão da IA: {error}")
+            self._flash_error(f"Não foi possível gerar a sugestão da IA: {error}")
 
         self.clear_action()
         st.rerun()
@@ -5435,9 +5463,9 @@ construir(dadosMapa);
             self.state.set('report_warnings', warnings)
             self._log("Gerar Relatório de Testes", "Relatório de Testes", f"Test Plan(s) '{plan_names}' — status: {status_geral}")
         except AzureDevOpsError as error:
-            st.error(f"❌ {error}")
+            self._flash_error(f"{error}")
         except Exception as error:
-            st.error(f"❌ Erro inesperado ao gerar o relatório: {error}")
+            self._flash_error(f"Erro inesperado ao gerar o relatório: {error}")
 
         self.clear_action()
         st.rerun()
@@ -6175,6 +6203,7 @@ construir(dadosMapa);
         self._inject_ui_styles()
         self._header()
         render_logout_control(self.config)
+        self._render_flash_message()
         
         # Scroll Viewport to Top Tracking System
         current_step = self.state.get('step')

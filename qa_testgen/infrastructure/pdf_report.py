@@ -11,8 +11,40 @@ from reportlab.platypus import (
     Paragraph, Spacer, Table, TableStyle, PageBreak, HRFlowable,
     KeepTogether, SimpleDocTemplate, Image as RLImage,
 )
+from reportlab.pdfgen import canvas as _reportlab_canvas
 
 from qa_testgen.config import TZ_BR, LOGO_PATH, COR_LARANJA, COR_CINZA_ESC, COR_CINZA_MED, COR_LARANJA_CLARO, COR_AZUL_CLARO, COR_CINZA_LIN, COR_BRANCO
+
+
+class _NumberedCanvas(_reportlab_canvas.Canvas):
+    """
+    Canvas que guarda cada página em vez de finalizar na hora — só no
+    save() final (quando o total de páginas do documento inteiro já é
+    conhecido) é que desenha o "Página X de Y" em cada uma. Sem isso,
+    o rodapé só consegue saber a página ATUAL, nunca o total.
+    """
+    def __init__(self, *args, **kwargs):
+        _reportlab_canvas.Canvas.__init__(self, *args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self._draw_page_count(total_pages)
+            _reportlab_canvas.Canvas.showPage(self)
+        _reportlab_canvas.Canvas.save(self)
+
+    def _draw_page_count(self, total_pages):
+        w, _h = A4
+        self.setFont('Helvetica', 7)
+        self.setFillColor(COR_CINZA_MED)
+        self.drawRightString(w - 18, 20, f"Página {self._pageNumber} de {total_pages}")
+
 
 class PdfReportGenerator:
     @staticmethod
@@ -91,7 +123,6 @@ class PdfReportGenerator:
         if author_name:
             footer_left += f" | Gerado por {PdfReportGenerator._esc(author_name)}"
         canvas.drawString(18, 20, footer_left)
-        canvas.drawRightString(w - 18, 20, f"Página {doc.page}")
         canvas.setStrokeColor(COR_LARANJA)
         canvas.setLineWidth(0.8)
         canvas.line(18, 32, w - 18, 32)
@@ -338,7 +369,7 @@ class PdfReportGenerator:
             story.append(st_t)
             story.append(Spacer(1, 14))
 
-        doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+        doc.build(story, onFirstPage=on_page, onLaterPages=on_page, canvasmaker=_NumberedCanvas)
         return buffer.getvalue()
 
     # ------------------------------------------------------------------ #
@@ -590,5 +621,5 @@ class PdfReportGenerator:
             story.append(Paragraph("Próximos Passos e Sugestões", styles['subsection']))
             story.append(Paragraph(cls._esc(proximos_passos).replace(chr(10), '<br/>'), styles['body']))
 
-        doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+        doc.build(story, onFirstPage=on_page, onLaterPages=on_page, canvasmaker=_NumberedCanvas)
         return buffer.getvalue()

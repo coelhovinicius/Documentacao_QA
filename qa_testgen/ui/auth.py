@@ -43,17 +43,55 @@ def _get_users() -> dict:
 _DUMMY_HASH = bcrypt.hashpw(b"senha-invalida-placeholder", bcrypt.gensalt())
 
 
-def _check_credentials(username: str, password: str) -> bool:
+def _get_all_known_usernames(config, client) -> list:
+    """
+    Todos os nomes de usuário conhecidos — os fixos do secrets.toml MAIS
+    os criados dinamicamente pelo admin (banco do n8n). Usado nos
+    dropdowns de "escolher usuário" (aprovador, permissão), pra incluir
+    os dois universos.
+    """
+    nomes = set(_get_users().keys())
+    try:
+        nomes.update(u["username"] for u in client.list_users())
+    except Exception:
+        pass  # se o banco dinâmico falhar, ainda mostra os do secrets.toml
+    return sorted(nomes)
+
+
+def _check_credentials(config, username: str, password: str) -> bool:
+    """
+    Verifica credenciais em duas fontes, nessa ordem:
+    1. secrets.toml (usuários fixos, cadastrados manualmente — inclui o
+       dono do app, que continua SÓ aqui, nunca no banco dinâmico).
+    2. Banco dinâmico (n8n) — usuários criados pelo admin pela tela de
+       Administração, sem precisar editar o secrets.toml.
+    """
     users = _get_users()
-    stored_hash = users.get(username, _DUMMY_HASH.decode())
+    if username in users:
+        stored_hash = users[username]
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+        except (ValueError, TypeError):
+            # Hash mal formatado no secrets.toml (ex.: alguém colocou senha em texto puro)
+            return False
 
     try:
-        is_valid = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
-    except (ValueError, TypeError):
-        # Hash mal formatado no secrets.toml (ex.: alguém colocou senha em texto puro)
+        client = AccessControlClient(config)
+        stored_hash = client.get_user_password_hash(username)
+    except Exception:
+        stored_hash = ""
+
+    if not stored_hash:
+        # Usuário não existe em lugar nenhum — ainda assim faz uma
+        # checagem "dummy", pra não vazar por tempo de resposta se o
+        # username existe ou não.
+        bcrypt.checkpw(password.encode("utf-8"), _DUMMY_HASH)
         return False
 
-    return is_valid and username in users
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -174,6 +212,108 @@ def render_pending_approvals_panel(config):
                         st.error(f"❌ {error}")
 
 
+def _render_user_management_section(config, client, current_username: str):
+    """
+    CRUD completo de usuários — restrito ao dono do app. O dono continua
+    definido só no secrets.toml (nunca aparece aqui pra editar/excluir).
+    Usuários criados aqui ficam no banco dinâmico (n8n), disponíveis pra
+    login imediatamente, sem precisar reiniciar o app.
+    """
+    st.subheader("👤 Administração — Usuários")
+    st.caption(
+        "Cria, redefine senha, ou exclui usuários que podem fazer login no app — "
+        "sem precisar editar o secrets.toml."
+    )
+
+    try:
+        usuarios = client.list_users()
+    except Exception as error:
+        st.error(f"❌ Não foi possível carregar os usuários: {error}")
+        usuarios = []
+
+    if usuarios:
+        st.write("**Usuários cadastrados:**")
+        for u in usuarios:
+            uname = u.get("username", "")
+            criado_em = (u.get("criado_em") or "")[:10]
+            criado_por = u.get("criado_por") or ""
+            with st.container(border=True):
+                st.write(f"**{uname}**")
+                info_criacao = f"Criado em {criado_em}" if criado_em else "Criado"
+                if criado_por:
+                    info_criacao += f" por {criado_por}"
+                st.caption(info_criacao)
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    with st.popover("🔑 Redefinir senha", use_container_width=True):
+                        nova_senha = st.text_input("Nova senha (mín. 8 caracteres)", type="password", key=f"reset_pw_{uname}")
+                        if st.button("Confirmar nova senha", key=f"confirm_reset_pw_{uname}"):
+                            if len(nova_senha) < 8:
+                                st.error("A senha precisa ter pelo menos 8 caracteres.")
+                            else:
+                                try:
+                                    novo_hash = bcrypt.hashpw(nova_senha.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                                    client.update_user_password(uname, novo_hash)
+                                    log_action(config, current_username, "Redefinir Senha", "Administração", f"Redefiniu a senha de {uname}")
+                                    st.success("Senha atualizada.")
+                                    st.rerun()
+                                except Exception as error:
+                                    st.error(f"❌ {error}")
+                with c2:
+                    delete_flag_key = f"confirm_delete_user_{uname}"
+                    if not st.session_state.get(delete_flag_key):
+                        if st.button("🗑️ Excluir usuário", key=f"btn_delete_user_{uname}", use_container_width=True):
+                            st.session_state[delete_flag_key] = True
+                            st.rerun()
+                    else:
+                        st.warning(f"Excluir **{uname}**? Remove login, aprovações e permissões dele. Não pode ser desfeito.")
+                        cc1, cc2 = st.columns(2)
+                        with cc1:
+                            if st.button("✅ Sim, excluir", key=f"confirm_del_{uname}", type="primary", use_container_width=True):
+                                try:
+                                    client.delete_user(uname)
+                                    log_action(config, current_username, "Excluir Usuário", "Administração", f"Excluiu o usuário {uname}")
+                                    st.success(f"{uname} excluído.")
+                                except Exception as error:
+                                    st.error(f"❌ {error}")
+                                st.session_state[delete_flag_key] = False
+                                st.rerun()
+                        with cc2:
+                            if st.button("✖ Cancelar", key=f"cancel_del_{uname}", use_container_width=True):
+                                st.session_state[delete_flag_key] = False
+                                st.rerun()
+    else:
+        st.caption("Nenhum usuário cadastrado ainda.")
+
+    st.divider()
+    with st.form("create_user_form", clear_on_submit=True):
+        st.write("**Cadastrar novo usuário**")
+        novo_username = st.text_input("Nome de usuário")
+        nova_senha = st.text_input("Senha (mínimo 8 caracteres)", type="password")
+        confirmar_senha = st.text_input("Confirmar senha", type="password")
+        submitted = st.form_submit_button("➕ Criar Usuário", type="primary")
+        if submitted:
+            novo_username = novo_username.strip()
+            if not novo_username:
+                st.error("❌ Informe um nome de usuário.")
+            elif novo_username in _get_all_known_usernames(config, client):
+                st.error("❌ Esse nome de usuário já existe.")
+            elif len(nova_senha) < 8:
+                st.error("❌ A senha precisa ter pelo menos 8 caracteres.")
+            elif nova_senha != confirmar_senha:
+                st.error("❌ As senhas não coincidem.")
+            else:
+                try:
+                    novo_hash = bcrypt.hashpw(nova_senha.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                    client.create_user(novo_username, novo_hash, criado_por=current_username)
+                    log_action(config, current_username, "Criar Usuário", "Administração", f"Criou o usuário {novo_username}")
+                    st.success(f"Usuário {novo_username} criado — já pode fazer login.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"❌ {error}")
+
+
 def render_admin_panel(config):
     """
     Solicitações Pendentes fica visível pra qualquer aprovador (dono do app
@@ -187,6 +327,11 @@ def render_admin_panel(config):
     if username != config.owner_username:
         return
 
+    client = AccessControlClient(config)
+
+    st.divider()
+    _render_user_management_section(config, client, username)
+
     st.divider()
     st.subheader("🛡️ Administração — Aprovadores de Acesso")
     st.caption(
@@ -195,7 +340,6 @@ def render_admin_panel(config):
         "se cadastrar."
     )
 
-    client = AccessControlClient(config)
     try:
         approvers = client.list_approvers()
     except Exception as error:
@@ -220,7 +364,7 @@ def render_admin_panel(config):
         st.caption("Nenhum aprovador cadastrado além de você.")
 
     st.divider()
-    known_users = sorted(u for u in _get_users() if u != config.owner_username)
+    known_users = sorted(u for u in _get_all_known_usernames(config, client) if u != config.owner_username)
     with st.form("add_approver_form", clear_on_submit=True):
         if known_users:
             new_username = st.selectbox("Usuário a cadastrar como aprovador", options=known_users)
@@ -229,8 +373,8 @@ def render_admin_panel(config):
         submitted = st.form_submit_button("➕ Adicionar Aprovador", type="primary")
         if submitted and new_username and new_username.strip():
             new_username = new_username.strip()
-            if new_username not in _get_users():
-                st.error("❌ Esse nome de usuário não existe nas credenciais configuradas (`secrets.toml`).")
+            if new_username not in _get_all_known_usernames(config, client):
+                st.error("❌ Esse nome de usuário não existe (nem no `secrets.toml`, nem nos usuários cadastrados).")
             else:
                 try:
                     client.add_approver(new_username)
@@ -379,7 +523,7 @@ def _render_permission_management(config, client, permission: str, title: str):
     else:
         st.caption("Ninguém além de você tem acesso ainda.")
 
-    known_users = sorted(u for u in _get_users() if u != config.owner_username)
+    known_users = sorted(u for u in _get_all_known_usernames(config, client) if u != config.owner_username)
     with st.form(f"add_perm_form_{permission}", clear_on_submit=True):
         if known_users:
             new_username = st.selectbox("Usuário a autorizar", options=known_users, key=f"perm_select_{permission}")
@@ -388,8 +532,8 @@ def _render_permission_management(config, client, permission: str, title: str):
         submitted = st.form_submit_button("➕ Autorizar", type="primary", key=f"perm_submit_{permission}")
         if submitted and new_username and new_username.strip():
             new_username = new_username.strip()
-            if new_username not in _get_users():
-                st.error("❌ Esse nome de usuário não existe nas credenciais configuradas (`secrets.toml`).")
+            if new_username not in _get_all_known_usernames(config, client):
+                st.error("❌ Esse nome de usuário não existe (nem no `secrets.toml`, nem nos usuários cadastrados).")
             else:
                 try:
                     client.grant_permission(new_username, permission)
@@ -495,7 +639,7 @@ def _render_login_form(config):
 
         if submitted:
             username = username.strip()
-            if _check_credentials(username, password):
+            if _check_credentials(config, username, password):
                 if username == config.owner_username:
                     _grant_session(config, username)
                     st.rerun()

@@ -1,6 +1,11 @@
 import requests
 
 
+class AccessControlError(Exception):
+    """Erro vindo do backend de controle de acesso (n8n) — ex.: usuário já existe, usuário não encontrado."""
+    pass
+
+
 class AccessControlClient:
     """
     Cliente do webhook de controle de acesso (n8n) — cadastro de aprovadores
@@ -134,21 +139,31 @@ class AccessControlClient:
         return data.get("sessions", [])
 
     # ------------------------------------------------------------------ #
-    # Sessões — o ID que vai na URL é opaco (curto, aleatório); o dado
-    # real (quem é, quando expira) fica guardado aqui, não na URL.
+    # Usuários gerenciados dinamicamente — CRUD completo, feito pelo
+    # dono/admin do app pela tela de Administração. O dono continua
+    # definido SÓ no secrets.toml, nunca aqui. O hash de senha nunca é
+    # exibido em tela — list_users() nunca traz esse campo de volta.
     # ------------------------------------------------------------------ #
-    def create_session(self, session_id: str, username: str, expires_at_iso: str) -> None:
-        self._call("create_session", session_id=session_id, username=username, expires_at=expires_at_iso)
+    def list_users(self) -> list:
+        data = self._call("list_users")
+        return data.get("users", [])
 
-    def get_session(self, session_id: str) -> dict:
-        return self._call("get_session", session_id=session_id)
+    def create_user(self, username: str, password_hash: str, criado_por: str = "") -> None:
+        data = self._call("create_user", username=username, password_hash=password_hash, criado_por=criado_por)
+        if not data.get("ok"):
+            raise AccessControlError(data.get("error", "Não foi possível criar o usuário."))
 
-    def renew_session(self, session_id: str, expires_at_iso: str) -> None:
-        self._call("renew_session", session_id=session_id, expires_at=expires_at_iso)
+    def update_user_password(self, username: str, password_hash: str) -> None:
+        data = self._call("update_user_password", username=username, password_hash=password_hash)
+        if not data.get("ok"):
+            raise AccessControlError(data.get("error", "Não foi possível atualizar a senha."))
 
-    def revoke_session(self, session_id: str) -> None:
-        self._call("revoke_session", session_id=session_id)
+    def delete_user(self, username: str) -> None:
+        data = self._call("delete_user", username=username)
+        if not data.get("ok"):
+            raise AccessControlError(data.get("error", "Não foi possível excluir o usuário."))
 
-    def list_sessions(self) -> list:
-        data = self._call("list_sessions")
-        return data.get("sessions", [])
+    def get_user_password_hash(self, username: str) -> str:
+        """Só usado internamente pra validar login — nunca exibido em tela."""
+        data = self._call("get_user_password_hash", username=username)
+        return data.get("password_hash") or ""
