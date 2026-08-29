@@ -383,51 +383,51 @@ def _render_user_management_section(config, client, current_username: str):
         st.caption("Nenhum usuário cadastrado ainda.")
 
     st.divider()
-    with st.form("create_user_form", clear_on_submit=True):
-        st.write("**Cadastrar novo usuário**")
-        novo_nome_criar = st.text_input("Nome *")
-        novo_email_criar = st.text_input("E-mail *")
-        novo_username_criar = st.text_input("Usuário de login (nick) *")
-        nova_senha_criar = st.text_input("Senha *", type="password")
-        confirmar_senha_criar = st.text_input("Confirmar senha *", type="password")
-        acesso_direto_criar = st.radio(
-            "Modo de acesso", options=["Precisa de aprovação do admin", "Acesso direto (sem aprovação)"],
-            horizontal=True,
-        ) == "Acesso direto (sem aprovação)"
-        is_approver_criar = st.checkbox("É aprovador (pode aprovar/negar acesso de outros usuários)")
-        st.write("**Permissões:**")
-        permissoes_criar = []
-        cols_criar = st.columns(len(_PERMISSOES_CONHECIDAS))
-        for i, (perm_key, perm_label) in enumerate(_PERMISSOES_CONHECIDAS):
-            with cols_criar[i]:
-                if st.checkbox(perm_label, key=f"criar_perm_{perm_key}"):
-                    permissoes_criar.append(perm_key)
+    with st.expander("➕ Cadastrar novo usuário"):
+        with st.form("create_user_form", clear_on_submit=True):
+            novo_nome_criar = st.text_input("Nome *")
+            novo_email_criar = st.text_input("E-mail *")
+            novo_username_criar = st.text_input("Usuário de login (nick) *")
+            nova_senha_criar = st.text_input("Senha *", type="password")
+            confirmar_senha_criar = st.text_input("Confirmar senha *", type="password")
+            acesso_direto_criar = st.radio(
+                "Modo de acesso", options=["Precisa de aprovação do admin", "Acesso direto (sem aprovação)"],
+                horizontal=True,
+            ) == "Acesso direto (sem aprovação)"
+            is_approver_criar = st.checkbox("É aprovador (pode aprovar/negar acesso de outros usuários)")
+            st.write("**Permissões:**")
+            permissoes_criar = []
+            cols_criar = st.columns(len(_PERMISSOES_CONHECIDAS))
+            for i, (perm_key, perm_label) in enumerate(_PERMISSOES_CONHECIDAS):
+                with cols_criar[i]:
+                    if st.checkbox(perm_label, key=f"criar_perm_{perm_key}"):
+                        permissoes_criar.append(perm_key)
 
-        submitted = st.form_submit_button("➕ Criar Usuário", type="primary")
-        if submitted:
-            novo_username_criar = novo_username_criar.strip()
-            if not novo_nome_criar.strip() or not novo_email_criar.strip() or not novo_username_criar or not nova_senha_criar:
-                st.error("❌ Nome, e-mail, usuário e senha são todos obrigatórios.")
-            elif novo_username_criar in _get_all_known_usernames(config, client):
-                st.error("❌ Esse nome de usuário já existe.")
-            elif nova_senha_criar != confirmar_senha_criar:
-                st.error("❌ As senhas não coincidem.")
-            else:
-                try:
-                    novo_hash = bcrypt.hashpw(nova_senha_criar.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                    client.create_user(
-                        novo_username_criar, novo_hash, novo_email_criar.strip(), novo_nome_criar.strip(),
-                        acesso_direto=acesso_direto_criar, criado_por=current_username,
-                    )
-                    if is_approver_criar:
-                        client.add_approver(novo_username_criar)
-                    for perm_key in permissoes_criar:
-                        client.grant_permission(novo_username_criar, perm_key)
-                    log_action(config, current_username, "Criar Usuário", "Administração", f"Criou o usuário {novo_username_criar}")
-                    st.success(f"Usuário {novo_username_criar} criado — já pode fazer login.")
-                    st.rerun()
-                except Exception as error:
-                    st.error(f"❌ {error}")
+            submitted = st.form_submit_button("➕ Criar Usuário", type="primary")
+            if submitted:
+                novo_username_criar = novo_username_criar.strip()
+                if not novo_nome_criar.strip() or not novo_email_criar.strip() or not novo_username_criar or not nova_senha_criar:
+                    st.error("❌ Nome, e-mail, usuário e senha são todos obrigatórios.")
+                elif novo_username_criar in _get_all_known_usernames(config, client):
+                    st.error("❌ Esse nome de usuário já existe.")
+                elif nova_senha_criar != confirmar_senha_criar:
+                    st.error("❌ As senhas não coincidem.")
+                else:
+                    try:
+                        novo_hash = bcrypt.hashpw(nova_senha_criar.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                        client.create_user(
+                            novo_username_criar, novo_hash, novo_email_criar.strip(), novo_nome_criar.strip(),
+                            acesso_direto=acesso_direto_criar, criado_por=current_username,
+                        )
+                        if is_approver_criar:
+                            client.add_approver(novo_username_criar)
+                        for perm_key in permissoes_criar:
+                            client.grant_permission(novo_username_criar, perm_key)
+                        log_action(config, current_username, "Criar Usuário", "Administração", f"Criou o usuário {novo_username_criar}")
+                        st.success(f"Usuário {novo_username_criar} criado — já pode fazer login.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"❌ {error}")
 
 
 def render_admin_panel(config):
