@@ -58,40 +58,48 @@ def _get_all_known_usernames(config, client) -> list:
     return sorted(nomes)
 
 
-def _check_credentials(config, username: str, password: str) -> bool:
+def _check_credentials(config, username: str, password: str) -> tuple:
     """
     Verifica credenciais em duas fontes, nessa ordem:
     1. secrets.toml (usuários fixos, cadastrados manualmente — inclui o
        dono do app, que continua SÓ aqui, nunca no banco dinâmico).
     2. Banco dinâmico (n8n) — usuários criados pelo admin pela tela de
        Administração, sem precisar editar o secrets.toml.
+
+    Retorna (is_valid, acesso_direto) — acesso_direto só é relevante pra
+    usuários do banco dinâmico (indica se esse usuário específico pula a
+    fila de aprovação, escolha feita pelo admin no cadastro dele).
     """
     users = _get_users()
     if username in users:
         stored_hash = users[username]
         try:
-            return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+            is_valid = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
         except (ValueError, TypeError):
             # Hash mal formatado no secrets.toml (ex.: alguém colocou senha em texto puro)
-            return False
+            is_valid = False
+        return is_valid, False
 
     try:
         client = AccessControlClient(config)
-        stored_hash = client.get_user_password_hash(username)
+        login_info = client.get_user_login_info(username)
+        stored_hash = login_info["password_hash"]
+        acesso_direto = login_info["acesso_direto"]
     except Exception:
-        stored_hash = ""
+        stored_hash, acesso_direto = "", False
 
     if not stored_hash:
         # Usuário não existe em lugar nenhum — ainda assim faz uma
         # checagem "dummy", pra não vazar por tempo de resposta se o
         # username existe ou não.
         bcrypt.checkpw(password.encode("utf-8"), _DUMMY_HASH)
-        return False
+        return False, False
 
     try:
-        return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+        is_valid = bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
     except (ValueError, TypeError):
-        return False
+        is_valid = False
+    return is_valid, acesso_direto
 
 
 # --------------------------------------------------------------------------- #
@@ -212,17 +220,29 @@ def render_pending_approvals_panel(config):
                         st.error(f"❌ {error}")
 
 
+_PERMISSOES_CONHECIDAS = [
+    ("azure_devops", "🔗 Azure DevOps (Passo 7)"),
+    ("execution_report", "📊 Relatório de Testes (Passo 8)"),
+]
+
+
 def _render_user_management_section(config, client, current_username: str):
     """
     CRUD completo de usuários — restrito ao dono do app. O dono continua
     definido só no secrets.toml (nunca aparece aqui pra editar/excluir).
     Usuários criados aqui ficam no banco dinâmico (n8n), disponíveis pra
     login imediatamente, sem precisar reiniciar o app.
+
+    Cada usuário tem um formulário único (nome, e-mail, nick de login,
+    senha, modo de acesso, status de aprovador, e todas as permissões)
+    — um só botão salva tudo de uma vez, com confirmação antes de
+    gravar. Nome, e-mail, usuário e senha são SEMPRE obrigatórios,
+    tanto pra criar quanto pra editar.
     """
-    st.subheader("👤 Administração — Usuários")
+    st.subheader("👤 Usuários")
     st.caption(
-        "Cria, redefine senha, ou exclui usuários que podem fazer login no app — "
-        "sem precisar editar o secrets.toml."
+        "Cria e edita usuários que podem fazer login no app — sem precisar editar o "
+        "secrets.toml. Nome, e-mail, usuário e senha são sempre obrigatórios."
     )
 
     try:
@@ -232,83 +252,179 @@ def _render_user_management_section(config, client, current_username: str):
         usuarios = []
 
     if usuarios:
-        st.write("**Usuários cadastrados:**")
         for u in usuarios:
             uname = u.get("username", "")
+            email_atual = u.get("email", "")
+            nome_atual = u.get("nome", "")
+            acesso_direto_atual = bool(u.get("acesso_direto"))
+            is_approver_atual = bool(u.get("is_approver"))
+            permissoes_atuais = set(u.get("permissions") or [])
             criado_em = (u.get("criado_em") or "")[:10]
             criado_por = u.get("criado_por") or ""
-            with st.container(border=True):
-                st.write(f"**{uname}**")
+
+            # Atalho "Conceder tudo" — precisa aplicar ANTES dos widgets
+            # serem criados, senão o valor novo só aparece no próximo
+            # rerender (padrão do Streamlit: mudar session_state depois
+            # que o widget já foi instanciado não reflete na tela atual).
+            grant_all_key = f"_grant_all_pending_{uname}"
+            if st.session_state.get(grant_all_key):
+                st.session_state[f"edit_acesso_{uname}"] = "Acesso direto (sem aprovação)"
+                st.session_state[f"edit_aprovador_{uname}"] = True
+                for perm_key, _label in _PERMISSOES_CONHECIDAS:
+                    st.session_state[f"edit_perm_{perm_key}_{uname}"] = True
+                st.session_state[grant_all_key] = False
+
+            with st.expander(f"👤 {nome_atual or uname}  ({uname})"):
                 info_criacao = f"Criado em {criado_em}" if criado_em else "Criado"
                 if criado_por:
                     info_criacao += f" por {criado_por}"
                 st.caption(info_criacao)
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    with st.popover("🔑 Redefinir senha", use_container_width=True):
-                        nova_senha = st.text_input("Nova senha (mín. 8 caracteres)", type="password", key=f"reset_pw_{uname}")
-                        if st.button("Confirmar nova senha", key=f"confirm_reset_pw_{uname}"):
-                            if len(nova_senha) < 8:
-                                st.error("A senha precisa ter pelo menos 8 caracteres.")
-                            else:
-                                try:
-                                    novo_hash = bcrypt.hashpw(nova_senha.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                                    client.update_user_password(uname, novo_hash)
-                                    log_action(config, current_username, "Redefinir Senha", "Administração", f"Redefiniu a senha de {uname}")
-                                    st.success("Senha atualizada.")
-                                    st.rerun()
-                                except Exception as error:
-                                    st.error(f"❌ {error}")
-                with c2:
-                    delete_flag_key = f"confirm_delete_user_{uname}"
-                    if not st.session_state.get(delete_flag_key):
-                        if st.button("🗑️ Excluir usuário", key=f"btn_delete_user_{uname}", use_container_width=True):
-                            st.session_state[delete_flag_key] = True
-                            st.rerun()
+                novo_nome = st.text_input("Nome *", value=nome_atual, key=f"edit_nome_{uname}")
+                novo_email = st.text_input("E-mail *", value=email_atual, key=f"edit_email_{uname}")
+                novo_nick = st.text_input("Usuário de login (nick) *", value=uname, key=f"edit_nick_{uname}")
+                nova_senha = st.text_input(
+                    "Senha *", type="password", key=f"edit_senha_{uname}",
+                    help="Sempre obrigatório digitar aqui pra salvar — repita a senha atual se não quiser trocá-la.",
+                )
+
+                opcoes_acesso = ["Precisa de aprovação do admin", "Acesso direto (sem aprovação)"]
+                if f"edit_acesso_{uname}" not in st.session_state:
+                    st.session_state[f"edit_acesso_{uname}"] = opcoes_acesso[1] if acesso_direto_atual else opcoes_acesso[0]
+                escolha_acesso = st.radio("Modo de acesso", options=opcoes_acesso, key=f"edit_acesso_{uname}", horizontal=True)
+                novo_acesso_direto = escolha_acesso == opcoes_acesso[1]
+
+                novo_is_approver = st.checkbox(
+                    "É aprovador (pode aprovar/negar acesso de outros usuários)",
+                    value=is_approver_atual, key=f"edit_aprovador_{uname}",
+                )
+
+                st.write("**Permissões:**")
+                novas_permissoes = []
+                cols_perm = st.columns(len(_PERMISSOES_CONHECIDAS))
+                for i, (perm_key, perm_label) in enumerate(_PERMISSOES_CONHECIDAS):
+                    with cols_perm[i]:
+                        if st.checkbox(perm_label, value=perm_key in permissoes_atuais, key=f"edit_perm_{perm_key}_{uname}"):
+                            novas_permissoes.append(perm_key)
+
+                if st.button("⭐ Conceder tudo (acesso direto + aprovador + todas as permissões)", key=f"btn_grant_all_{uname}"):
+                    st.session_state[grant_all_key] = True
+                    st.rerun()
+
+                st.divider()
+                pending_key = f"_pending_save_{uname}"
+                if st.button("💾 Salvar Alterações", key=f"btn_save_{uname}", type="primary", use_container_width=True):
+                    if not novo_nome.strip() or not novo_email.strip() or not novo_nick.strip() or not nova_senha:
+                        st.error("❌ Nome, e-mail, usuário e senha são todos obrigatórios.")
                     else:
-                        st.warning(f"Excluir **{uname}**? Remove login, aprovações e permissões dele. Não pode ser desfeito.")
-                        cc1, cc2 = st.columns(2)
-                        with cc1:
-                            if st.button("✅ Sim, excluir", key=f"confirm_del_{uname}", type="primary", use_container_width=True):
-                                try:
-                                    client.delete_user(uname)
-                                    log_action(config, current_username, "Excluir Usuário", "Administração", f"Excluiu o usuário {uname}")
-                                    st.success(f"{uname} excluído.")
-                                except Exception as error:
-                                    st.error(f"❌ {error}")
-                                st.session_state[delete_flag_key] = False
+                        st.session_state[pending_key] = {
+                            "new_username": novo_nick.strip(), "email": novo_email.strip(), "nome": novo_nome.strip(),
+                            "senha": nova_senha, "acesso_direto": novo_acesso_direto,
+                            "is_approver": novo_is_approver, "permissions": novas_permissoes,
+                        }
+                        st.rerun()
+
+                pendente = st.session_state.get(pending_key)
+                if pendente:
+                    st.warning(
+                        f"Confirma salvar? Nome: **{pendente['nome']}** | E-mail: **{pendente['email']}** | "
+                        f"Usuário: **{pendente['new_username']}** | Acesso: "
+                        f"**{'Direto' if pendente['acesso_direto'] else 'Precisa de aprovação'}** | "
+                        f"Aprovador: **{'Sim' if pendente['is_approver'] else 'Não'}** | "
+                        f"Permissões: **{', '.join(pendente['permissions']) or 'nenhuma'}**"
+                    )
+                    ccs1, ccs2 = st.columns(2)
+                    with ccs1:
+                        if st.button("✅ Confirmar e salvar", key=f"confirm_save_{uname}", type="primary", use_container_width=True):
+                            try:
+                                novo_hash = bcrypt.hashpw(pendente["senha"].encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                                username_final = client.update_user_full(
+                                    uname, pendente["new_username"], pendente["email"], pendente["nome"],
+                                    novo_hash, pendente["acesso_direto"], pendente["is_approver"], pendente["permissions"],
+                                )
+                                log_action(
+                                    config, current_username, "Editar Usuário", "Administração",
+                                    f"Atualizou o cadastro de {uname} (agora {username_final})",
+                                )
+                                st.success("Alterações salvas.")
+                                st.session_state[pending_key] = None
                                 st.rerun()
-                        with cc2:
-                            if st.button("✖ Cancelar", key=f"cancel_del_{uname}", use_container_width=True):
-                                st.session_state[delete_flag_key] = False
-                                st.rerun()
+                            except Exception as error:
+                                st.error(f"❌ {error}")
+                    with ccs2:
+                        if st.button("✖ Cancelar", key=f"cancel_save_{uname}", use_container_width=True):
+                            st.session_state[pending_key] = None
+                            st.rerun()
+
+                st.divider()
+                delete_flag_key = f"confirm_delete_user_{uname}"
+                if not st.session_state.get(delete_flag_key):
+                    if st.button("🗑️ Excluir usuário", key=f"btn_delete_user_{uname}"):
+                        st.session_state[delete_flag_key] = True
+                        st.rerun()
+                else:
+                    st.warning(f"Excluir **{uname}**? Remove login, aprovações e permissões dele. Não pode ser desfeito.")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        if st.button("✅ Sim, excluir", key=f"confirm_del_{uname}", type="primary", use_container_width=True):
+                            try:
+                                client.delete_user(uname)
+                                log_action(config, current_username, "Excluir Usuário", "Administração", f"Excluiu o usuário {uname}")
+                                st.success(f"{uname} excluído.")
+                            except Exception as error:
+                                st.error(f"❌ {error}")
+                            st.session_state[delete_flag_key] = False
+                            st.rerun()
+                    with cc2:
+                        if st.button("✖ Cancelar", key=f"cancel_del_{uname}", use_container_width=True):
+                            st.session_state[delete_flag_key] = False
+                            st.rerun()
     else:
         st.caption("Nenhum usuário cadastrado ainda.")
 
     st.divider()
     with st.form("create_user_form", clear_on_submit=True):
         st.write("**Cadastrar novo usuário**")
-        novo_username = st.text_input("Nome de usuário")
-        nova_senha = st.text_input("Senha (mínimo 8 caracteres)", type="password")
-        confirmar_senha = st.text_input("Confirmar senha", type="password")
+        novo_nome_criar = st.text_input("Nome *")
+        novo_email_criar = st.text_input("E-mail *")
+        novo_username_criar = st.text_input("Usuário de login (nick) *")
+        nova_senha_criar = st.text_input("Senha *", type="password")
+        confirmar_senha_criar = st.text_input("Confirmar senha *", type="password")
+        acesso_direto_criar = st.radio(
+            "Modo de acesso", options=["Precisa de aprovação do admin", "Acesso direto (sem aprovação)"],
+            horizontal=True,
+        ) == "Acesso direto (sem aprovação)"
+        is_approver_criar = st.checkbox("É aprovador (pode aprovar/negar acesso de outros usuários)")
+        st.write("**Permissões:**")
+        permissoes_criar = []
+        cols_criar = st.columns(len(_PERMISSOES_CONHECIDAS))
+        for i, (perm_key, perm_label) in enumerate(_PERMISSOES_CONHECIDAS):
+            with cols_criar[i]:
+                if st.checkbox(perm_label, key=f"criar_perm_{perm_key}"):
+                    permissoes_criar.append(perm_key)
+
         submitted = st.form_submit_button("➕ Criar Usuário", type="primary")
         if submitted:
-            novo_username = novo_username.strip()
-            if not novo_username:
-                st.error("❌ Informe um nome de usuário.")
-            elif novo_username in _get_all_known_usernames(config, client):
+            novo_username_criar = novo_username_criar.strip()
+            if not novo_nome_criar.strip() or not novo_email_criar.strip() or not novo_username_criar or not nova_senha_criar:
+                st.error("❌ Nome, e-mail, usuário e senha são todos obrigatórios.")
+            elif novo_username_criar in _get_all_known_usernames(config, client):
                 st.error("❌ Esse nome de usuário já existe.")
-            elif len(nova_senha) < 8:
-                st.error("❌ A senha precisa ter pelo menos 8 caracteres.")
-            elif nova_senha != confirmar_senha:
+            elif nova_senha_criar != confirmar_senha_criar:
                 st.error("❌ As senhas não coincidem.")
             else:
                 try:
-                    novo_hash = bcrypt.hashpw(nova_senha.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-                    client.create_user(novo_username, novo_hash, criado_por=current_username)
-                    log_action(config, current_username, "Criar Usuário", "Administração", f"Criou o usuário {novo_username}")
-                    st.success(f"Usuário {novo_username} criado — já pode fazer login.")
+                    novo_hash = bcrypt.hashpw(nova_senha_criar.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                    client.create_user(
+                        novo_username_criar, novo_hash, novo_email_criar.strip(), novo_nome_criar.strip(),
+                        acesso_direto=acesso_direto_criar, criado_por=current_username,
+                    )
+                    if is_approver_criar:
+                        client.add_approver(novo_username_criar)
+                    for perm_key in permissoes_criar:
+                        client.grant_permission(novo_username_criar, perm_key)
+                    log_action(config, current_username, "Criar Usuário", "Administração", f"Criou o usuário {novo_username_criar}")
+                    st.success(f"Usuário {novo_username_criar} criado — já pode fazer login.")
                     st.rerun()
                 except Exception as error:
                     st.error(f"❌ {error}")
@@ -317,8 +433,9 @@ def _render_user_management_section(config, client, current_username: str):
 def render_admin_panel(config):
     """
     Solicitações Pendentes fica visível pra qualquer aprovador (dono do app
-    incluso). O resto (cadastro de aprovadores, permissões granulares) é
-    restrito ao dono do app (config.owner_username).
+    incluso), fora das abas. O resto (usuários, aprovadores, permissões
+    granulares, sessões, logs) é restrito ao dono do app
+    (config.owner_username), organizado em abas.
     """
     username = st.session_state.get(SESSION_USER_KEY, "")
 
@@ -328,73 +445,84 @@ def render_admin_panel(config):
         return
 
     client = AccessControlClient(config)
-
     st.divider()
-    _render_user_management_section(config, client, username)
 
-    st.divider()
-    st.subheader("🛡️ Administração — Aprovadores de Acesso")
-    st.caption(
-        "Pessoas cadastradas aqui podem aprovar ou negar solicitações de login de outros "
-        "usuários, além de você. Você (dono do app) já é sempre um aprovador, não precisa "
-        "se cadastrar."
+    aba_usuarios, aba_aprovadores, aba_permissoes, aba_sessoes, aba_logs = st.tabs(
+        ["👤 Usuários", "🛡️ Aprovadores", "🔑 Permissões", "🖥️ Sessões Ativas", "📜 Logs de Auditoria"]
     )
 
-    try:
-        approvers = client.list_approvers()
-    except Exception as error:
-        st.error(f"❌ Não foi possível carregar os aprovadores: {error}")
-        return
+    with aba_usuarios:
+        _render_user_management_section(config, client, username)
 
-    if approvers:
-        st.write("**Aprovadores atuais:**")
-        for a in approvers:
-            c1, c2 = st.columns([4, 1])
-            with c1:
-                st.write(f"- {a}")
-            with c2:
-                if st.button("Remover", key=f"remove_approver_{a}"):
-                    try:
-                        client.remove_approver(a)
-                        log_action(config, username, "Remover Aprovador", "Administração", f"Removeu {a} da lista de aprovadores")
-                        st.rerun()
-                    except Exception as error:
-                        st.error(f"❌ {error}")
-    else:
-        st.caption("Nenhum aprovador cadastrado além de você.")
+    with aba_aprovadores:
+        st.subheader("🛡️ Aprovadores de Acesso")
+        st.caption(
+            "Pessoas cadastradas aqui podem aprovar ou negar solicitações de login de outros "
+            "usuários, além de você. Você (dono do app) já é sempre um aprovador, não precisa "
+            "se cadastrar. Pra usuários cadastrados na aba \"Usuários\", também dá pra marcar/"
+            "desmarcar isso direto no cadastro deles."
+        )
 
-    st.divider()
-    known_users = sorted(u for u in _get_all_known_usernames(config, client) if u != config.owner_username)
-    with st.form("add_approver_form", clear_on_submit=True):
-        if known_users:
-            new_username = st.selectbox("Usuário a cadastrar como aprovador", options=known_users)
-        else:
-            new_username = st.text_input("Usuário a cadastrar como aprovador")
-        submitted = st.form_submit_button("➕ Adicionar Aprovador", type="primary")
-        if submitted and new_username and new_username.strip():
-            new_username = new_username.strip()
-            if new_username not in _get_all_known_usernames(config, client):
-                st.error("❌ Esse nome de usuário não existe (nem no `secrets.toml`, nem nos usuários cadastrados).")
+        try:
+            approvers = client.list_approvers()
+        except Exception as error:
+            st.error(f"❌ Não foi possível carregar os aprovadores: {error}")
+            approvers = None
+
+        if approvers is not None:
+            if approvers:
+                st.write("**Aprovadores atuais:**")
+                for a in approvers:
+                    c1, c2 = st.columns([4, 1])
+                    with c1:
+                        st.write(f"- {a}")
+                    with c2:
+                        if st.button("Remover", key=f"remove_approver_{a}"):
+                            try:
+                                client.remove_approver(a)
+                                log_action(config, username, "Remover Aprovador", "Administração", f"Removeu {a} da lista de aprovadores")
+                                st.rerun()
+                            except Exception as error:
+                                st.error(f"❌ {error}")
             else:
-                try:
-                    client.add_approver(new_username)
-                    log_action(config, username, "Adicionar Aprovador", "Administração", f"Adicionou {new_username} como aprovador")
-                    st.success(f"{new_username} adicionado como aprovador.")
-                    st.rerun()
-                except Exception as error:
-                    st.error(f"❌ {error}")
+                st.caption("Nenhum aprovador cadastrado além de você.")
 
-    st.divider()
-    _render_permission_management(config, client, "azure_devops", "🔗 Acesso à Integração com Azure DevOps (Passo 7)")
+            st.divider()
+            known_users = sorted(u for u in _get_all_known_usernames(config, client) if u != config.owner_username)
+            with st.form("add_approver_form", clear_on_submit=True):
+                if known_users:
+                    new_username = st.selectbox("Usuário a cadastrar como aprovador", options=known_users)
+                else:
+                    new_username = st.text_input("Usuário a cadastrar como aprovador")
+                submitted = st.form_submit_button("➕ Adicionar Aprovador", type="primary")
+                if submitted and new_username and new_username.strip():
+                    new_username = new_username.strip()
+                    if new_username not in _get_all_known_usernames(config, client):
+                        st.error("❌ Esse nome de usuário não existe (nem no `secrets.toml`, nem nos usuários cadastrados).")
+                    else:
+                        try:
+                            client.add_approver(new_username)
+                            log_action(config, username, "Adicionar Aprovador", "Administração", f"Adicionou {new_username} como aprovador")
+                            st.success(f"{new_username} adicionado como aprovador.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(f"❌ {error}")
 
-    st.divider()
-    _render_permission_management(config, client, "execution_report", "📊 Acesso ao Relatório de Testes (Passo 8)")
+    with aba_permissoes:
+        st.subheader("🔑 Permissões Granulares")
+        st.caption(
+            "Pra usuários cadastrados na aba \"Usuários\", também dá pra marcar/desmarcar "
+            "qualquer uma dessas direto no cadastro deles."
+        )
+        _render_permission_management(config, client, "azure_devops", "🔗 Acesso à Integração com Azure DevOps (Passo 7)")
+        st.divider()
+        _render_permission_management(config, client, "execution_report", "📊 Acesso ao Relatório de Testes (Passo 8)")
 
-    st.divider()
-    _render_active_sessions(config, client)
+    with aba_sessoes:
+        _render_active_sessions(config, client)
 
-    st.divider()
-    _render_audit_logs(config, client)
+    with aba_logs:
+        _render_audit_logs(config, client)
 
 
 def _render_active_sessions(config, client):
@@ -639,8 +767,12 @@ def _render_login_form(config):
 
         if submitted:
             username = username.strip()
-            if _check_credentials(config, username, password):
-                if username == config.owner_username:
+            is_valid, acesso_direto = _check_credentials(config, username, password)
+            if is_valid:
+                if username == config.owner_username or acesso_direto:
+                    # Dono do app, ou usuário dinâmico com "acesso direto"
+                    # marcado pelo admin no cadastro dele — pula a fila de
+                    # aprovação, entra direto.
                     _grant_session(config, username)
                     st.rerun()
                 else:

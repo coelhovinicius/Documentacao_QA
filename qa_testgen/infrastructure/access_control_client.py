@@ -145,25 +145,54 @@ class AccessControlClient:
     # exibido em tela — list_users() nunca traz esse campo de volta.
     # ------------------------------------------------------------------ #
     def list_users(self) -> list:
+        """
+        Cada usuário: {"username","email","nome","acesso_direto",
+        "is_approver","permissions": [...], "criado_em","criado_por","atualizado_em"}
+        """
         data = self._call("list_users")
         return data.get("users", [])
 
-    def create_user(self, username: str, password_hash: str, criado_por: str = "") -> None:
-        data = self._call("create_user", username=username, password_hash=password_hash, criado_por=criado_por)
+    def create_user(self, username: str, password_hash: str, email: str, nome: str,
+                     acesso_direto: bool = False, criado_por: str = "") -> None:
+        """Nome, e-mail, usuário e senha são SEMPRE obrigatórios — o backend valida isso também."""
+        data = self._call(
+            "create_user", username=username, password_hash=password_hash,
+            email=email, nome=nome, acesso_direto=acesso_direto, criado_por=criado_por,
+        )
         if not data.get("ok"):
             raise AccessControlError(data.get("error", "Não foi possível criar o usuário."))
 
-    def update_user_password(self, username: str, password_hash: str) -> None:
-        data = self._call("update_user_password", username=username, password_hash=password_hash)
+    def update_user_full(self, username: str, new_username: str, email: str, nome: str,
+                          password_hash: str, acesso_direto: bool, is_approver: bool,
+                          permissions: list) -> str:
+        """
+        Salva TUDO de um cadastro numa chamada só — nome, e-mail, nick
+        (renomeia se mudou), senha, modo de acesso (direto x aprovação),
+        status de aprovador, e a lista completa de permissões (sincroniza:
+        adiciona as que faltam, remove as que sobram). Retorna o
+        username final (pode ter mudado, se renomeou).
+        """
+        data = self._call(
+            "update_user_full", username=username, new_username=new_username,
+            email=email, nome=nome, password_hash=password_hash,
+            acesso_direto=acesso_direto, is_approver=is_approver, permissions=permissions,
+        )
         if not data.get("ok"):
-            raise AccessControlError(data.get("error", "Não foi possível atualizar a senha."))
+            raise AccessControlError(data.get("error", "Não foi possível salvar as alterações do usuário."))
+        return data.get("username", new_username)
 
     def delete_user(self, username: str) -> None:
         data = self._call("delete_user", username=username)
         if not data.get("ok"):
             raise AccessControlError(data.get("error", "Não foi possível excluir o usuário."))
 
-    def get_user_password_hash(self, username: str) -> str:
-        """Só usado internamente pra validar login — nunca exibido em tela."""
+    def get_user_login_info(self, username: str) -> dict:
+        """
+        Só usado internamente pra validar login — nunca exibido em tela.
+        Retorna {"password_hash": str, "acesso_direto": bool}.
+        """
         data = self._call("get_user_password_hash", username=username)
-        return data.get("password_hash") or ""
+        return {
+            "password_hash": data.get("password_hash") or "",
+            "acesso_direto": bool(data.get("acesso_direto")),
+        }
