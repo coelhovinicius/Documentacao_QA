@@ -3886,6 +3886,15 @@ class UserInterface:
         componente_html = self._d3_mind_map_html(raiz_nome, hierarquia)
         components.html(componente_html, height=altura_estimada, scrolling=True)
 
+        pdf_bytes_mapa = self._gerar_pdf_mapa_mental(raiz_nome, hierarquia)
+        st.download_button(
+            "📄 Baixar Mapa Mental (PDF)",
+            data=pdf_bytes_mapa,
+            file_name="mapa_mental.pdf",
+            mime="application/pdf",
+            help="Igual ao botão '⬇️ Baixar Mapa Mental' dentro do mapa (sempre com tudo expandido), só que em PDF.",
+        )
+
         with st.expander("📋 Ver lista completa (texto)"):
             for plano, suites in hierarquia.items():
                 st.markdown(f"**{plano}**")
@@ -3918,6 +3927,162 @@ class UserInterface:
             plano_nome = row[-1] or "(sem plano)"
             hierarquia.setdefault(plano_nome, {}).setdefault(suite_nome, []).append(titulo)
         return hierarquia
+
+    _MAPA_LARGURA_NO = 220
+    _MAPA_ALTURA_NO = 46
+    _MAPA_ESPACO_VERTICAL = 18
+    _MAPA_ESPACO_HORIZONTAL = 280
+    _MAPA_MARGEM = 30
+
+    @staticmethod
+    def _montar_arvore_mapa(raiz_nome: str, hierarquia: dict) -> dict:
+        """
+        Monta a árvore raiz -> Planos/Work Items -> [Suítes] -> Casos como
+        um dict aninhado simples ({"nome","count","filhos": [...]}) — usado
+        tanto pra gerar o PDF (ReportLab) quanto poderia ser reaproveitado
+        por outras exportações futuras. Mesma lógica de agrupamento do
+        equivalente em JS (_d3_mind_map_html): suíte única vira filho
+        direto do Plano, mais de uma suíte cria um nível extra.
+        """
+        def montar_no(nome, suites=None, casos=None):
+            if casos is not None:
+                return {"nome": nome, "count": None, "filhos": []}
+            total_casos = sum(len(c) for c in suites.values())
+            n_suites = len(suites)
+            if n_suites <= 1:
+                casos_unicos = next(iter(suites.values())) if suites else []
+                return {"nome": nome, "count": total_casos, "filhos": [montar_no(c, casos=True) for c in casos_unicos]}
+            return {
+                "nome": nome, "count": total_casos,
+                "filhos": [
+                    {"nome": ns, "count": len(cs), "filhos": [montar_no(c, casos=True) for c in cs]}
+                    for ns, cs in suites.items()
+                ],
+            }
+        return {"nome": raiz_nome, "count": None, "filhos": [montar_no(np, s) for np, s in hierarquia.items()]}
+
+    @classmethod
+    def _calcular_layout_mapa(cls, no: dict, profundidade: int, y_cursor: list):
+        """
+        Preenche no["x"]/no["y"] em cada nó da árvore (mutando in-place),
+        sempre com tudo expandido — layout simples: folhas recebem Y
+        sequencial (post-order), nós internos centralizam sobre os filhos.
+        y_cursor é uma lista de 1 elemento usada como contador mutável.
+        """
+        no["x"] = profundidade * cls._MAPA_ESPACO_HORIZONTAL
+        if not no["filhos"]:
+            no["y"] = y_cursor[0]
+            y_cursor[0] += cls._MAPA_ALTURA_NO + cls._MAPA_ESPACO_VERTICAL
+        else:
+            for filho in no["filhos"]:
+                cls._calcular_layout_mapa(filho, profundidade + 1, y_cursor)
+            no["y"] = sum(f["y"] for f in no["filhos"]) / len(no["filhos"])
+
+    @classmethod
+    def _coletar_bounds_mapa(cls, no: dict, bounds: list):
+        bounds[0] = min(bounds[0], no["x"])
+        bounds[1] = max(bounds[1], no["x"] + cls._MAPA_LARGURA_NO)
+        bounds[2] = min(bounds[2], no["y"] - cls._MAPA_ALTURA_NO / 2)
+        bounds[3] = max(bounds[3], no["y"] + cls._MAPA_ALTURA_NO / 2)
+        for filho in no["filhos"]:
+            cls._coletar_bounds_mapa(filho, bounds)
+
+    @staticmethod
+    def _quebrar_texto_mapa(c, texto: str, largura_max: float, max_linhas: int, font_name: str, font_size: float) -> list:
+        """Mesma lógica de quebra de linha usada no mapa interativo (JS), só que medindo com c.stringWidth do ReportLab."""
+        palavras = texto.split()
+        linhas = []
+        linha_atual = []
+        for palavra in palavras:
+            tentativa = " ".join(linha_atual + [palavra])
+            if c.stringWidth(tentativa, font_name, font_size) > largura_max and linha_atual:
+                linhas.append(" ".join(linha_atual))
+                linha_atual = [palavra]
+                if len(linhas) >= max_linhas:
+                    break
+            else:
+                linha_atual.append(palavra)
+        if len(linhas) < max_linhas:
+            linhas.append(" ".join(linha_atual))
+        linhas = linhas[:max_linhas]
+        palavras_usadas = sum(len(l.split()) for l in linhas)
+        if palavras_usadas < len(palavras) and linhas:
+            ultima = linhas[-1]
+            while c.stringWidth(ultima + "…", font_name, font_size) > largura_max and len(ultima) > 1:
+                ultima = ultima[:-1]
+            linhas[-1] = ultima + "…"
+        return linhas
+
+    @classmethod
+    def _desenhar_no_mapa(cls, c, no: dict, y_offset: float, profundidade: int):
+        from reportlab.lib import colors
+        largura_no, altura_no = cls._MAPA_LARGURA_NO, cls._MAPA_ALTURA_NO
+        x = no["x"] + cls._MAPA_MARGEM
+        y = y_offset - no["y"]
+        is_raiz = profundidade == 0
+
+        c.setFillColor(colors.HexColor('#F15A24') if is_raiz else colors.HexColor('#2D2D2D'))
+        c.roundRect(x, y - altura_no / 2, largura_no, altura_no, 6, fill=1, stroke=0)
+
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 9)
+        linhas = cls._quebrar_texto_mapa(c, no["nome"], largura_no - (24 + 30), 2, "Helvetica-Bold", 9)
+        line_height = 11
+        y_texto_inicial = y + (line_height * (len(linhas) - 1)) / 2
+        for i, linha in enumerate(linhas):
+            c.drawString(x + 10, y_texto_inicial - i * line_height + 3, linha)
+
+        if no["count"] is not None:
+            c.setFillColor(colors.HexColor('#CFCFCF'))
+            c.setFont("Helvetica", 8)
+            c.drawRightString(x + largura_no - 8, y + altura_no / 2 - 14, f"({no['count']})")
+
+        for filho in no["filhos"]:
+            fx = filho["x"] + cls._MAPA_MARGEM
+            fy = y_offset - filho["y"]
+            mx = (x + largura_no + fx) / 2
+            c.setStrokeColor(colors.HexColor('#BBBBBB'))
+            c.setLineWidth(1.2)
+            p = c.beginPath()
+            p.moveTo(x + largura_no, y)
+            p.curveTo(mx, y, mx, fy, fx, fy)
+            c.drawPath(p, stroke=1, fill=0)
+            cls._desenhar_no_mapa(c, filho, y_offset, profundidade + 1)
+
+    @classmethod
+    def _gerar_pdf_mapa_mental(cls, raiz_nome: str, hierarquia: dict) -> bytes:
+        """
+        Gera o mapa mental como PDF — sempre com TUDO expandido (mesmo
+        espírito do download em .svg), numa única página do tamanho exato
+        da árvore inteira (sem paginação — dividir um mapa mental entre
+        páginas cortaria as conexões entre os ramos, ficaria ilegível).
+        """
+        import io
+        from reportlab.lib import colors
+        from reportlab.pdfgen import canvas as reportlab_canvas
+
+        arvore = cls._montar_arvore_mapa(raiz_nome, hierarquia)
+        y_cursor = [0]
+        cls._calcular_layout_mapa(arvore, 0, y_cursor)
+
+        bounds = [float("inf"), float("-inf"), float("inf"), float("-inf")]
+        cls._coletar_bounds_mapa(arvore, bounds)
+        min_x, max_x, min_y, max_y = bounds
+
+        largura_pagina = (max_x - min_x) + cls._MAPA_MARGEM * 2
+        altura_pagina = (max_y - min_y) + cls._MAPA_MARGEM * 2
+
+        buffer = io.BytesIO()
+        c = reportlab_canvas.Canvas(buffer, pagesize=(largura_pagina, altura_pagina))
+        c.setFillColor(colors.HexColor('#FDFCF8'))
+        c.rect(0, 0, largura_pagina, altura_pagina, fill=1, stroke=0)
+
+        y_offset = altura_pagina - cls._MAPA_MARGEM + min_y - cls._MAPA_ALTURA_NO / 2
+        cls._desenhar_no_mapa(c, arvore, y_offset, 0)
+
+        c.showPage()
+        c.save()
+        return buffer.getvalue()
 
     @staticmethod
     def _d3_mind_map_html(raiz_nome: str, hierarquia: dict) -> str:
@@ -3985,8 +4150,13 @@ class UserInterface:
     position: fixed; top: 8px; right: 8px; z-index: 10; padding: 6px 12px;
     border-radius: 6px; border: 1px solid #ccc; background: white; cursor: pointer; font-size: 12px;
   }}
+  #btn-baixar {{
+    position: fixed; top: 8px; right: 130px; z-index: 10; padding: 6px 12px;
+    border-radius: 6px; border: 1px solid #ccc; background: white; cursor: pointer; font-size: 12px;
+  }}
 </style></head>
 <body>
+<button id="btn-baixar">⬇️ Baixar Mapa Mental</button>
 <button id="btn-reset-zoom">🔍 Resetar zoom</button>
 <div id="tree-container"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
@@ -4043,6 +4213,13 @@ function quebrarTexto(textSelection, larguraMax, maxLinhas) {{
   }});
 }}
 
+function bezier(d) {{
+  const sx = d.source.y + largura_no, sy = d.source.x;
+  const tx = d.target.y, ty = d.target.x;
+  const mx = (sx + tx) / 2;
+  return `M${{sx}},${{sy}} C${{mx}},${{sy}} ${{mx}},${{ty}} ${{tx}},${{ty}}`;
+}}
+
 function construir(dados) {{
   const root = d3.hierarchy(dados);
   root.x0 = 0;
@@ -4073,13 +4250,6 @@ function construir(dados) {{
   }});
 
   const treeLayout = d3.tree().nodeSize([altura_no + espaco_vertical, espaco_horizontal]);
-
-  function bezier(d) {{
-    const sx = d.source.y + largura_no, sy = d.source.x;
-    const tx = d.target.y, ty = d.target.x;
-    const mx = (sx + tx) / 2;
-    return `M${{sx}},${{sy}} C${{mx}},${{sy}} ${{mx}},${{ty}} ${{tx}},${{ty}}`;
-  }}
 
   const alturaViewport = document.querySelector("#tree-container").getBoundingClientRect().height || 600;
 
@@ -4140,6 +4310,82 @@ function construir(dados) {{
 }}
 
 construir(dadosMapa);
+
+// -------------------------------------------------------------------- //
+// Download — reconstrói do ZERO a partir de dadosMapa (não do estado
+// atual da tela), com TUDO expandido, sempre. Usa um SVG temporário,
+// fora da árvore interativa, pra nunca disturbar o que o usuário está
+// vendo na tela no momento do clique.
+// -------------------------------------------------------------------- //
+function baixarMapaCompleto() {{
+  const rootExport = d3.hierarchy(dadosMapa); // TUDO expandido por padrão, sem a lógica de recolher
+  const treeLayoutExport = d3.tree().nodeSize([altura_no + espaco_vertical, espaco_horizontal]);
+  treeLayoutExport(rootExport);
+
+  const nos = rootExport.descendants();
+  const links = rootExport.links();
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  nos.forEach(d => {{
+    minX = Math.min(minX, d.x); maxX = Math.max(maxX, d.x);
+    minY = Math.min(minY, d.y); maxY = Math.max(maxY, d.y + largura_no + 40);
+  }});
+  const margem = 30;
+  const largura_total = (maxY - minY) + margem * 2;
+  const altura_total = (maxX - minX) + margem * 2;
+
+  const svgTemp = d3.select("body").append("svg")
+    .attr("width", largura_total).attr("height", altura_total)
+    .attr("xmlns", "http://www.w3.org/2000/svg")
+    .style("position", "fixed").style("left", "-99999px").style("top", "0");
+
+  svgTemp.append("style").text(`
+    .node rect {{ fill: #2D2D2D; }}
+    .node.raiz rect {{ fill: #F15A24; }}
+    .node text {{ fill: white; font-size: 12px; font-weight: 600; font-family: sans-serif; }}
+    .node .contagem {{ fill: #cfcfcf; font-size: 11px; font-weight: 400; }}
+    .link {{ fill: none; stroke: #bbb; stroke-width: 1.5px; }}
+  `);
+  svgTemp.append("rect").attr("width", largura_total).attr("height", altura_total).attr("fill", "#fdfcf8");
+
+  const g = svgTemp.append("g").attr("transform", `translate(${{margem - minY}}, ${{margem - minX}})`);
+
+  g.selectAll("path.link").data(links).enter().insert("path", "g").attr("class", "link").attr("d", bezier);
+
+  const nodeG = g.selectAll("g.node").data(nos).enter().append("g")
+    .attr("class", d => "node" + (d.depth === 0 ? " raiz" : ""))
+    .attr("transform", d => `translate(${{d.y}},${{d.x}})`);
+
+  nodeG.append("rect").attr("width", largura_no).attr("height", altura_no).attr("y", -altura_no / 2).attr("rx", 6).attr("ry", 6);
+  const textoExport = nodeG.append("text").attr("x", 12).text(d => d.data.name);
+  textoExport.call(quebrarTexto, largura_no - (24 + 34), 2);
+  nodeG.filter(d => d.data.count !== undefined).append("text")
+    .attr("class", "contagem").attr("x", largura_no - 34).attr("y", -8).attr("dy", "0.35em")
+    .text(d => `(${{d.data.count}})`);
+
+  // Remove o estilo de posicionamento temporário antes de serializar —
+  // senão ele vaza pro arquivo baixado e quebra a exibição em qualquer
+  // lugar que abrir esse .svg depois.
+  svgTemp.attr("style", null);
+  const svgNode = svgTemp.node();
+  const serializer = new XMLSerializer();
+  let svgString = serializer.serializeToString(svgNode);
+  svgString = '<?xml version="1.0" standalone="no"?>\\r\\n' + svgString;
+
+  const blob = new Blob([svgString], {{ type: "image/svg+xml;charset=utf-8" }});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "mapa_mental_completo.svg";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  svgTemp.remove();
+}}
+
+document.getElementById("btn-baixar").addEventListener("click", baixarMapaCompleto);
 </script>
 </body></html>"""
 
