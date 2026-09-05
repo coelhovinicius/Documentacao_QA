@@ -245,28 +245,46 @@ class UserInterface:
                 "ficam organizados juntos (mesmo grupo) e disponíveis depois em "
                 "'🗄️ Documentos Armazenados', na barra lateral."
             )
+            campo_key = f"store_nome_doc_{fluxo_origem}_{hashlib.md5((nome_projeto or '').encode()).hexdigest()[:8]}"
+            if campo_key not in st.session_state:
+                st.session_state[campo_key] = nome_projeto or ""
+            nome_documento = st.text_input(
+                "Nome do Documento *",
+                key=campo_key,
+                disabled=self.state.get('is_processing'),
+                help="Obrigatório — é esse nome que aparece na lista de 'Documentos Armazenados', "
+                     "então vale diferenciar de outros grupos já salvos (ex.: incluindo a data ou "
+                     "uma versão), em vez de deixar sempre o nome do projeto puro.",
+            )
             btn_key = f"btn_store_{fluxo_origem}_{hashlib.md5((nome_projeto or '').encode()).hexdigest()[:8]}"
             with st.container(key="azure_blue_btn_store_docs"):
                 if st.button(
                     "💾 Armazenar esta documentação",
                     key=btn_key,
-                    disabled=self.state.get('is_processing'),
+                    disabled=self.state.get('is_processing') or not nome_documento.strip(),
                     use_container_width=True,
                 ):
                     try:
+                        prefixo = re.sub(r'[^\w\-]+', '_', nome_documento.strip())[:60]
+                        arquivos_renomeados = [
+                            {**arq, "nome_arquivo": f"{prefixo}__{arq['nome_arquivo']}"}
+                            for arq in arquivos
+                        ]
                         store = DocumentStore(self.config.turso_database_url, self.config.turso_auth_token)
                         with st.spinner("Salvando no banco de documentos..."):
                             store.ensure_schema()
-                            store.salvar_grupo(fluxo_origem, nome_projeto, arquivos, criado_por=current_username)
+                            store.salvar_grupo(fluxo_origem, nome_documento.strip(), arquivos_renomeados, criado_por=current_username)
                         st.success("✅ Documentação armazenada com sucesso.")
                         self._log(
                             "Armazenar Documentação", fluxo_origem,
-                            f"'{nome_projeto}' — {len(arquivos)} arquivo(s)",
+                            f"'{nome_documento.strip()}' — {len(arquivos)} arquivo(s)",
                         )
                     except DocumentStoreError as error:
                         st.error(f"❌ {error}")
                     except Exception as error:
                         st.error(f"❌ Não foi possível armazenar: {error}")
+            if not nome_documento.strip():
+                st.caption("Preencha o Nome do Documento para habilitar o botão de salvar.")
 
     def _flash_error(self, message: str) -> None:
         """
@@ -571,9 +589,7 @@ class UserInterface:
                 })
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
-            if current_username == self.config.owner_username:
-                # Restrito ao dono do app de propósito — a geração usa IA
-                # (custo de token), então fica só com quem administra o app.
+            if self._get_permission_cached("manual_testes"):
                 if st.button("📘 Manual de Testes (UAT)", use_container_width=True, key="btn_manual_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_manual_page': True, 'show_about_page': False,
@@ -581,8 +597,7 @@ class UserInterface:
                         'show_wiql_generation_page': False, 'show_document_store_page': False,
                         'show_mindmap_page': False,
                     })
-                # Área de arquivos guardados — também restrita ao dono, já
-                # que só ele pode escolher armazenar algo em primeiro lugar.
+            if self._get_permission_cached("documentos_armazenados"):
                 if st.button("🗄️ Documentos Armazenados", use_container_width=True, key="btn_document_store_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_document_store_page': True, 'show_about_page': False,
@@ -590,6 +605,7 @@ class UserInterface:
                         'show_wiql_generation_page': False, 'show_manual_page': False,
                         'show_mindmap_page': False,
                     })
+            if self._get_permission_cached("mapa_mental"):
                 if st.button("🧠 Mapa Mental", use_container_width=True, key="btn_mindmap_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_mindmap_page': True, 'show_about_page': False,
@@ -1017,15 +1033,23 @@ class UserInterface:
         if self.state.get('processing_interrupted'):
             st.info("⚠️ Processamento interrompido. Você pode continuar editando esta etapa.")
 
+        opcoes_origem = ["📄 Enviar Documento(s)", "🎯 Gerar a partir de Work Items existentes no Azure DevOps"]
+        if self._get_permission_cached("azure_query"):
+            opcoes_origem.append("🔎 Gerar a partir de uma Query do Azure DevOps")
+
         origem = st.radio(
             "Como você quer fornecer a especificação?",
-            options=["📄 Enviar Documento(s)", "🎯 Gerar a partir de Work Items existentes no Azure DevOps"],
+            options=opcoes_origem,
             index=0,
             key="step1_origem_radio",
             disabled=self.state.get('is_processing'),
-            help="A segunda opção usa a Descrição e os Critérios de Aceite de Work Items já existentes como especificação — sem precisar enviar documento nenhum.",
+            help="A segunda opção usa a Descrição e os Critérios de Aceite de Work Items já existentes como especificação — sem precisar enviar documento nenhum. A terceira parte de uma query já salva no Azure DevOps.",
         )
         st.divider()
+
+        if origem.startswith("🔎"):
+            self._step1_from_query()
+            return
 
         if origem.startswith("🎯"):
             self._step1_from_work_items()
@@ -1278,6 +1302,238 @@ class UserInterface:
 
                 self._run_analysis(text, project)
 
+    _TAMANHO_LOTE_GERACAO = 8
+
+    _TAMANHO_LOTE_MATRIZ_CHARS = 12000
+    _MAX_PARAGRAFOS_POR_LOTE_MATRIZ = 15
+
+    @classmethod
+    def _dividir_texto_em_lotes(cls, texto: str) -> list:
+        """
+        Divide um texto longo em pedaços menores, respeitando quebras de
+        parágrafo (nunca corta no meio de uma frase) — usado pra gerar a
+        Matriz de Cobertura em lotes quando o documento é grande demais
+        pra uma chamada de IA só.
+
+        Dois gatilhos, o que vier primeiro: tamanho em caracteres OU
+        quantidade de parágrafos. Só o tamanho em caracteres não é bom
+        proxy suficiente pro tempo de geração — um documento CURTO mas
+        denso (muitos requisitos curtos, um por parágrafo) pode pedir
+        uma Matriz de 20+ linhas sem o texto em si ser longo; nesse
+        caso, o limite de parágrafos pega o que o de caracteres sozinho
+        deixaria passar.
+
+        Documento pequeno/médio nos dois critérios: retorna uma lista
+        com um único item — nenhuma mudança de comportamento.
+        """
+        tamanho_maximo = cls._TAMANHO_LOTE_MATRIZ_CHARS
+        max_paragrafos = cls._MAX_PARAGRAFOS_POR_LOTE_MATRIZ
+        texto = texto or ''
+        paragrafos = [p for p in texto.split("\n\n") if p.strip()]
+
+        if len(texto) <= tamanho_maximo and len(paragrafos) <= max_paragrafos:
+            return [texto]
+
+        lotes = []
+        lote_atual = []
+        tamanho_atual = 0
+        for paragrafo in paragrafos:
+            tamanho_paragrafo = len(paragrafo) + 2
+            estouraria = (
+                lote_atual
+                and (tamanho_atual + tamanho_paragrafo > tamanho_maximo or len(lote_atual) >= max_paragrafos)
+            )
+            if estouraria:
+                lotes.append("\n\n".join(lote_atual))
+                lote_atual = []
+                tamanho_atual = 0
+            lote_atual.append(paragrafo)
+            tamanho_atual += tamanho_paragrafo
+        if lote_atual:
+            lotes.append("\n\n".join(lote_atual))
+        return lotes
+
+    def _processar_um_lote_por_execucao(self, state_prefix: str, montar_lotes_fn, processar_um_lote_fn, status):
+        """
+        Processa SÓ 1 lote por execução do script Streamlit, disparando
+        st.rerun() entre cada um — em vez de rodar um `for` com todos os
+        lotes dentro da MESMA execução.
+
+        Por quê: mesmo com cada chamada de IA individual OK (dentro do
+        timeout de 300s configurado no cliente), rodar VÁRIAS chamadas
+        seguidas dentro de uma única execução do script soma o tempo de
+        todas elas numa única "conexão" — se existir QUALQUER limite de
+        tempo entre o navegador e o servidor (proxy, load balancer, o
+        próprio Streamlit Cloud), é esse tempo SOMADO que estoura o
+        limite, não o de uma chamada isolada. Processando 1 lote por
+        execução, cada "perna" do processo dura só o tempo de 1 chamada,
+        e o rerun() devolve o controle ao navegador entre uma e outra —
+        resetando qualquer relógio de conexão que exista no meio do
+        caminho, fora do meu controle via código Python.
+
+        montar_lotes_fn: função sem argumento, chamada só na primeira
+        execução, que retorna a lista de lotes já dividida.
+        processar_um_lote_fn: recebe 1 lote, retorna (lista_de_itens, erro_ou_None).
+
+        Retorna (resultado_acumulado, lista_de_erros) só na execução
+        FINAL (depois do último lote) — nas execuções intermediárias,
+        dispara st.rerun() e a função nunca chega a retornar de verdade
+        pro chamador (rerun() interrompe o script inteiro ali mesmo).
+        """
+        key_pendentes = f"_{state_prefix}_lotes_pendentes"
+        key_acumulado = f"_{state_prefix}_acumulado"
+        key_erros = f"_{state_prefix}_erros"
+        key_total = f"_{state_prefix}_total"
+
+        if self.state.get(key_pendentes) is None:
+            lotes = montar_lotes_fn()
+            self.state.set(key_pendentes, lotes)
+            self.state.set(key_acumulado, [])
+            self.state.set(key_erros, [])
+            self.state.set(key_total, len(lotes))
+
+        pendentes = self.state.get(key_pendentes)
+        acumulado = self.state.get(key_acumulado)
+        erros = self.state.get(key_erros)
+        total = self.state.get(key_total)
+        concluidos = total - len(pendentes)
+        varios = total > 1
+
+        if pendentes:
+            if varios:
+                status.update(label=f"Processando lote {concluidos + 1} de {total}...")
+            lote_atual = pendentes[0]
+            itens, erro = processar_um_lote_fn(lote_atual)
+            if erro:
+                erros.append((concluidos + 1, erro))
+                if varios:
+                    status.write(f"❌ Lote {concluidos + 1} de {total} falhou: {erro}")
+            else:
+                acumulado.extend(itens)
+                if varios:
+                    status.write(f"✅ Lote {concluidos + 1} de {total}: {len(itens)} item(ns).")
+
+            novos_pendentes = pendentes[1:]
+            self.state.set(key_pendentes, novos_pendentes)
+            self.state.set(key_acumulado, acumulado)
+            self.state.set(key_erros, erros)
+
+            if novos_pendentes:
+                st.rerun()
+                return None
+
+        self.state.set(key_pendentes, None)
+        self.state.set(key_acumulado, None)
+        self.state.set(key_erros, None)
+        self.state.set(key_total, None)
+        return acumulado, erros
+
+    _TAMANHO_LOTE_PLANOS = 10
+
+    def _gerar_planos_em_lotes(self, doc_text: str, matriz: list, test_cases: list, answers: dict,
+                                 project: str, status):
+        """
+        Gera Planos de Teste em lotes menores de Casos de Teste —
+        processando 1 lote por execução do script (ver
+        _processar_um_lote_por_execucao pro motivo).
+
+        NÃO manda o texto do documento original nessa chamada — conferi
+        o prompt real do workflow (Doc_QA_Plans_HA) e a lógica de
+        organização (identificar escopos, agrupar em Suítes) analisa os
+        CASOS DE TESTE e a MATRIZ, não o documento bruto. Mandar o
+        documento inteiro em TODO lote inflava o tamanho da requisição
+        sem necessidade — foi exatamente isso que estourou o limite de
+        tokens por minuto do Groq (8000 TPM) num teste real, mesmo com
+        poucos Casos no lote, porque o documento sozinho já ocupava a
+        maior parte do espaço.
+
+        Retorna (planos_combinados, erros) só quando TODOS os lotes
+        terminarem.
+        """
+        tam = self._TAMANHO_LOTE_PLANOS
+
+        def montar_lotes():
+            return [test_cases[i:i + tam] for i in range(0, len(test_cases), tam)]
+
+        def processar_um_lote(lote_casos):
+            try:
+                resp = self.client.trigger_plans("", matriz, lote_casos, answers, project)
+                return resp.get('planos_de_teste') or [], None
+            except Exception as error:
+                return None, str(error)
+
+        resultado = self._processar_um_lote_por_execucao("geracao_planos", montar_lotes, processar_um_lote, status)
+        if resultado is None:
+            return None
+        planos_combinados, erros = resultado
+
+        nomes_vistos = {}
+        for plano in planos_combinados:
+            nome = plano.get('nome', '(sem nome)')
+            nomes_vistos[nome] = nomes_vistos.get(nome, 0) + 1
+            if nomes_vistos[nome] > 1:
+                plano['nome'] = f"{nome} ({nomes_vistos[nome]})"
+
+        return planos_combinados, erros
+
+    def _gerar_matriz_em_lotes(self, doc_text: str, answers: dict, project: str, tipo_documento: str, status):
+        """
+        Gera a Matriz de Cobertura em lotes menores do TEXTO do
+        documento — processando 1 lote por execução do script (ver
+        _processar_um_lote_por_execucao pro motivo). Renumera tudo no
+        final (MC-001, MC-002, ...) — cada chamada de IA recomeça a
+        numeração sozinha, então sem isso haveria ID repetido entre
+        lotes.
+
+        Retorna (matriz_combinada, erros) só quando TODOS os lotes
+        terminarem — erros é uma lista de (número_do_lote, mensagem)
+        pros que falharam.
+        """
+        def montar_lotes():
+            return self._dividir_texto_em_lotes(doc_text)
+
+        def processar_um_lote(lote_texto):
+            try:
+                resp = self.client.trigger_matrix(lote_texto, answers, project, tipo_documento)
+                return resp.get('matriz') or [], None
+            except Exception as error:
+                return None, str(error)
+
+        resultado = self._processar_um_lote_por_execucao("geracao_matriz", montar_lotes, processar_um_lote, status)
+        if resultado is None:
+            return None
+        matriz_combinada, erros = resultado
+        for idx, row in enumerate(matriz_combinada, start=1):
+            row['id'] = f"MC-{idx:03d}"
+        return matriz_combinada, erros
+
+    def _gerar_casos_em_lotes(self, doc_text: str, matriz_completa: list, answers: dict,
+                                project: str, tipo_documento: str, status):
+        """
+        Gera Casos de Teste em lotes menores da Matriz de Cobertura —
+        processando 1 lote por execução do script (ver
+        _processar_um_lote_por_execucao pro motivo). Um lote que falhar
+        não derruba os outros — só fica de fora do resultado final,
+        reportado separadamente.
+
+        Retorna (casos_combinados, erros) só quando TODOS os lotes
+        terminarem — erros é uma lista de (índice_do_lote, mensagem)
+        pros que falharam.
+        """
+        tam = self._TAMANHO_LOTE_GERACAO
+
+        def montar_lotes():
+            return [matriz_completa[i:i + tam] for i in range(0, len(matriz_completa), tam)]
+
+        def processar_um_lote(lote):
+            try:
+                resp = self.client.trigger_generation(doc_text, lote, answers, project, tipo_documento)
+                return resp.get('casos_de_teste') or [], None
+            except Exception as error:
+                return None, str(error)
+
+        return self._processar_um_lote_por_execucao("geracao_casos", montar_lotes, processar_um_lote, status)
+
     def _run_analysis(self, text: str, project: str):
         """
         Roda a análise de IA (mesma do Passo 1) e navega pro Passo 2 se der
@@ -1338,33 +1594,44 @@ class UserInterface:
             )
 
         if self.state.get('current_action') == 'generate_matrix' and not self.state.get('show_interrupt_modal'):
-            with st.spinner("Estruturando Matriz de Rastreabilidade… Aguarde um momento..."):
-                try:
-                    resp = self.client.trigger_matrix(
-                        self.state.get('doc_text'),
-                        self.state.get('step_2_answers', answers),
-                        self.state.get('project_name'),
-                        ", ".join(self.state.get('tipo_documento') or []),
-                    )
-                    matriz = resp.get('matriz') or []
-                    if not matriz:
-                        st.error("❌ Matriz vazia.")
-                        self.clear_action()
+            with st.status("Estruturando Matriz de Cobertura...", expanded=True) as status:
+                resultado_matriz = self._gerar_matriz_em_lotes(
+                    self.state.get('doc_text'),
+                    self.state.get('step_2_answers', answers),
+                    self.state.get('project_name'),
+                    ", ".join(self.state.get('tipo_documento') or []),
+                    status,
+                )
+                if resultado_matriz is None:
+                    return  # rerun() já disparado dentro do lote — essa linha nunca roda de verdade
+                matriz, erros = resultado_matriz
+                if not matriz:
+                    status.update(label="Falha ao gerar a Matriz.", state="error", expanded=True)
+                    if erros:
+                        self._flash_error(f"Não foi possível gerar a Matriz — todos os lotes falharam: {erros[0][1]}")
                     else:
-                        sigla = self._env_sigla()
-                        if sigla:
-                            for row in matriz:
-                                base_id = str(row.get('id', '')).strip()
-                                if base_id and not base_id.endswith(f" {sigla}"):
-                                    row['id'] = f"{base_id} {sigla}"
-                        self.state.set('user_answers', self.state.get('step_2_answers', answers))
-                        self.state.set('matriz', matriz)
-                        self._set_step(3, allow_during_processing=True)
-                        self.clear_action()
-                        st.rerun()
-                except Exception as error:
-                    self._err(error)
+                        self._flash_error("Matriz vazia.")
                     self.clear_action()
+                else:
+                    if erros:
+                        status.update(label=f"Concluído com {len(erros)} lote(s) com falha.", state="complete")
+                        self._flash_warning(
+                            f"{len(matriz)} linha(s) da Matriz gerada(s), mas {len(erros)} lote(s) do "
+                            "documento falharam — a Matriz pode estar incompleta. Revise antes de prosseguir."
+                        )
+                    else:
+                        status.update(label=f"Matriz gerada — {len(matriz)} linha(s).", state="complete")
+                    sigla = self._env_sigla()
+                    if sigla:
+                        for row in matriz:
+                            base_id = str(row.get('id', '')).strip()
+                            if base_id and not base_id.endswith(f" {sigla}"):
+                                row['id'] = f"{base_id} {sigla}"
+                    self.state.set('user_answers', self.state.get('step_2_answers', answers))
+                    self.state.set('matriz', matriz)
+                    self._set_step(3, allow_during_processing=True)
+                    self.clear_action()
+                    st.rerun()
 
     def step_3(self):
         st.subheader("Passo 3 – Refinamento da Matriz de Cobertura")
@@ -1481,27 +1748,42 @@ class UserInterface:
                 )
 
         if self.state.get('current_action') == 'generate_cases' and not self.state.get('show_interrupt_modal'):
-            with st.spinner("Gerando Casos de Teste… Aguarde um momento..."):
-                try:
-                    resp = self.client.trigger_generation(
-                        self.state.get('doc_text'),
-                        self.state.get('matriz'),
-                        self.state.get('user_answers'),
-                        self.state.get('project_name'),
-                        ", ".join(self.state.get('tipo_documento') or []),
-                    )
-                    casos = resp.get('casos_de_teste') or []
-                    if not casos:
-                        self._flash_error("Lista de casos vazia.")
-                        self.clear_action()
-                    else:
-                        self.state.set('test_cases', casos)
-                        self._set_step(4, allow_during_processing=True)
-                        self.clear_action()
-                        st.rerun()
-                except Exception as error:
-                    self._err(error)
+            matriz_completa = self.state.get('matriz') or []
+            with st.status("Gerando Casos de Teste...", expanded=True) as status:
+                resultado_casos = self._gerar_casos_em_lotes(
+                    self.state.get('doc_text'),
+                    matriz_completa,
+                    self.state.get('user_answers'),
+                    self.state.get('project_name'),
+                    ", ".join(self.state.get('tipo_documento') or []),
+                    status,
+                )
+                if resultado_casos is None:
+                    return
+                casos, erros = resultado_casos
+                if not casos and erros:
+                    status.update(label="Falha ao gerar Casos de Teste.", state="error", expanded=True)
+                    self._flash_error("Não foi possível gerar nenhum Caso de Teste — todos os lotes falharam.")
                     self.clear_action()
+                elif erros:
+                    status.update(label=f"Concluído com {len(erros)} lote(s) com falha.", state="complete")
+                    numeros_lotes_falhos = ", ".join(str(n) for n, _ in erros)
+                    self._flash_warning(
+                        f"{len(casos)} Caso(s) gerado(s), mas {len(erros)} lote(s) de geração falharam "
+                        f"(lote(s) {numeros_lotes_falhos}) — alguns itens da Matriz podem ter ficado sem "
+                        "Caso. Revise a lista abaixo, gere manualmente o que faltar, ou volte e tente de "
+                        "novo depois."
+                    )
+                    self.state.set('test_cases', casos)
+                    self._set_step(4, allow_during_processing=True)
+                    self.clear_action()
+                    st.rerun()
+                else:
+                    status.update(label=f"{len(casos)} Caso(s) de Teste gerado(s).", state="complete")
+                    self.state.set('test_cases', casos)
+                    self._set_step(4, allow_during_processing=True)
+                    self.clear_action()
+                    st.rerun()
 
     def step_4(self):
         st.subheader("Passo 4 – Console de Casos de Teste")
@@ -1653,27 +1935,38 @@ class UserInterface:
                 )
 
         if self.state.get('current_action') == 'generate_plans' and not self.state.get('show_interrupt_modal'):
-            with st.spinner("Gerando Planos de Teste com a IA… isso pode levar alguns minutos."):
-                try:
-                    resp = self.client.trigger_plans(
-                        self.state.get('doc_text'),
-                        self.state.get('matriz'),
-                        self.state.get('test_cases'),
-                        self.state.get('user_answers'),
-                        self.state.get('project_name'),
-                    )
-                    plans = resp.get('planos_de_teste') or []
-                    if not plans:
-                        self._flash_error("Nenhum Plano de Teste retornado. Valide a chave JSON de saída no n8n.")
-                        self.clear_action()
+            with st.status("Gerando Planos de Teste...", expanded=True) as status:
+                resultado_planos = self._gerar_planos_em_lotes(
+                    self.state.get('doc_text'),
+                    self.state.get('matriz'),
+                    self.state.get('test_cases'),
+                    self.state.get('user_answers'),
+                    self.state.get('project_name'),
+                    status,
+                )
+                if resultado_planos is None:
+                    return
+                plans, erros = resultado_planos
+                if not plans:
+                    status.update(label="Falha ao gerar Planos de Teste.", state="error", expanded=True)
+                    if erros:
+                        self._flash_error(f"Não foi possível gerar Planos — todos os lotes falharam: {erros[0][1]}")
                     else:
-                        self.state.set('test_plans', plans)
-                        self._set_step(5, allow_during_processing=True)
-                        self.clear_action()
-                        st.rerun()
-                except Exception as error:
-                    self._err(error)
+                        self._flash_error("Nenhum Plano de Teste retornado. Valide a chave JSON de saída no n8n.")
                     self.clear_action()
+                else:
+                    if erros:
+                        status.update(label=f"Concluído com {len(erros)} lote(s) com falha.", state="complete")
+                        self._flash_warning(
+                            f"{len(plans)} Plano(s) gerado(s), mas {len(erros)} lote(s) de Casos "
+                            "falharam — pode faltar algum Caso sem Plano. Revise antes de prosseguir."
+                        )
+                    else:
+                        status.update(label=f"{len(plans)} Plano(s) de Teste gerado(s).", state="complete")
+                    self.state.set('test_plans', plans)
+                    self._set_step(5, allow_during_processing=True)
+                    self.clear_action()
+                    st.rerun()
 
     def step_5(self):
         st.subheader("Passo 5 – Refinamento dos Planos de Teste")
@@ -1958,7 +2251,7 @@ class UserInterface:
 
         with st.container(key="azure_blue_btn_fetch_static_plans"):
             st.button(
-                "🔍 Buscar Test Plans existentes",
+                "🔍 Buscar Test Plans existentes no Projeto",
                 disabled=self.state.get('is_processing'),
                 key="btn_fetch_static_plans",
                 on_click=self.trigger_action,
@@ -1966,8 +2259,11 @@ class UserInterface:
             )
         if self.state.get('current_action') == 'fetch_static_plans' and not self.state.get('show_interrupt_modal'):
             try:
-                with st.spinner(f"Buscando Test Plans em '{fallback_area_path}'..."):
-                    existing = ado_client.list_test_plans_for_area_path(fallback_area_path)
+                # Test Plans pertencem ao PROJETO, não à Area Path (mesmo
+                # que uma Area Path tenha sido escolhida em outra parte do
+                # fluxo, pra achar Work Items no board) — busca sem filtro.
+                with st.spinner("Buscando Test Plans do projeto..."):
+                    existing = ado_client.list_test_plans()
                 self.state.set('ado_static_existing_plans', existing)
                 self.state.set('ado_static_existing_plans_path', fallback_area_path)
             except AzureDevOpsError as error:
@@ -2480,6 +2776,61 @@ class UserInterface:
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
+    @staticmethod
+    def _filtrar_por_coluna_e_tag(itens: list, area_path_selecionada: bool, key_prefix: str) -> list:
+        """
+        Filtro opcional por Coluna do Board e/ou Tag — só aparece quando
+        uma Area Path específica foi escolhida (não faz sentido filtrar
+        coluna/tag "do projeto inteiro", que pode ter vários boards/times
+        misturados). Deriva as opções DIRETO dos itens já buscados (não é
+        uma chamada nova à API) — evita a complexidade de descobrir qual
+        Team é dono de qual Area Path só pra listar colunas.
+
+        `itens`: lista de dicts com 'board_column' e 'tags' (já vem assim
+        de fetch_work_items_by_area_path / get_work_items_basic_fields).
+        Retorna a lista filtrada (ou a lista original, sem filtro nenhum
+        selecionado ou sem Area Path específica escolhida).
+        """
+        if not area_path_selecionada or not itens:
+            return itens
+
+        colunas_disponiveis = sorted({it.get('board_column', '') for it in itens if it.get('board_column')})
+        tags_disponiveis = sorted({t for it in itens for t in (it.get('tags') or [])})
+
+        if not colunas_disponiveis and not tags_disponiveis:
+            return itens
+
+        st.caption("Filtro opcional — restringe a lista abaixo por Coluna do Board e/ou Tag:")
+        col_f1, col_f2 = st.columns(2)
+        colunas_escolhidas = []
+        tags_escolhidas = []
+        with col_f1:
+            if colunas_disponiveis:
+                colunas_escolhidas = st.multiselect(
+                    "📋 Coluna do Board", options=colunas_disponiveis,
+                    key=f"{key_prefix}_filtro_coluna",
+                    help="Deriva das colunas que os itens encontrados realmente têm — não é uma lista fixa do projeto.",
+                )
+        with col_f2:
+            if tags_disponiveis:
+                tags_escolhidas = st.multiselect(
+                    "🏷️ Tag", options=tags_disponiveis,
+                    key=f"{key_prefix}_filtro_tag",
+                    help="Deriva das tags que os itens encontrados realmente têm.",
+                )
+
+        if not colunas_escolhidas and not tags_escolhidas:
+            return itens
+
+        filtrados = []
+        for it in itens:
+            if colunas_escolhidas and it.get('board_column', '') not in colunas_escolhidas:
+                continue
+            if tags_escolhidas and not (set(it.get('tags') or []) & set(tags_escolhidas)):
+                continue
+            filtrados.append(it)
+        return filtrados
+
     def _setup_azure_devops_connection(self, show_area_path_picker: bool = True):
         """
         Renderiza PAT + Organização + Projeto (+ Area Path, se
@@ -2986,7 +3337,7 @@ class UserInterface:
 
             wi_labels = {
                 f"{item['id']} - {item['title']} ({item['type']}, {item['state']})": item
-                for item in board_items
+                for item in self._filtrar_por_coluna_e_tag(board_items, bool(area_paths), "ado_wi_matching")
             }
             selected_ids = self.state.get('ado_wi_matching_selected_ids')
             if selected_ids is None:
@@ -3202,13 +3553,9 @@ class UserInterface:
             st.divider()
             st.markdown("### 📋 Test Plan")
 
-            existing_plans_label = (
-                f"🔍 Buscar Test Plans existentes ({len(area_paths)} Area Path(s))" if area_paths
-                else "🔍 Buscar Test Plans existentes no Projeto"
-            )
             with st.container(key="azure_blue_btn_fetch_existing_plans"):
                 st.button(
-                    existing_plans_label,
+                    "🔍 Buscar Test Plans existentes no Projeto",
                     disabled=self.state.get('is_processing'),
                     key="btn_fetch_existing_plans",
                     on_click=self.trigger_action,
@@ -3216,15 +3563,13 @@ class UserInterface:
                 )
             if self.state.get('current_action') == 'fetch_existing_plans' and not self.state.get('show_interrupt_modal'):
                 try:
-                    paths_key = tuple(sorted(area_paths)) if area_paths else (ado_project,)
-                    with st.spinner(f"Buscando Test Plans em {len(paths_key)} Area Path(s)..."):
-                        plans_by_id = {}
-                        for ap in paths_key:
-                            for p in ado_client.list_test_plans_for_area_path(ap):
-                                plans_by_id[p["id"]] = p
-                        existing = list(plans_by_id.values())
+                    # Test Plans pertencem ao PROJETO, não à Area Path (mesmo
+                    # que uma ou mais Area Paths tenham sido escolhidas acima,
+                    # pra achar Work Items no board) — busca sem filtro.
+                    with st.spinner("Buscando Test Plans do projeto..."):
+                        existing = ado_client.list_test_plans()
                     self.state.set('ado_existing_plans_in_path', existing)
-                    self.state.set('ado_existing_plans_area_path', paths_key)
+                    self.state.set('ado_existing_plans_fetched', True)
                 except AzureDevOpsError as error:
                     self._flash_error(f"Não foi possível buscar Test Plans existentes: {error}")
                 except Exception as error:
@@ -3232,12 +3577,7 @@ class UserInterface:
                 self.clear_action()
                 st.rerun()
 
-            current_paths_key = tuple(sorted(area_paths)) if area_paths else (ado_project,)
-            existing_plans = (
-                self.state.get('ado_existing_plans_in_path') or []
-                if self.state.get('ado_existing_plans_area_path') == current_paths_key
-                else []
-            )
+            existing_plans = self.state.get('ado_existing_plans_in_path') or [] if self.state.get('ado_existing_plans_fetched') else []
 
             plan_mode_options = ["Criar novo Test Plan"]
             if existing_plans:
@@ -3535,6 +3875,8 @@ class UserInterface:
         if not board_items:
             return
 
+        board_items = self._filtrar_por_coluna_e_tag(board_items, bool(area_paths), "wigen")
+
         wi_labels = {
             f"{item['id']} - {item['title']} ({item['type']}, {item['state']})": item
             for item in board_items
@@ -3559,7 +3901,29 @@ class UserInterface:
             return
 
         selected_wis_full = [wi_labels[label] for label in selected_labels]
+        self._render_wi_spec_confirmation(
+            ado_client, ado_project, selected_wis_full, selected_ids,
+            confirm_action_key="confirm_wigen",
+            log_flow_label="Gerar a partir de Work Items",
+        )
 
+    def _render_wi_spec_confirmation(self, ado_client, ado_project: str, selected_wis_full: list, selected_ids: list,
+                                       confirm_action_key: str, log_flow_label: str):
+        """
+        Parte compartilhada entre 'Gerar a partir de Work Items' (varre o
+        board por Area Path) e 'Gerar a partir de Query' (roda uma query
+        já salva no Azure DevOps) — depois que a lista de Work Items já
+        foi escolhida, não importa por qual caminho, o resto do fluxo é
+        idêntico: Nome do Test Plan, Ambiente, documentos complementares
+        opcionais, Tipo de Documento (se houver complementar), confirmar.
+
+        confirm_action_key: precisa ser diferente entre quem chama, senão
+        os dois fluxos disputariam o mesmo 'current_action' se ambos
+        ficassem montados ao mesmo tempo (não deveria acontecer, já que
+        só um modo fica visível por vez, mas evita acoplamento frágil).
+        log_flow_label: nome do fluxo pro log de auditoria (ex.: 'Gerar a
+        partir de Work Items' vs. 'Gerar a partir de Query').
+        """
         col_name, col_amb = st.columns(2)
         with col_name:
             project_name = self._render_project_name_field(ado_project, "project_name", "Nome do Test Plan *")
@@ -3630,22 +3994,22 @@ class UserInterface:
         tipo_documento_obrigatorio = bool(uploaded_complementares)
         falta_tipo_documento = tipo_documento_obrigatorio and not tipo_documento
 
-        with st.container(key="azure_blue_btn_confirm_wigen"):
+        with st.container(key=f"azure_blue_btn_{confirm_action_key}"):
             st.button(
                 "✅ Confirmar e Gerar Especificação",
                 type="primary",
                 use_container_width=True,
                 disabled=self.state.get('is_processing') or not project_name.strip() or not ambiente or falta_tipo_documento,
-                key="btn_confirm_wigen",
+                key=f"btn_{confirm_action_key}",
                 on_click=self.trigger_action,
-                args=("confirm_wigen",),
+                args=(confirm_action_key,),
             )
         if not ambiente or falta_tipo_documento:
             msg = "Selecione o Ambiente dos Testes"
             msg += " e o Tipo de Documento" if falta_tipo_documento else ""
             st.caption(f"{msg} para habilitar a confirmação.")
 
-        if self.state.get('current_action') == 'confirm_wigen' and not self.state.get('show_interrupt_modal'):
+        if self.state.get('current_action') == confirm_action_key and not self.state.get('show_interrupt_modal'):
             try:
                 with st.spinner(f"Buscando detalhes completos de {len(selected_ids)} Work Item(s)..."):
                     details = ado_client.get_work_items_full_details(selected_ids)
@@ -3674,11 +4038,152 @@ class UserInterface:
                             text = text + "\n\n" + texto_docs
                             log_detail += f" + {len(uploaded_complementares)} documento(s) complementar(es)"
 
-                    self._log("Gerar a partir de Work Items", "Passo 1", log_detail)
+                    self._log(log_flow_label, "Passo 1", log_detail)
                     self._run_analysis(text, project_name.strip())
             except Exception as error:
                 self._flash_error(f"Erro ao buscar detalhes dos Work Items: {error}")
                 self.clear_action()
+
+    def _step1_from_query(self):
+        """
+        Modo 'Gerar a partir de Query' — a pessoa escolhe uma query JÁ
+        SALVA no Azure DevOps (My Queries ou Shared Queries), o app roda
+        e traz os Work Items que ela retorna, com a mesma tela de
+        inclusão/exclusão do modo 'Gerar a partir de Work Items' — dali
+        em diante, o fluxo é idêntico (reaproveita
+        _render_wi_spec_confirmation).
+        """
+        st.caption(
+            "Escolhe uma query já salva no Azure DevOps (sua ou compartilhada) — os Work Items "
+            "que ela retorna viram a lista pra escolher o que entra na especificação, igual ao "
+            "modo 'Gerar a partir de Work Items'."
+        )
+
+        conn = self._setup_azure_devops_connection(show_area_path_picker=False)
+        if conn is None:
+            return
+        ado_client, ado_org, ado_project, _default_area_path = conn
+
+        # Se o atalho "Usar pra Gerar Testes" (dentro de Criar Query com IA)
+        # já rodou a query e populou isso, pula direto pra escolha de
+        # Work Items — sem precisar escolher uma query salva de novo.
+        veio_do_atalho = bool(self.state.get('query_wigen_board_items')) and not self.state.get('query_wigen_available_queries')
+        if veio_do_atalho:
+            st.info("✨ Usando o resultado da query que você acabou de criar em '🔎 Criar Query com IA'.")
+            if st.button("🔄 Escolher uma query salva em vez disso", key="btn_wiql_atalho_reset"):
+                self.state.set('query_wigen_board_items', [])
+                st.rerun()
+        else:
+            with st.container(key="azure_blue_btn_fetch_queries"):
+                st.button(
+                    "🔄 Buscar Queries Salvas",
+                    disabled=self.state.get('is_processing'),
+                    key="btn_fetch_saved_queries",
+                    on_click=self.trigger_action,
+                    args=("fetch_saved_queries",),
+                    use_container_width=True,
+                )
+
+            if self.state.get('current_action') == 'fetch_saved_queries' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner("Buscando suas queries salvas no Azure DevOps..."):
+                        queries = ado_client.list_saved_queries()
+                    self.state.set('query_wigen_available_queries', queries)
+                    if 'query_wigen_select' in st.session_state:
+                        del st.session_state['query_wigen_select']
+                    if not queries:
+                        self._flash_warning("Nenhuma query salva encontrada nesse projeto (nem em 'My Queries', nem em 'Shared Queries').")
+                except AzureDevOpsError as error:
+                    self._flash_error(f"{error}")
+                    self.state.set('query_wigen_available_queries', [])
+                except Exception as error:
+                    self._flash_error(f"Erro inesperado: {error}")
+                    self.state.set('query_wigen_available_queries', [])
+                self.clear_action()
+                st.rerun()
+
+            queries = self.state.get('query_wigen_available_queries') or []
+            if not queries:
+                st.caption("Busque as queries salvas acima pra continuar.")
+                return
+
+        if not veio_do_atalho:
+            query_labels = {q["path"]: q for q in queries}
+            st.divider()
+            selected_query_label = st.selectbox(
+                "📋 Query salva",
+                options=list(query_labels.keys()),
+                key="query_wigen_select",
+                disabled=self.state.get('is_processing'),
+                index=None,
+                placeholder="Escolha uma query...",
+            )
+
+            with st.container(key="azure_blue_btn_run_query"):
+                st.button(
+                    "▶️ Rodar Query",
+                    disabled=self.state.get('is_processing') or not selected_query_label,
+                    key="btn_run_saved_query",
+                    on_click=self.trigger_action,
+                    args=("run_saved_query",),
+                    use_container_width=True,
+                )
+
+            if self.state.get('current_action') == 'run_saved_query' and not self.state.get('show_interrupt_modal'):
+                try:
+                    query_obj = query_labels[selected_query_label]
+                    with st.spinner(f"Rodando a query '{query_obj['name']}'..."):
+                        resultado = ado_client.run_wiql_query(query_obj['wiql'])
+                        ids_to_show = [item['id'] for item in resultado['items']]
+                        details = ado_client.get_work_items_basic_fields(ids_to_show) if ids_to_show else []
+                    self.state.set('query_wigen_board_items', details)
+                    self.state.set('query_wigen_selected_ids', [])
+                    if 'query_wigen_multiselect' in st.session_state:
+                        del st.session_state['query_wigen_multiselect']
+                    if not details:
+                        self._flash_warning(f"A query '{query_obj['name']}' não retornou nenhum Work Item.")
+                except AzureDevOpsError as error:
+                    self._flash_error(f"Erro ao rodar a query: {error}")
+                    self.state.set('query_wigen_board_items', [])
+                except Exception as error:
+                    self._flash_error(f"Erro inesperado: {error}")
+                    self.state.set('query_wigen_board_items', [])
+                self.clear_action()
+                st.rerun()
+
+        board_items = self.state.get('query_wigen_board_items') or []
+        if not board_items:
+            return
+
+        wi_labels = {
+            f"{item['id']} - {item['title']} ({item['type']}, {item['state']})": item
+            for item in board_items
+        }
+        selected_ids = self.state.get('query_wigen_selected_ids') or []
+        label_by_id = {item['id']: label for label, item in wi_labels.items()}
+        current_labels = [label_by_id[wid] for wid in selected_ids if wid in label_by_id]
+
+        selected_labels = st.multiselect(
+            "🎯 Work Items para usar como especificação",
+            options=list(wi_labels.keys()),
+            default=current_labels,
+            disabled=self.state.get('is_processing'),
+            key="query_wigen_multiselect",
+            help="Selecione quantos quiser — clique em vários seguidos, sem precisar segurar Ctrl/Shift.",
+        )
+        selected_ids = [wi_labels[label]['id'] for label in selected_labels]
+        self.state.set('query_wigen_selected_ids', selected_ids)
+
+        if not selected_labels:
+            st.caption("Nenhum Work Item selecionado ainda — escolha acima.")
+            return
+
+        selected_wis_full = [wi_labels[label] for label in selected_labels]
+        self._render_wi_spec_confirmation(
+            ado_client, ado_project, selected_wis_full, selected_ids,
+            confirm_action_key="confirm_query_wigen",
+            log_flow_label="Gerar a partir de Query",
+        )
 
     def _mind_map_page(self):
         st.subheader("🧠 Mapa Mental")
@@ -3686,9 +4191,8 @@ class UserInterface:
             self.state.set('show_mindmap_page', False)
             st.rerun()
 
-        current_username = st.session_state.get(SESSION_USER_KEY, "")
-        if current_username != self.config.owner_username:
-            st.error("❌ Esta área é restrita ao administrador do app.")
+        if not self._get_permission_cached("mapa_mental"):
+            st.error("❌ Você não tem permissão pra acessar esta área.")
             return
 
         st.caption(
@@ -3817,6 +4321,8 @@ class UserInterface:
             if not board_items:
                 st.caption("Busque os Work Items acima pra continuar.")
                 return
+
+            board_items = self._filtrar_por_coluna_e_tag(board_items, bool(area_paths), "mindmap")
 
             wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
             selected_labels = st.multiselect(
@@ -4395,9 +4901,8 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             self.state.set('show_document_store_page', False)
             st.rerun()
 
-        current_username = st.session_state.get(SESSION_USER_KEY, "")
-        if current_username != self.config.owner_username:
-            st.error("❌ Esta área é restrita ao administrador do app.")
+        if not self._get_permission_cached("documentos_armazenados"):
+            st.error("❌ Você não tem permissão pra acessar esta área.")
             return
 
         st.caption(
@@ -4470,31 +4975,33 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                                 except Exception as error:
                                     st.error(f"❌ {error}")
                 st.divider()
-                delete_flag_key = f"confirm_delete_group_{grupo['grupo_id']}"
-                if not self.state.get(delete_flag_key):
-                    if st.button("🗑️ Excluir este grupo", key=f"btn_delete_group_{grupo['grupo_id']}"):
-                        self.state.set(delete_flag_key, True)
-                        st.rerun()
-                else:
-                    st.warning("Tem certeza? Isso apaga os arquivos deste grupo permanentemente do banco.")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("✅ Sim, excluir", key=f"btn_confirm_delete_{grupo['grupo_id']}", type="primary", use_container_width=True):
-                            try:
-                                store.excluir_grupo(grupo['grupo_id'])
-                                st.success("Excluído.")
-                                self._log(
-                                    "Excluir Documentação Armazenada", grupo['fluxo_origem'],
-                                    grupo['nome_projeto'] or '',
-                                )
-                            except Exception as error:
-                                st.error(f"❌ {error}")
-                            self.state.set(delete_flag_key, False)
+                current_username_doc_store = st.session_state.get(SESSION_USER_KEY, "")
+                if current_username_doc_store == self.config.owner_username:
+                    delete_flag_key = f"confirm_delete_group_{grupo['grupo_id']}"
+                    if not self.state.get(delete_flag_key):
+                        if st.button("🗑️ Excluir este grupo", key=f"btn_delete_group_{grupo['grupo_id']}"):
+                            self.state.set(delete_flag_key, True)
                             st.rerun()
-                    with c2:
-                        if st.button("✖ Cancelar", key=f"btn_cancel_delete_{grupo['grupo_id']}", use_container_width=True):
-                            self.state.set(delete_flag_key, False)
-                            st.rerun()
+                    else:
+                        st.warning("Tem certeza? Isso apaga os arquivos deste grupo permanentemente do banco.")
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("✅ Sim, excluir", key=f"btn_confirm_delete_{grupo['grupo_id']}", type="primary", use_container_width=True):
+                                try:
+                                    store.excluir_grupo(grupo['grupo_id'])
+                                    st.success("Excluído.")
+                                    self._log(
+                                        "Excluir Documentação Armazenada", grupo['fluxo_origem'],
+                                        grupo['nome_projeto'] or '',
+                                    )
+                                except Exception as error:
+                                    st.error(f"❌ {error}")
+                                self.state.set(delete_flag_key, False)
+                                st.rerun()
+                        with c2:
+                            if st.button("✖ Cancelar", key=f"btn_cancel_delete_{grupo['grupo_id']}", use_container_width=True):
+                                self.state.set(delete_flag_key, False)
+                                st.rerun()
 
     def _manual_generation_page(self):
         st.subheader("📘 Manual de Testes (UAT)")
@@ -4502,9 +5009,8 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             self.state.set('show_manual_page', False)
             st.rerun()
 
-        current_username = st.session_state.get(SESSION_USER_KEY, "")
-        if current_username != self.config.owner_username:
-            st.error("❌ Esta área é restrita ao administrador do app.")
+        if not self._get_permission_cached("manual_testes"):
+            st.error("❌ Você não tem permissão pra acessar esta área.")
             return
 
         st.caption(
@@ -4568,52 +5074,123 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 return
             ado_client, ado_org, ado_project, _default_area_path = conn
 
-            if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
-                area_path_options = self.state.get('ado_available_area_paths') or []
-            else:
-                try:
-                    with st.spinner("Buscando Area Paths do projeto..."):
-                        area_path_options = ado_client.list_area_paths()
-                    self.state.set('ado_available_area_paths', area_path_options)
-                    self.state.set('ado_area_paths_project', ado_project)
-                except Exception as error:
-                    st.error(f"❌ Não foi possível buscar Area Paths: {error}")
-                    area_path_options = []
+            forma_busca = st.radio(
+                "Como buscar os Work Items?",
+                options=["📁 Board (Area Path)", "🔎 Query salva no Azure DevOps"],
+                index=0,
+                key="manual_wi_forma_busca",
+                horizontal=True,
+                disabled=self.state.get('is_processing'),
+            )
 
-            col_ap, col_btn = st.columns(2)
-            with col_ap:
-                area_paths_manual = st.multiselect(
-                    "Area Path(s)",
-                    options=area_path_options,
-                    disabled=self.state.get('is_processing'),
-                    key="manual_area_paths_select",
-                )
-            with col_btn:
-                with st.container(key="azure_blue_btn_fetch_wi_manual"):
+            if forma_busca.startswith("🔎"):
+                with st.container(key="azure_blue_btn_fetch_manual_queries"):
                     st.button(
-                        "🔄 Buscar Work Items do Board",
+                        "🔄 Buscar Queries Salvas",
                         disabled=self.state.get('is_processing'),
-                        key="btn_fetch_wi_manual",
+                        key="btn_fetch_manual_queries",
                         on_click=self.trigger_action,
-                        args=("fetch_wi_manual",),
+                        args=("fetch_manual_queries",),
                         use_container_width=True,
                     )
-            if self.state.get('current_action') == 'fetch_wi_manual' and not self.state.get('show_interrupt_modal'):
-                try:
-                    paths_to_search = area_paths_manual or [ado_project]
-                    with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
-                        items_by_id = {}
-                        for ap in paths_to_search:
-                            for item in ado_client.fetch_work_items_by_area_path(ap, excluded_states=set()):
-                                items_by_id[item["id"]] = item
-                    self.state.set('manual_board_items', list(items_by_id.values()))
-                except Exception as error:
-                    self._flash_error(f"Não foi possível buscar Work Items: {error}")
-                self.clear_action()
-                st.rerun()
+                if self.state.get('current_action') == 'fetch_manual_queries' and not self.state.get('show_interrupt_modal'):
+                    try:
+                        with st.spinner("Buscando suas queries salvas no Azure DevOps..."):
+                            queries_manual = ado_client.list_saved_queries()
+                        self.state.set('manual_query_available', queries_manual)
+                        if not queries_manual:
+                            self._flash_warning("Nenhuma query salva encontrada nesse projeto.")
+                    except Exception as error:
+                        self._flash_error(f"Erro ao buscar queries: {error}")
+                        self.state.set('manual_query_available', [])
+                    self.clear_action()
+                    st.rerun()
+
+                queries_manual = self.state.get('manual_query_available') or []
+                if not queries_manual:
+                    st.caption("Busque as queries salvas acima pra continuar.")
+                    return
+
+                query_labels_manual = {q["path"]: q for q in queries_manual}
+                escolha_query_manual = st.selectbox(
+                    "📋 Query salva", options=list(query_labels_manual.keys()),
+                    key="manual_query_select", index=None, placeholder="Escolha uma query...",
+                )
+                with st.container(key="azure_blue_btn_run_manual_query"):
+                    st.button(
+                        "▶️ Rodar Query",
+                        disabled=self.state.get('is_processing') or not escolha_query_manual,
+                        key="btn_run_manual_query",
+                        on_click=self.trigger_action,
+                        args=("run_manual_query",),
+                        use_container_width=True,
+                    )
+                if self.state.get('current_action') == 'run_manual_query' and not self.state.get('show_interrupt_modal'):
+                    try:
+                        query_obj = query_labels_manual[escolha_query_manual]
+                        with st.spinner(f"Rodando a query '{query_obj['name']}'..."):
+                            resultado = ado_client.run_wiql_query(query_obj['wiql'])
+                            ids_to_show = [item['id'] for item in resultado['items']]
+                            details = ado_client.get_work_items_basic_fields(ids_to_show) if ids_to_show else []
+                        self.state.set('manual_board_items', details)
+                        if 'manual_wi_select' in st.session_state:
+                            del st.session_state['manual_wi_select']
+                        if not details:
+                            self._flash_warning(f"A query '{query_obj['name']}' não retornou nenhum Work Item.")
+                    except Exception as error:
+                        self._flash_error(f"Erro ao rodar a query: {error}")
+                        self.state.set('manual_board_items', [])
+                    self.clear_action()
+                    st.rerun()
+                area_paths_manual = []  # query não usa Area Path — filtro de Coluna/Tag não se aplica aqui
+            else:
+                if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+                    area_path_options = self.state.get('ado_available_area_paths') or []
+                else:
+                    try:
+                        with st.spinner("Buscando Area Paths do projeto..."):
+                            area_path_options = ado_client.list_area_paths()
+                        self.state.set('ado_available_area_paths', area_path_options)
+                        self.state.set('ado_area_paths_project', ado_project)
+                    except Exception as error:
+                        st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                        area_path_options = []
+
+                col_ap, col_btn = st.columns(2)
+                with col_ap:
+                    area_paths_manual = st.multiselect(
+                        "Area Path(s)",
+                        options=area_path_options,
+                        disabled=self.state.get('is_processing'),
+                        key="manual_area_paths_select",
+                    )
+                with col_btn:
+                    with st.container(key="azure_blue_btn_fetch_wi_manual"):
+                        st.button(
+                            "🔄 Buscar Work Items do Board",
+                            disabled=self.state.get('is_processing'),
+                            key="btn_fetch_wi_manual",
+                            on_click=self.trigger_action,
+                            args=("fetch_wi_manual",),
+                            use_container_width=True,
+                        )
+                if self.state.get('current_action') == 'fetch_wi_manual' and not self.state.get('show_interrupt_modal'):
+                    try:
+                        paths_to_search = area_paths_manual or [ado_project]
+                        with st.spinner(f"Buscando Work Items em {len(paths_to_search)} Area Path(s)..."):
+                            items_by_id = {}
+                            for ap in paths_to_search:
+                                for item in ado_client.fetch_work_items_by_area_path(ap, excluded_states=set()):
+                                    items_by_id[item["id"]] = item
+                        self.state.set('manual_board_items', list(items_by_id.values()))
+                    except Exception as error:
+                        self._flash_error(f"Não foi possível buscar Work Items: {error}")
+                    self.clear_action()
+                    st.rerun()
 
             board_items = self.state.get('manual_board_items') or []
             if board_items:
+                board_items = self._filtrar_por_coluna_e_tag(board_items, bool(area_paths_manual), "manual")
                 wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
                 selected_labels = st.multiselect(
                     "Work Items a incluir no manual",
@@ -4954,6 +5531,69 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                     args=("confirm_wiql",),
                 )
 
+            st.caption("Ou pule a etapa de salvar a query e use o resultado dela direto:")
+            col_atalho1, col_atalho2 = st.columns(2)
+            with col_atalho1:
+                if self._get_permission_cached("azure_query"):
+                    st.button(
+                        "🎯 Usar pra Gerar Testes",
+                        use_container_width=True,
+                        disabled=self.state.get('is_processing'),
+                        key="btn_wiql_para_testes",
+                        on_click=self.trigger_action,
+                        args=("wiql_atalho_testes",),
+                        help="Roda essa query de novo (sem limite de 50) e já leva pro Passo 1, no modo Query, com os Work Items prontos pra escolher.",
+                    )
+                else:
+                    st.caption("🎯 Gerar Testes: precisa da permissão 'azure_query'.")
+            with col_atalho2:
+                if self._get_permission_cached("manual_testes"):
+                    st.button(
+                        "📘 Usar pra Criar Manual",
+                        use_container_width=True,
+                        disabled=self.state.get('is_processing'),
+                        key="btn_wiql_para_manual",
+                        on_click=self.trigger_action,
+                        args=("wiql_atalho_manual",),
+                        help="Roda essa query de novo (sem limite de 50) e já leva pro Manual de Testes, com os Work Items prontos pra escolher.",
+                    )
+                else:
+                    st.caption("📘 Criar Manual: precisa da permissão 'manual_testes'.")
+
+            if self.state.get('current_action') in ('wiql_atalho_testes', 'wiql_atalho_manual') and not self.state.get('show_interrupt_modal'):
+                destino = self.state.get('current_action')
+                try:
+                    with st.spinner("Rodando a query e buscando todos os Work Items..."):
+                        resultado_completo = ado_client.run_wiql_query(wiql_text.strip())
+                        ids_completos = [item['id'] for item in resultado_completo['items']]
+                        detalhes_completos = ado_client.get_work_items_basic_fields(ids_completos) if ids_completos else []
+                    if destino == 'wiql_atalho_testes':
+                        self.state.set('query_wigen_board_items', detalhes_completos)
+                        self.state.set('query_wigen_selected_ids', [])
+                        self.state.set('query_wigen_available_queries', self.state.get('query_wigen_available_queries') or [])
+                        if 'query_wigen_multiselect' in st.session_state:
+                            del st.session_state['query_wigen_multiselect']
+                        st.session_state['step1_origem_radio'] = "🔎 Gerar a partir de uma Query do Azure DevOps"
+                        self.state.set('show_wiql_generation_page', False)
+                        self._set_step(1)
+                    else:
+                        self.state.set('manual_board_items', detalhes_completos)
+                        if 'manual_wi_select' in st.session_state:
+                            del st.session_state['manual_wi_select']
+                        st.session_state['manual_origem_radio'] = "🎯 Work Items do Azure DevOps"
+                        self.state.set('show_wiql_generation_page', False)
+                        self.state.set('show_manual_page', True)
+                    if not detalhes_completos:
+                        self._flash_warning("Essa query não retornou nenhum Work Item.")
+                    self.clear_action()
+                    st.rerun()
+                except AzureDevOpsError as error:
+                    self._flash_error(f"Erro ao rodar a query: {error}")
+                    self.clear_action()
+                except Exception as error:
+                    self._flash_error(f"Erro inesperado: {error}")
+                    self.clear_action()
+
             if self.state.get('current_action') == 'confirm_wiql' and not self.state.get('show_interrupt_modal'):
                 try:
                     with st.spinner(f"Criando a query '{titulo.strip()}' no Azure DevOps..."):
@@ -5036,6 +5676,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 help="Deixe vazio pra ver todos os tipos.",
             )
         filtered_items = [item for item in board_items if not tipos_filtro or item['type'] in tipos_filtro]
+        filtered_items = self._filtrar_por_coluna_e_tag(filtered_items, bool(area_paths), "report_wi")
         wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in filtered_items}
         with col_wi:
             selected_labels = st.multiselect(
@@ -5358,13 +5999,9 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "execução e as evidências (anexos) direto do Azure DevOps."
         )
 
-        fetch_label = (
-            f"🔍 Buscar Test Plans de {len(area_paths)} Area Path(s)" if area_paths
-            else "🔍 Buscar Test Plans deste Projeto"
-        )
         with st.container(key="azure_blue_btn_fetch_report_plans"):
             st.button(
-                fetch_label,
+                "🔍 Buscar Test Plans deste Projeto",
                 disabled=self.state.get('is_processing'),
                 key="btn_fetch_report_plans",
                 on_click=self.trigger_action,
@@ -5372,19 +6009,14 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             )
         if self.state.get('current_action') == 'fetch_report_plans' and not self.state.get('show_interrupt_modal'):
             try:
-                if area_paths:
-                    with st.spinner(f"Buscando Test Plans em {len(area_paths)} Area Path(s)..."):
-                        plans_by_id = {}
-                        for ap in area_paths:
-                            for p in ado_client.list_test_plans_for_area_path(ap):
-                                plans_by_id[p["id"]] = p
-                        plans = list(plans_by_id.values())
-                else:
-                    with st.spinner("Buscando Test Plans..."):
-                        plans = ado_client.list_test_plans()
+                # Test Plans pertencem ao PROJETO, não à Area Path (mesmo que
+                # uma ou mais Area Paths tenham sido escolhidas acima, pra
+                # nomear o relatório) — busca sem filtro.
+                with st.spinner("Buscando Test Plans do projeto..."):
+                    plans = ado_client.list_test_plans()
                 self.state.set('report_available_plans', plans)
                 if not plans:
-                    st.warning("Nenhum Test Plan encontrado" + (" nessas Area Paths." if area_paths else " neste projeto."))
+                    st.warning("Nenhum Test Plan encontrado neste projeto.")
             except AzureDevOpsError as error:
                 self._flash_error(f"{error}")
                 self.state.set('report_available_plans', [])
@@ -6235,6 +6867,31 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             self.state.set('show_about_page', False)
             st.rerun()
 
+        st.divider()
+        st.markdown("#### 📖 Guias em PDF")
+        username = st.session_state.get(SESSION_USER_KEY, "")
+        is_owner = username == self.config.owner_username
+        # __file__ = qa_testgen/ui/application.py -> .parent.parent = qa_testgen/ -> /assets
+        assets_dir = Path(__file__).resolve().parent.parent / "assets"
+
+        def _botao_download_guia(nome_arquivo: str, rotulo: str, key: str):
+            caminho = assets_dir / nome_arquivo
+            try:
+                pdf_bytes = caminho.read_bytes()
+                st.download_button(
+                    rotulo, data=pdf_bytes, file_name=nome_arquivo,
+                    mime="application/pdf", key=key,
+                )
+            except FileNotFoundError:
+                st.caption(f"⚠️ {nome_arquivo} ainda não foi colocado em `qa_testgen/assets/`.")
+
+        col_guia1, col_guia2 = st.columns(2)
+        with col_guia1:
+            _botao_download_guia("Guia_Usuario.pdf", "📘 Baixar Guia do Usuário", "btn_download_guia_usuario")
+        with col_guia2:
+            if is_owner:
+                _botao_download_guia("Guia_Administrador.pdf", "🛡️ Baixar Guia do Administrador", "btn_download_guia_admin")
+
         st.markdown("#### 🧭 Arquitetura geral")
         st.caption(
             "O acesso passa por aprovação antes de entrar. Depois disso, o time de QA usa o "
@@ -6253,6 +6910,18 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "isso calibra o nível de detalhe que a IA assume ao gerar Matriz e Casos."
         )
         st.markdown(self._flatten_html(self._svg_steps_diagram()), unsafe_allow_html=True)
+        st.markdown(
+            "**Passo 1 tem 3 formas de fornecer a especificação** (quem tem a permissão "
+            "certa vê todas):\n"
+            "- **📄 Enviar Documento(s)**: PDF, DOCX ou TXT\n"
+            "- **🎯 Gerar a partir de Work Items**: varre o board por Area Path, escolhe quais entram — "
+            "com uma Area Path específica escolhida, aparecem também filtros opcionais de Coluna do "
+            "Board e/ou Tag\n"
+            "- **🔎 Gerar a partir de uma Query**: parte de uma query já salva no Azure DevOps "
+            "(sua ou compartilhada) — roda a query, e você escolhe quais Work Items do "
+            "resultado entram, do mesmo jeito que no modo anterior (sem filtro de Coluna/Tag "
+            "aqui — query é escopada por Projeto, não por Area Path)"
+        )
 
         st.divider()
 
@@ -6288,6 +6957,23 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "cada um liberado só pra quem tem a permissão certa (concedida em Administração)."
         )
         st.markdown(self._flatten_html(self._svg_extras_diagram()), unsafe_allow_html=True)
+        st.markdown(
+            "- **📘 Manual de Testes**: origem por Documentos, Work Items (Board ou Query salva), ou "
+            "Mesclado — nunca tira print ao vivo, só reaproveita imagem já existente\n"
+            "- **🗄️ Documentos Armazenados**: qualquer pessoa com a permissão salva e visualiza; "
+            "**excluir um grupo é exclusivo do dono do app**, mesmo pra quem tem a permissão\n"
+            "- **🧠 Mapa Mental**: exporta em SVG ou PDF sempre com tudo expandido no arquivo, "
+            "independente do que estiver aberto/fechado na tela"
+        )
+        st.caption(
+            "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "
+            "Passo 1: essa daqui só descreve em português e **salva uma query nova dentro do "
+            "Azure DevOps** (útil pra Dashboards/widgets de lá) — não gera nada de teste. O "
+            "modo do Passo 1 faz o caminho inverso: parte de uma query **que você já tem** "
+            "salva lá, pra gerar teste a partir do resultado dela. Depois de gerar uma query "
+            "aqui, dois atalhos pulam a etapa de salvar: \"Usar pra Gerar Testes\" e \"Usar pra "
+            "Criar Manual\", cada um só visível pra quem também tem a permissão do destino."
+        )
 
         st.divider()
 
@@ -6301,8 +6987,9 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "- **PAT pessoal**: cada pessoa usa o próprio token do Azure DevOps — as ações ficam "
             "registradas no nome de quem fez, não de uma conta compartilhada, e o token nunca é "
             "salvo em disco\n"
-            "- **Permissões granulares**: acesso à Integração com Azure DevOps e ao Relatório de "
-            "Testes são liberados individualmente — quem não tem permissão nem vê o botão\n"
+            "- **Permissões granulares**: acesso à Integração com Azure DevOps, ao Relatório de "
+            "Testes, e ao modo \"Gerar a partir de uma Query\" são liberados individualmente — "
+            "quem não tem permissão nem vê a opção\n"
             "- **Logs de auditoria**: os últimos 500 eventos do app (login, aprovações, "
             "integrações, relatórios gerados, sessões revogadas) ficam visíveis só pro dono, em "
             "Administração"
@@ -6429,11 +7116,13 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
         return f"""
         <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
-        <svg width="100%" viewBox="0 0 680 130" style="max-width:680px;display:block;margin:0 auto;">
-            {node(40, 40, 135, "📊 Relatório", "Status real do board")}
-            {node(195, 40, 135, "🎯 Via Work Items", "Gera a partir do Azure")}
-            {node(350, 40, 135, "🔎 Query com IA", "WIQL por descrição")}
-            {node(505, 40, 135, "🛡️ Administração", "Permissões e Logs")}
+        <svg width="100%" viewBox="0 0 460 210" style="max-width:460px;display:block;margin:0 auto;">
+            {node(20, 15, 200, "🔎 Criar Query com IA", "WIQL por descrição")}
+            {node(240, 15, 200, "📘 Manual de Testes", "Reprodução em UAT")}
+            {node(20, 90, 200, "🗄️ Documentos Armazenados", "Excluir é só do dono")}
+            {node(240, 90, 200, "🧠 Mapa Mental", "Árvore navegável")}
+            {node(20, 165, 200, "📊 Relatório de Testes", "Status real do board")}
+            {node(240, 165, 200, "🛡️ Administração", "Permissões e Logs")}
         </svg>
         </div>
         """

@@ -279,10 +279,6 @@ class AzureDevOpsClient:
             return False
         return any(p["name"].strip().lower() == target for p in self.list_test_plans())
 
-    def list_test_plans_for_area_path(self, area_path: str) -> list:
-        """Mesma coisa que list_test_plans(), mas só os que pertencem à Area Path informada."""
-        return [p for p in self.list_test_plans() if p.get("area_path") == area_path]
-
     def get_test_plan_root_suite(self, plan_id: int) -> int:
         """
         Busca o ID da suite raiz de um Test Plan JÁ EXISTENTE (a criação de
@@ -358,9 +354,12 @@ class AzureDevOpsClient:
 
     def get_work_items_basic_fields(self, ids: list) -> list:
         """
-        Busca ID, Título, Tipo e Estado de uma lista de Work Items — usado
-        pra montar a tabela de preview da query WIQL (dados de verdade,
-        não só a contagem), sem salvar nada no Azure DevOps.
+        Busca ID, Título, Tipo, Estado, Coluna do Board e Tags de uma lista
+        de Work Items — usado tanto pro preview da query WIQL quanto pra
+        alimentar os filtros de Coluna/Tag (derivados dos itens já
+        buscados, não de uma chamada separada — Coluna de Board é por
+        Team, não por Area Path, então filtrar pelo que já veio evita
+        precisar descobrir qual Team dona daquela Area Path).
         """
         if not ids:
             return []
@@ -369,17 +368,20 @@ class AzureDevOpsClient:
         for i in range(0, len(ids), 200):
             batch = ids[i:i + 200]
             ids_str = ",".join(str(x) for x in batch)
-            fields = "System.Id,System.Title,System.WorkItemType,System.State"
+            fields = "System.Id,System.Title,System.WorkItemType,System.State,System.BoardColumn,System.Tags"
             url = f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}&api-version={API_VERSION}"
             response = self.session.get(url, headers=self.headers_json, timeout=60)
             data = self._handle_response(response, "Buscar dados dos Work Items retornados pela query")
             for wi in data.get("value", []):
                 f = wi.get("fields", {})
+                tags_raw = f.get("System.Tags", "") or ""
                 results.append({
                     "id": wi.get("id"),
                     "title": f.get("System.Title", ""),
                     "type": f.get("System.WorkItemType", ""),
                     "state": f.get("System.State", ""),
+                    "board_column": f.get("System.BoardColumn", "") or "",
+                    "tags": [t.strip() for t in tags_raw.split(";") if t.strip()],
                 })
         return results
 
@@ -468,6 +470,41 @@ class AzureDevOpsClient:
         )
         response = self.session.post(url, headers=self.headers_json, timeout=60)
         self._handle_response(response, f"Vincular casos à suite {suite_id}")
+
+    def list_saved_queries(self) -> list:
+        """
+        Lista as queries JÁ SALVAS no projeto (pastas "My Queries" e
+        "Shared Queries"), com o WIQL de cada uma já incluído (via
+        $expand=wiql, evita uma chamada extra por query) — usado pra
+        deixar a pessoa escolher uma query existente como origem dos
+        Work Items, no lugar de escrever/gerar uma nova.
+
+        Retorna uma lista achatada (sem a árvore de pastas):
+        [{'id':, 'name':, 'path':, 'wiql':}, ...] — só folhas (queries de
+        verdade), pastas em si não entram na lista.
+        """
+        url = f"{self._base_url()}/wit/queries?$depth=2&$expand=wiql&api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Queries Salvas")
+
+        queries = []
+
+        def _walk(node):
+            if node.get("isFolder"):
+                for child in node.get("children") or []:
+                    _walk(child)
+            elif node.get("wiql"):
+                queries.append({
+                    "id": node.get("id"),
+                    "name": node.get("name", ""),
+                    "path": node.get("path", node.get("name", "")),
+                    "wiql": node.get("wiql", ""),
+                })
+
+        for root_node in data.get("value", []):
+            _walk(root_node)
+
+        return queries
 
     def work_item_url(self, work_item_id: int) -> str:
         return (
@@ -688,7 +725,7 @@ class AzureDevOpsClient:
         # A API do Azure DevOps limita a 200 IDs por chamada de batch —
         # sem isso, buscas amplas (projeto inteiro, ou board grande) geram
         # uma URL enorme demais e a API rejeita a chamada.
-        fields = "System.Id,System.Title,System.WorkItemType,System.State,System.AreaPath"
+        fields = "System.Id,System.Title,System.WorkItemType,System.State,System.AreaPath,System.BoardColumn,System.Tags"
         details_data_values = []
         for i in range(0, len(ids), 200):
             batch = ids[i:i + 200]
@@ -717,6 +754,8 @@ class AzureDevOpsClient:
                 "type": f.get("System.WorkItemType", ""),
                 "state": state,
                 "area_path": f.get("System.AreaPath", area_path or self.project),
+                "board_column": f.get("System.BoardColumn", "") or "",
+                "tags": [t.strip() for t in (f.get("System.Tags", "") or "").split(";") if t.strip()],
             })
         return items
 

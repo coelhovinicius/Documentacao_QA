@@ -5,6 +5,7 @@ demarcado, imagens grandes o suficiente pra enxergar detalhe da tela.
 """
 
 import io
+import re
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4
@@ -55,13 +56,22 @@ COR_AVISO_BORDA = colors.HexColor('#F5A623')
 
 
 class ManualPdfGenerator:
+    # Mesma abordagem de lista permitida usada em pdf_report.py — mais
+    # robusta que listar emoji conhecidos, porque cobre qualquer símbolo
+    # fora do conjunto suportado pelas fontes do ReportLab, não só emoji.
+    _CARACTERES_NAO_PERMITIDOS = re.compile(
+        "[^\u0020-\u007E\u00A0-\u00FF\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u2022\n\r\t]"
+    )
 
     @staticmethod
     def _esc(text: str) -> str:
         if not text:
             return ""
+        texto = str(text)
+        limpo = ManualPdfGenerator._CARACTERES_NAO_PERMITIDOS.sub("", texto)
+        sem_espacos_duplos = re.sub(r"[ \t]{2,}", " ", limpo).strip()
         return (
-            str(text)
+            sem_espacos_duplos
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")

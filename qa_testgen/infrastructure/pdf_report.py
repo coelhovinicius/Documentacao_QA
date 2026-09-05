@@ -1,5 +1,6 @@
 import io
 import os
+import re
 from datetime import datetime
 from xml.sax.saxutils import escape as _xml_escape
 from reportlab.lib import colors
@@ -47,6 +48,18 @@ class _NumberedCanvas(_reportlab_canvas.Canvas):
 
 
 class PdfReportGenerator:
+    # Abordagem de LISTA PERMITIDA (não lista proibida): ReportLab (fontes
+    # padrão) só tem glifo confiável pra um conjunto limitado de caracteres
+    # — ASCII básico, Latin-1 (cobre acentuação do português), e uma
+    # meia-dúzia de pontuações "especiais" já usadas no texto do próprio
+    # app (travessão, aspas curvas, reticências, marcador de lista).
+    # Qualquer coisa FORA desse conjunto (emoji, símbolos decorativos,
+    # dingbats, o que for) vira quadrado preto — então é removido antes de
+    # desenhar, não importa qual caractere específico seja.
+    _CARACTERES_NAO_PERMITIDOS = re.compile(
+        "[^\u0020-\u007E\u00A0-\u00FF\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u2022\n\r\t]"
+    )
+
     @staticmethod
     def _esc(value) -> str:
         """
@@ -54,9 +67,16 @@ class PdfReportGenerator:
         ReportLab. O Paragraph interpreta o texto como uma mini-linguagem de
         marcação (parecida com XML); sem isso, conteúdo gerado pela IA que
         contenha esses caracteres (ex.: "valor > 100", "clique em <Salvar>")
-        quebra o parser com "unclosed tags".
+        quebra o parser com "unclosed tags". Também remove qualquer
+        caractere fora do conjunto suportado pelas fontes do ReportLab
+        (emoji e outros símbolos viram quadrado preto) e colapsa o espaço
+        residual que sobra no lugar de um caractere removido do meio do
+        texto.
         """
-        return _xml_escape("" if value is None else str(value))
+        texto = "" if value is None else str(value)
+        limpo = PdfReportGenerator._CARACTERES_NAO_PERMITIDOS.sub("", texto)
+        sem_espacos_duplos = re.sub(r"[ \t]{2,}", " ", limpo).strip()
+        return _xml_escape(sem_espacos_duplos)
 
     @staticmethod
     def _styles():
@@ -136,6 +156,19 @@ class PdfReportGenerator:
             return "PROD"
         return ""
 
+    @staticmethod
+    def _normalizar_mc_id(valor) -> str:
+        """
+        Extrai só a parte "MC-XXX" de um ID de Matriz, ignorando qualquer
+        sufixo que venha depois (ex.: "MC-001 HML" -> "MC-001"). A IA nem
+        sempre reproduz o sufixo de ambiente com fidelidade ao citar de
+        volta em requisitos_relacionados — em vez de exigir string
+        idêntica (frágil, depende 100% da IA acertar), casa pelo prefixo
+        MC-XXX em ambos os lados, o que resolve isso estruturalmente.
+        """
+        m = re.match(r'^\s*(MC-\d+)', str(valor or ''), re.IGNORECASE)
+        return m.group(1).upper() if m else str(valor or '').strip().upper()
+
     @classmethod
     def _case_label(cls, idx: int, titulo: str, sigla: str) -> str:
         prefix = f"CT{idx:02d}" + (f" {sigla}" if sigla else "")
@@ -169,7 +202,7 @@ class PdfReportGenerator:
         for tc in test_cases or []:
             tc_label = f"CT{tc_numbers.get(tc.get('titulo', ''), 0):02d}" + (f" {sigla}" if sigla else "")
             for mc_id in (tc.get('requisitos_relacionados') or []):
-                coverage_by_mc_id.setdefault(str(mc_id), []).append(tc_label)
+                coverage_by_mc_id.setdefault(cls._normalizar_mc_id(mc_id), []).append(tc_label)
 
         story.append(Spacer(1, 0.4 * cm))
         story.append(Paragraph("Documentação QA", styles['title']))
@@ -212,7 +245,7 @@ class PdfReportGenerator:
             for row in matriz:
                 mc_id = str(row.get('id', '') or '')
                 requisito = str(row.get('requisito', '') or '')
-                covering = coverage_by_mc_id.get(mc_id, [])
+                covering = coverage_by_mc_id.get(cls._normalizar_mc_id(mc_id), [])
                 if covering:
                     cov_text = ", ".join(covering)
                     row_color = COR_BRANCO

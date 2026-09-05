@@ -8,6 +8,33 @@ class WebhookClient:
         api_key = config.api_key if hasattr(config, 'api_key') else None
         self.headers = {"x-api-key": api_key} if api_key else {}
 
+    @staticmethod
+    def _levantar_erro_com_detalhe(response: requests.Response):
+        """
+        Substitui response.raise_for_status() puro — que descarta o CORPO
+        da resposta na mensagem de erro (só mostra "502 Server Error:
+        Bad Gateway for url: ..."). Quando o n8n consegue responder com
+        um corpo JSON explicando o motivo real (ex.: "Todos os
+        provedores de IA falharam: rate limit exceeded"), isso inclui
+        esse detalhe na mensagem, em vez de só o status HTTP genérico.
+        """
+        if response.ok:
+            return
+        detalhe = ""
+        try:
+            corpo = response.json()
+            detalhe = corpo.get("detalhe") or corpo.get("error") or corpo.get("message") or ""
+        except Exception:
+            texto = (response.text or "").strip()
+            if texto and len(texto) < 300:
+                detalhe = texto
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            if detalhe:
+                raise requests.HTTPError(f"{error} — detalhe do servidor: {detalhe}", response=response) from None
+            raise
+
     def _parse(self, response: requests.Response) -> dict:
         raw = response.text.strip()
         if not raw:
@@ -129,7 +156,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=300,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {"duvidas": self._extract_required_list(data, "duvidas")}
 
@@ -145,7 +172,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=300,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {"matriz": self._extract_required_list(data, "matriz")}
 
@@ -162,7 +189,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=300,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {"casos_de_teste": self._extract_required_list(data, "casos_de_teste")}
 
@@ -181,7 +208,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=300,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {"planos_de_teste": self._extract_required_list(data, "planos_de_teste")}
 
@@ -210,7 +237,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=180,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {"vinculos": self._extract_required_list(data, "vinculos")}
 
@@ -236,7 +263,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=120,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         descricao = data.get("descricao", "").strip() if isinstance(data, dict) else ""
         if not descricao:
@@ -273,7 +300,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=120,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {
             "contexto": data.get("contexto", ""),
@@ -295,7 +322,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=120,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {
             "wiql": data.get("wiql", ""),
@@ -330,7 +357,7 @@ class WebhookClient:
             headers=self.headers,
             timeout=300,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {
             "titulo_manual": data.get("titulo_manual", nome_manual),
@@ -354,6 +381,6 @@ class WebhookClient:
             headers=self.headers,
             timeout=300,
         )
-        response.raise_for_status()
+        self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
         return {"comparacoes": data.get("comparacoes", []) or []}

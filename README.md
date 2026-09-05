@@ -63,7 +63,7 @@ A geração de conteúdo usa IA (até 5 provedores em cadeia de fallback, depend
 
 | Passo | O que faz |
 |---|---|
-| **1. Upload** | Envio de documento(s) **ou** geração a partir de Work Items existentes. Exige escolher **Ambiente** (Homologação/Produção) **e Tipo de Documento** (Visão / Requisitos Funcionais / Especificações Funcionais / Outros) — o tipo calibra o nível de detalhe que a IA assume ao gerar Matriz/Casos, e sugere o modo de envio do Passo 7. Extrai imagens do corpo do documento e interpreta cada uma via IA. |
+| **1. Upload** | Envio de documento(s), geração a partir de Work Items existentes, **ou** a partir de uma query já salva no Azure DevOps. Exige escolher **Ambiente** (Homologação/Produção) **e Tipo de Documento** (Visão / Requisitos Funcionais / Especificações Funcionais / Outros) — o tipo calibra o nível de detalhe que a IA assume ao gerar Matriz/Casos, e sugere o modo de envio do Passo 7. Extrai imagens do corpo do documento e interpreta cada uma via IA. |
 | **2. Dúvidas** | A IA faz até 7 perguntas de esclarecimento sobre a especificação. |
 | **3. Matriz** | Gera a Matriz de Cobertura (MC-001...), com etiqueta de Ambiente (`MC-001 HML`/`PROD`). Editável. |
 | **4. Casos** | Gera Casos de Teste a partir da Matriz. Editável. |
@@ -71,11 +71,19 @@ A geração de conteúdo usa IA (até 5 provedores em cadeia de fallback, depend
 | **6. Download** | Exporta CSV e PDF "Documentação QA". |
 | **7. Azure DevOps** | Três modos de envio — ver seção abaixo. |
 
+### Passo 1 — as 3 formas de fornecer a especificação
+
+**📄 Enviar Documento(s)** — PDF, DOCX ou TXT. O texto (e imagens, interpretadas via IA) viram a especificação de entrada.
+
+**🎯 Gerar a partir de Work Items** — usa Descrição + Critérios de Aceite de Work Items existentes como especificação, em vez de um documento. Varre o board por Area Path (opcional — vazio considera o projeto inteiro), lista os Work Items encontrados, e a pessoa escolhe quais entram. Com uma Area Path específica escolhida, aparecem filtros opcionais de **Coluna do Board** e/ou **Tag**, derivados dos itens realmente encontrados. Disponível pra qualquer pessoa logada, usa o PAT pessoal.
+
+**🔎 Gerar a partir de uma Query** *(permissão `azure_query`)* — em vez de varrer o board, parte de uma query **já salva** no Azure DevOps (My Queries ou Shared Queries). Roda a query, traz os Work Items que ela retorna, e a pessoa escolhe quais entram — mesma tela de inclusão/exclusão do modo anterior (sem filtro de Coluna/Tag aqui — query já é escopada por Projeto, não por Area Path). Dali em diante, o fluxo é idêntico (Nome do Test Plan, Ambiente, documentos complementares, Tipo de Documento).
+
 ### Passo 7 — os 3 modos de envio ao Azure DevOps
 
 Escolhidos na tela, com sugestão automática baseada no Tipo de Documento do Passo 1 (sempre trocável manualmente):
 
-**🔗 Vincular a Work Items** — o fluxo clássico, pra quando os Work Items já existem no board. A IA sugere quais Casos de Teste se relacionam a quais Work Items; a pessoa revisa e ajusta antes de confirmar. Cria Test Cases, cria ou **reaproveita** um Test Plan existente (sem duplicar Suítes já existentes), e vincula tudo via Requirement-based Suites.
+**🔗 Vincular a Work Items** — o fluxo clássico, pra quando os Work Items já existem no board. A IA sugere quais Casos de Teste se relacionam a quais Work Items; a pessoa revisa e ajusta antes de confirmar. Cria Test Cases, cria ou **reaproveita** um Test Plan existente (sem duplicar Suítes já existentes), e vincula tudo via Requirement-based Suites. Com uma Area Path específica escolhida, também aparecem os filtros opcionais de Coluna do Board e/ou Tag.
 
 **📋 Sem Work Items** — pra projetos no início, quando só existe um Documento de Visão (e no máximo um Épico/Backlog genérico no board). Usa os Planos/Suítes/Casos que o próprio Passo 5 gerou e cria um Test Plan com **Suítes Estáticas**, sem depender de nenhum Work Item.
 
@@ -88,17 +96,19 @@ Escolhidos na tela, com sugestão automática baseada no Tipo de Documento do Pa
 
 ### Recursos adicionais (sidebar)
 
-- **🎯 Gerar a partir de Work Items** — usa Descrição + Critérios de Aceite de Work Items existentes como especificação de entrada, em vez de um documento.
-- **🔎 Criar Query com IA** — descreve em português o que quer consultar no Azure DevOps; a IA traduz pra WIQL, mostra preview real dos resultados antes de criar a query de verdade.
-- **📊 Relatório de Testes** — documenta o que foi **executado**. Status calculado pela **coluna do board (Kanban)** de cada Work Item vinculado (não pelo outcome do Test Point), com Status geral escolhido manualmente. Monta uma Matriz de Cobertura independente quando a sessão não tem uma.
-- **🛡️ Administração** *(dono do app)* — aprovadores, permissões granulares, **Sessões Ativas** (revogação remota), e **Logs de Auditoria**.
+- **🔎 Criar Query com IA** *(permissão `azure_devops`)* — descreve em português o que quer consultar no Azure DevOps; a IA traduz pra WIQL, mostra preview real dos resultados antes de **salvar a query no Azure DevOps** (não gera nenhum teste — é o caminho inverso do modo "Gerar a partir de uma Query" do Passo 1, que parte de uma query que você já tem salva). Depois de gerada, dois atalhos pulam a etapa de salvar e já aplicam o resultado direto: **"Usar pra Gerar Testes"** (leva pro Passo 1, modo Query, com os Work Items já buscados) e **"Usar pra Criar Manual"** (mesma coisa, mas pro Manual de Testes) — cada atalho só aparece pra quem também tem a permissão do destino (`azure_query` ou `manual_testes`, respectivamente).
+- **📘 Manual de Testes (UAT)** *(permissão `manual_testes`)* — gera um manual de reprodução em linguagem simples, pra times não-técnicos (Produto/Marketing) em UAT. Não tira print ao vivo — só reaproveita imagens já existentes (anexadas em documentos ou já presentes nos Work Items). Origem do conteúdo: Documentos, Work Items do Azure DevOps, ou Mesclado. Quando a origem inclui Work Items, escolhe entre buscar pelo **Board (Area Path)** ou por uma **Query salva** — mesmo padrão do Passo 1.
+- **🗄️ Documentos Armazenados** *(permissão `documentos_armazenados`)* — guarda CSVs/PDFs gerados no banco de documentos, organizados por grupo, pra buscar depois sem precisar gerar de novo. Qualquer pessoa com a permissão salva e visualiza; **excluir um grupo é exclusivo do dono do app**, mesmo para quem tem a permissão.
+- **🧠 Mapa Mental** *(permissão `mapa_mental`)* — visualização em árvore (Work Item → Suítes → Casos), navegável e com zoom. Exporta em SVG (direto do navegador) ou PDF (gerado no servidor), sempre com tudo expandido no arquivo exportado, independente do que estiver expandido/recolhido na tela.
+- **📊 Relatório de Testes** *(permissão `execution_report`)* — documenta o que foi **executado**. Status calculado pela **coluna do board (Kanban)** de cada Work Item vinculado (não pelo outcome do Test Point), com Status geral escolhido manualmente. Monta uma Matriz de Cobertura independente quando a sessão não tem uma.
+- **🛡️ Administração** *(dono do app)* — usuários, aprovadores, permissões granulares, **Sessões Ativas** (revogação remota), e **Logs de Auditoria**.
 
 ### Controle de acesso e governança
 
 - **Login com aprovação**: só o dono entra direto; demais usuários precisam de aprovação a cada sessão.
 - **Sessão via ID opaco**: a URL não revela usuário nem senha — o dado fica no n8n, revogável a qualquer momento (a própria sessão, ou a de outra pessoa).
 - **PAT pessoal**: nunca salvo em disco, só na memória da sessão.
-- **Permissões granulares**: acesso à Integração com Azure DevOps e ao Relatório de Testes, liberados individualmente.
+- **Permissões granulares**: acesso à Integração com Azure DevOps, ao Relatório de Testes, e ao modo "Gerar a partir de uma Query", liberados individualmente.
 - **Logs de auditoria**: últimos 500 eventos, visíveis só ao dono.
 
 ---
@@ -220,7 +230,7 @@ Streamlit Community Cloud com auto-deploy a partir do `main` — Secrets configu
 
 **PAT pessoal** — Work Items (Read & Write) + Test Management (Read & Write). Nunca salvo em disco.
 
-**Permissões granulares** — `azure_devops` (Passo 7, Gerar via Work Items, Criar Query) e `execution_report` (Relatório de Testes), concedidas individualmente.
+**Permissões granulares** — `azure_devops` (Passo 7, Criar Query com IA), `execution_report` (Relatório de Testes), `azure_query` (Passo 1 — Gerar a partir de uma Query), `manual_testes` (Manual de Testes), `documentos_armazenados` (salvar/ver Documentos Armazenados — excluir continua exclusivo do dono, mesmo com a permissão), e `mapa_mental` (Mapa Mental), concedidas individualmente. "Gerar a partir de Work Items" (Passo 1) não exige nenhuma dessas — disponível pra qualquer pessoa logada, usa o PAT pessoal.
 
 **Status de QA via coluna do board** — no Relatório de Testes, vem da coluna do Kanban do Work Item vinculado, não do outcome do Test Point:
 

@@ -223,6 +223,10 @@ def render_pending_approvals_panel(config):
 _PERMISSOES_CONHECIDAS = [
     ("azure_devops", "🔗 Azure DevOps (Passo 7)"),
     ("execution_report", "📊 Relatório de Testes (Passo 8)"),
+    ("azure_query", "🔎 Gerar a partir de Query do Azure DevOps"),
+    ("manual_testes", "📘 Manual de Testes (UAT)"),
+    ("documentos_armazenados", "🗄️ Documentos Armazenados"),
+    ("mapa_mental", "🧠 Mapa Mental"),
 ]
 
 
@@ -514,9 +518,10 @@ def render_admin_panel(config):
             "Pra usuários cadastrados na aba \"Usuários\", também dá pra marcar/desmarcar "
             "qualquer uma dessas direto no cadastro deles."
         )
-        _render_permission_management(config, client, "azure_devops", "🔗 Acesso à Integração com Azure DevOps (Passo 7)")
-        st.divider()
-        _render_permission_management(config, client, "execution_report", "📊 Acesso ao Relatório de Testes (Passo 8)")
+        for i, (perm_key, perm_label) in enumerate(_PERMISSOES_CONHECIDAS):
+            if i > 0:
+                st.divider()
+            _render_permission_management(config, client, perm_key, perm_label)
 
     with aba_sessoes:
         _render_active_sessions(config, client)
