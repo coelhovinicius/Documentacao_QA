@@ -1507,6 +1507,18 @@ class UserInterface:
             row['id'] = f"MC-{idx:03d}"
         return matriz_combinada, erros
 
+    @staticmethod
+    def _normalizar_mc_id_geracao(valor) -> str:
+        """
+        Extrai só a parte "MC-XXX" de um ID, ignorando qualquer sufixo de
+        ambiente que venha depois (ex.: "MC-001 HML" -> "MC-001") — mesma
+        lógica usada em pdf_report.py pra Rastreabilidade, aplicada aqui
+        pra checar cobertura logo após gerar os Casos, não só na hora do
+        PDF (assim já avisa a pessoa antes mesmo dela gerar o documento).
+        """
+        m = re.match(r'^\s*(MC-\d+)', str(valor or ''), re.IGNORECASE)
+        return m.group(1).upper() if m else str(valor or '').strip().upper()
+
     def _gerar_casos_em_lotes(self, doc_text: str, matriz_completa: list, answers: dict,
                                 project: str, tipo_documento: str, status):
         """
@@ -1761,19 +1773,39 @@ class UserInterface:
                 if resultado_casos is None:
                     return
                 casos, erros = resultado_casos
+
+                # Checagem de cobertura: mesmo quando um lote "dá certo" (sem
+                # exceção nenhuma), a IA pode devolver menos Casos do que os
+                # itens da Matriz pedidos naquele lote — um "sucesso"
+                # incompleto que não aparece em `erros`. Compara a Matriz
+                # inteira contra o que os Casos realmente cobrem, ignorando
+                # sufixo de ambiente (mesma normalização do PDF), pra pegar
+                # isso também.
+                ids_matriz = {self._normalizar_mc_id_geracao(row.get('id', '')) for row in matriz_completa}
+                ids_cobertos = {
+                    self._normalizar_mc_id_geracao(mc_id)
+                    for caso in casos
+                    for mc_id in (caso.get('requisitos_relacionados') or [])
+                }
+                ids_sem_cobertura = sorted(ids_matriz - ids_cobertos - {''})
+
                 if not casos and erros:
                     status.update(label="Falha ao gerar Casos de Teste.", state="error", expanded=True)
                     self._flash_error("Não foi possível gerar nenhum Caso de Teste — todos os lotes falharam.")
                     self.clear_action()
-                elif erros:
-                    status.update(label=f"Concluído com {len(erros)} lote(s) com falha.", state="complete")
-                    numeros_lotes_falhos = ", ".join(str(n) for n, _ in erros)
-                    self._flash_warning(
-                        f"{len(casos)} Caso(s) gerado(s), mas {len(erros)} lote(s) de geração falharam "
-                        f"(lote(s) {numeros_lotes_falhos}) — alguns itens da Matriz podem ter ficado sem "
-                        "Caso. Revise a lista abaixo, gere manualmente o que faltar, ou volte e tente de "
-                        "novo depois."
-                    )
+                elif erros or ids_sem_cobertura:
+                    status.update(label="Concluído, mas com pendência(s) — veja o aviso.", state="complete")
+                    partes_aviso = [f"{len(casos)} Caso(s) gerado(s)."]
+                    if erros:
+                        numeros_lotes_falhos = ", ".join(str(n) for n, _ in erros)
+                        partes_aviso.append(f"{len(erros)} lote(s) de geração falharam (lote(s) {numeros_lotes_falhos}).")
+                    if ids_sem_cobertura:
+                        partes_aviso.append(
+                            f"{len(ids_sem_cobertura)} item(ns) da Matriz ficaram sem nenhum Caso, mesmo sem "
+                            f"erro reportado ({', '.join(ids_sem_cobertura)})."
+                        )
+                    partes_aviso.append("Revise a lista abaixo, gere manualmente o que faltar, ou volte e tente de novo.")
+                    self._flash_warning(" ".join(partes_aviso))
                     self.state.set('test_cases', casos)
                     self._set_step(4, allow_during_processing=True)
                     self.clear_action()
