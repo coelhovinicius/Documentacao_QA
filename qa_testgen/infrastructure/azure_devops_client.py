@@ -104,6 +104,107 @@ class AzureDevOpsClient:
                 url = None
         return sorted(names, key=str.lower)
 
+    def get_team_area_paths(self, team_id: str) -> list:
+        """
+        Retorna os valores de Area Path configurados pro Team (o que
+        define quais Work Items "pertencem" a ele, e portanto aparecem
+        no board dele). Cada item: {'value': str, 'include_children': bool}.
+        Necessário porque uma Area Path pode ter uma coluna de board
+        "disponível" tecnicamente, mas se o Team dono daquele board não
+        inclui essa Area Path no escopo dele, o Work Item nunca aparece
+        no board — mesmo com o campo de coluna preenchido certinho.
+        """
+        url = (f"https://dev.azure.com/{quote(self.organization, safe='')}/{quote(self.project, safe='')}/"
+               f"{quote(str(team_id), safe='')}/_apis/work/teamsettings/teamfieldvalues"
+               f"?api-version={API_VERSION}")
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Buscar escopo de Area Path do Team")
+        return [
+            {"value": v.get("value", ""), "include_children": bool(v.get("includeChildren"))}
+            for v in data.get("values", [])
+        ]
+
+    def list_teams(self) -> list:
+        """Lista os Teams do projeto atual. Retorna [{'id', 'name'}, ...]."""
+        url = f"https://dev.azure.com/{quote(self.organization, safe='')}/_apis/projects/{quote(self.project, safe='')}/teams?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Teams do Projeto")
+        return [{"id": t["id"], "name": t["name"]} for t in data.get("value", [])]
+
+    def list_boards_for_team(self, team_id: str) -> list:
+        """Lista os Boards (Kanban) de um Team. Retorna [{'id', 'name'}, ...]."""
+        url = (f"https://dev.azure.com/{quote(self.organization, safe='')}/{quote(self.project, safe='')}/"
+               f"{quote(str(team_id), safe='')}/_apis/work/boards?api-version={API_VERSION}")
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Boards do Team")
+        return [{"id": b["id"], "name": b["name"]} for b in data.get("value", [])]
+
+    def get_board_column_field_name(self, team_id: str, board_id: str) -> str:
+        """
+        Descobre o nome REAL e editável do campo de coluna desse Board
+        específico (algo como "WEF_<hash>_Kanban.Column") — necessário
+        porque "System.BoardColumn" é somente-leitura na API (dá erro
+        TF401326 se tentar escrever nele direto). Cada Board/Team tem
+        seu próprio nome de campo, então isso precisa ser descoberto
+        via GET num board específico antes de criar/editar um Work Item
+        que precise nascer numa coluna certa.
+        """
+        url = (f"https://dev.azure.com/{quote(self.organization, safe='')}/{quote(self.project, safe='')}/"
+               f"{quote(str(team_id), safe='')}/_apis/work/boards/{quote(str(board_id), safe='')}"
+               f"?api-version={API_VERSION}")
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Buscar detalhes do Board (campo de coluna)")
+        campo = (data.get("fields") or {}).get("columnField") or {}
+        nome_campo = campo.get("referenceName")
+        if not nome_campo:
+            raise ValueError("Não foi possível descobrir o campo de coluna desse Board.")
+        return nome_campo
+
+    def list_board_columns(self, team_id: str, board_id: str) -> list:
+        """
+        Lista as colunas configuradas num Board específico de um Team,
+        na ordem em que aparecem (esquerda pra direita). Retorna
+        [{'id', 'name', 'state_mappings'}, ...] — state_mappings é o dict
+        original do Azure DevOps (ex.: {"Bug": "New", "User Story": "New"}),
+        usado pra descobrir quais tipos de Work Item aparecem nesse board.
+        """
+        url = (f"https://dev.azure.com/{quote(self.organization, safe='')}/{quote(self.project, safe='')}/"
+               f"{quote(str(team_id), safe='')}/_apis/work/boards/{quote(str(board_id), safe='')}/columns"
+               f"?api-version={API_VERSION}")
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Colunas do Board")
+        return [
+            {"id": c["id"], "name": c["name"], "state_mappings": c.get("stateMappings", {})}
+            for c in data.get("value", [])
+        ]
+
+    def list_project_tags(self) -> list:
+        """Lista todas as Tags já usadas no projeto. Retorna lista de nomes (str), ordenada."""
+        url = f"{self._base_url()}/wit/tags?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Tags do Projeto")
+        return sorted(t["name"] for t in data.get("value", []) if t.get("name"))
+
+    def list_team_members(self, team_id: str) -> list:
+        """
+        Lista os membros de um Team, pra usar como opções de "Atribuir a".
+        Retorna [{'display_name', 'unique_name'}, ...], ordenado por nome.
+        """
+        url = (f"https://dev.azure.com/{quote(self.organization, safe='')}/_apis/projects/"
+               f"{quote(self.project, safe='')}/teams/{quote(str(team_id), safe='')}/members"
+               f"?api-version={API_VERSION}")
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Membros do Team")
+        membros = []
+        for m in data.get("value", []):
+            identidade = m.get("identity", {})
+            if identidade.get("displayName"):
+                membros.append({
+                    "display_name": identidade["displayName"],
+                    "unique_name": identidade.get("uniqueName", ""),
+                })
+        return sorted(membros, key=lambda x: x["display_name"])
+
     def list_area_paths(self) -> list:
         """
         Lista os Area Paths REAIS já existentes no projeto atual (self.project),
@@ -963,6 +1064,101 @@ class AzureDevOpsClient:
         url = f"{self._base_url()}/wit/workitems/{test_case_id}?api-version={API_VERSION}"
         response = self.session.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
         self._handle_response(response, f"Vincular Test Case {test_case_id} ao Work Item {work_item_id}")
+
+    def create_bug(self, titulo: str, area_path: str, descricao: str, repro_steps: str = "",
+                    prioridade: int = None, severidade: str = None, atribuir_a: str = None,
+                    tags: str = None, board_column: str = None, board_column_field: str = None,
+                    board_column_state: str = None) -> dict:
+        """
+        Cria um Work Item do tipo Bug. area_path é obrigatório (o "board").
+        prioridade: 1-4 (1 = mais urgente). severidade: string exata do
+        Azure DevOps (ex.: "2 - High", "3 - Medium") — varia por processo
+        (Agile/Scrum/CMMI), então valida o texto certo no seu projeto antes
+        de mandar um valor fixo.
+
+        board_column: nome exato de uma coluna do Kanban (obtido via
+        list_board_columns) — define em qual coluna o card do Bug já
+        nasce. board_column_field: o nome REAL do campo pra escrever
+        essa coluna (obtido via get_board_column_field_name) — NUNCA
+        "System.BoardColumn" direto, porque esse campo é somente-leitura
+        na API (erro TF401326) — precisa do campo "WEF_..._Kanban.Column"
+        específico do Board em questão. board_column_state: o State
+        (ex.: "Active") que a coluna escolhida representa pro tipo Bug
+        (vem do stateMappings da própria coluna) — a posição real no
+        board é derivada principalmente do State, não só do campo de
+        coluna; sem setar isso, o Bug nasce no State inicial padrão
+        ("New") e aparece na coluna correspondente a ele, ignorando a
+        coluna escolhida.
+        Retorna {'id': int, 'url': str}.
+        """
+        body = [
+            {"op": "add", "path": "/fields/System.Title", "value": titulo},
+            {"op": "add", "path": "/fields/System.AreaPath", "value": area_path},
+            {"op": "add", "path": "/fields/System.Description", "value": descricao or ""},
+        ]
+        if repro_steps:
+            body.append({"op": "add", "path": "/fields/Microsoft.VSTS.TCM.ReproSteps", "value": repro_steps})
+        if prioridade:
+            body.append({"op": "add", "path": "/fields/Microsoft.VSTS.Common.Priority", "value": prioridade})
+        if severidade:
+            body.append({"op": "add", "path": "/fields/Microsoft.VSTS.Common.Severity", "value": severidade})
+        if atribuir_a:
+            body.append({"op": "add", "path": "/fields/System.AssignedTo", "value": atribuir_a})
+        if tags:
+            body.append({"op": "add", "path": "/fields/System.Tags", "value": tags})
+        if board_column_state:
+            body.append({"op": "add", "path": "/fields/System.State", "value": board_column_state})
+        if board_column and board_column_field:
+            body.append({"op": "add", "path": f"/fields/{board_column_field}", "value": board_column})
+
+        url = f"{self._base_url()}/wit/workitems/$Bug?api-version={API_VERSION}"
+        response = self.session.post(url, json=body, headers=self.headers_json_patch, timeout=60)
+        data = self._handle_response(response, f"Criar Bug '{titulo}'")
+        return {"id": data["id"], "url": data.get("_links", {}).get("html", {}).get("href", "")}
+
+    def link_bug_to_test_case(self, bug_id: int, test_case_id: int,
+                               comment: str = "Bug encontrado ao executar este Caso — via QA TestGen") -> None:
+        """
+        Vincula o Bug ao Caso de Teste que o encontrou, via 'Tested By'
+        (do ponto de vista do Bug: ele É testado por esse Caso) — mesmo
+        tipo de vínculo usado em link_test_case_to_work_item, só que na
+        direção oposta (aqui o Bug é a origem, não o Caso).
+        """
+        target_url = f"{self._base_url()}/wit/workItems/{test_case_id}"
+        body = [{
+            "op": "add",
+            "path": "/relations/-",
+            "value": {
+                "rel": "Microsoft.VSTS.Common.TestedBy-Forward",
+                "url": target_url,
+                "attributes": {"comment": comment},
+            },
+        }]
+        url = f"{self._base_url()}/wit/workitems/{bug_id}?api-version={API_VERSION}"
+        response = self.session.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
+        self._handle_response(response, f"Vincular Bug {bug_id} ao Caso de Teste {test_case_id}")
+
+    def link_bug_to_related_work_item(self, bug_id: int, work_item_id: int,
+                                        comment: str = "Relacionado via QA TestGen") -> None:
+        """
+        Vincula o Bug ao Work Item "pai" (ex.: a User Story onde o Caso de
+        Teste de origem está) via 'Related' — não-direcional, só pra dar
+        visibilidade também no nível do Work Item mais amplo, além do
+        vínculo direto com o Caso de Teste específico.
+        """
+        target_url = f"{self._base_url()}/wit/workItems/{work_item_id}"
+        body = [{
+            "op": "add",
+            "path": "/relations/-",
+            "value": {
+                "rel": "System.LinkTypes.Related",
+                "url": target_url,
+                "attributes": {"comment": comment},
+            },
+        }]
+        url = f"{self._base_url()}/wit/workitems/{bug_id}?api-version={API_VERSION}"
+        response = self.session.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
+        self._handle_response(response, f"Vincular Bug {bug_id} ao Work Item {work_item_id}")
 
     # ------------------------------------------------------------------ #
     # Status de QA por coluna do board (Kanban) — usado no Relatório de

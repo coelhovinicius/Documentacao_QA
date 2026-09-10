@@ -227,6 +227,7 @@ _PERMISSOES_CONHECIDAS = [
     ("manual_testes", "📘 Manual de Testes (UAT)"),
     ("documentos_armazenados", "🗄️ Documentos Armazenados"),
     ("mapa_mental", "🧠 Mapa Mental"),
+    ("criar_bug", "🐛 Criar Bug"),
 ]
 
 

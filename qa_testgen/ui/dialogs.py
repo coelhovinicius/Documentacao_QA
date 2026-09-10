@@ -372,3 +372,13 @@ def confirm_leave_report_modal():
             st.session_state['show_leave_report_modal'] = False
             st.session_state.pop('_pending_navigation_after_report', None)
             st.rerun()
+
+
+# confirm_bug_creation_modal e confirm_new_bug_modal foram removidos daqui
+# e viraram blocos inline em application.py (_render_bug_confirm_inline e
+# _render_new_bug_confirm_inline) — em testes reais, o st.dialog ficava
+# sobreposto à tela mesmo depois de "fechado" (show_bug_confirm_modal=False
+# + st.rerun()), inclusive por cima do overlay de processamento. Conteúdo
+# normal da página (não dialog) não tem essa ambiguidade: passa a
+# reaparecer/desaparecer só pela condição normal do Streamlit, sem
+# depender de quando o navegador decide desmontar um modal.

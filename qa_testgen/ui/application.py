@@ -305,14 +305,31 @@ class UserInterface:
         Mostra (uma única vez) a mensagem guardada por _flash_error/
         _flash_warning, se houver — chamado no topo do render principal,
         depois de qualquer st.rerun() já ter acontecido.
+
+        Rola a tela até a mensagem quando ela aparece: como ela é sempre
+        renderizada aqui em cima, e quem disparou o aviso (ex.: "Buscar
+        Casos de Teste vinculados") geralmente clicou um botão bem mais
+        abaixo na página, sem isso a mensagem nasce fora da área visível
+        e passa despercebida — a pessoa precisa rolar manualmente pra
+        cima só pra descobrir que apareceu algum aviso.
         """
         flash = self.state.get('_flash_message')
         if flash:
             self.state.set('_flash_message', None)
+            st.markdown('<div id="flash-message-anchor"></div>', unsafe_allow_html=True)
             if flash['kind'] == 'error':
                 st.error(f"❌ {flash['text']}")
             elif flash['kind'] == 'warning':
                 st.warning(flash['text'])
+            st.markdown(
+                """
+                <svg onload="
+                    var alvo = window.parent.document.getElementById('flash-message-anchor');
+                    if (alvo) { alvo.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+                " style="display:none;"></svg>
+                """,
+                unsafe_allow_html=True
+            )
 
     def _navigate_or_confirm(self, pending_state_updates: dict):
         """
@@ -321,6 +338,12 @@ class UserInterface:
         de Testes com um PDF já gerado, caso em que primeiro pede
         confirmação (evita perder o relatório sem querer ao clicar em
         qualquer outro botão/menu).
+
+        Também reseta as telas de confirmação de Criar Bug (livre e a
+        partir de Caso de Teste) toda vez que a pessoa navega pra
+        qualquer lugar — sem isso, sair no meio de uma confirmação e
+        voltar depois pra "Criar Bug" deixava a pessoa presa revendo a
+        tela de confirmação antiga.
         """
         if self.state.get('show_execution_report_page') and self.state.get('report_pdf_bytes'):
             self.state.set('_pending_navigation_after_report', pending_state_updates)
@@ -329,6 +352,7 @@ class UserInterface:
         else:
             for key, value in pending_state_updates.items():
                 self.state.set(key, value)
+            self.state.set('show_bug_confirm_modal', False)
             st.rerun()
 
     def _get_permission_cached(self, permission: str) -> bool:
@@ -585,7 +609,7 @@ class UserInterface:
                     'show_about_page': True, 'show_admin_page': False,
                     'show_execution_report_page': False,
                     'show_wiql_generation_page': False, 'show_manual_page': False,
-                    'show_document_store_page': False, 'show_mindmap_page': False,
+                    'show_document_store_page': False, 'show_mindmap_page': False, 'show_bug_page': False,
                 })
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
@@ -595,7 +619,7 @@ class UserInterface:
                         'show_manual_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_document_store_page': False,
-                        'show_mindmap_page': False,
+                        'show_mindmap_page': False, 'show_bug_page': False,
                     })
             if self._get_permission_cached("documentos_armazenados"):
                 if st.button("🗄️ Documentos Armazenados", use_container_width=True, key="btn_document_store_sidebar", disabled=self.state.get('is_processing')):
@@ -603,12 +627,20 @@ class UserInterface:
                         'show_document_store_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
-                        'show_mindmap_page': False,
+                        'show_mindmap_page': False, 'show_bug_page': False,
                     })
             if self._get_permission_cached("mapa_mental"):
                 if st.button("🧠 Mapa Mental", use_container_width=True, key="btn_mindmap_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
-                        'show_mindmap_page': True, 'show_about_page': False,
+                        'show_mindmap_page': True, 'show_bug_page': False, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wiql_generation_page': False, 'show_manual_page': False,
+                        'show_document_store_page': False,
+                    })
+            if self._get_permission_cached("criar_bug"):
+                if st.button("🐛 Criar Bug", use_container_width=True, key="btn_bug_sidebar", disabled=self.state.get('is_processing')):
+                    self._navigate_or_confirm({
+                        'show_bug_page': True, 'show_mindmap_page': False, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
                         'show_document_store_page': False,
@@ -619,7 +651,7 @@ class UserInterface:
                         'show_wiql_generation_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_manual_page': False, 'show_document_store_page': False,
-                        'show_mindmap_page': False,
+                        'show_mindmap_page': False, 'show_bug_page': False,
                     })
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
@@ -644,7 +676,7 @@ class UserInterface:
                         'show_admin_page': True, 'show_about_page': False,
                         'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
-                        'show_document_store_page': False, 'show_mindmap_page': False,
+                        'show_document_store_page': False, 'show_mindmap_page': False, 'show_bug_page': False,
                     })
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
@@ -730,8 +762,12 @@ class UserInterface:
             'suggest_ado_links': 'Consultando a IA (n8n) para sugerir vínculos',
             'push_azure_devops_full': 'Integrando com o Azure DevOps',
             'check_ado_plan_name': 'Verificando se já existe um Test Plan com esse nome',
+            'confirm_bug_de_caso': 'Criando o Bug no Azure DevOps',
+            'confirm_bug_livre': 'Criando o Bug no Azure DevOps',
         }
         action = labels.get(self.state.get('current_action'), 'Processando informações')
+
+
         st.markdown(
             """
             <style>
@@ -4442,6 +4478,805 @@ class UserInterface:
                         st.caption(f"　　　- {caso}")
 
     @staticmethod
+    def _area_path_pertence_ao_team(area_path_escolhida: str, valores_time: list) -> bool:
+        """
+        Confere se a Area Path escolhida está dentro do escopo configurado
+        do Team (correspondência exata, ou descendente de um valor com
+        "incluir sub-áreas" marcado) — é isso que determina se um Work
+        Item aparece no board desse Team, não o campo de coluna sozinho.
+        """
+        for v in valores_time:
+            if area_path_escolhida == v["value"]:
+                return True
+            if v["include_children"] and area_path_escolhida.startswith(v["value"] + "\\"):
+                return True
+        return False
+
+    def _render_bug_metadata_picker(self, ado_client, key_prefix: str, area_path_escolhida: str) -> dict:
+        """
+        Seletor compartilhado de Coluna do Board, Tags e Atribuir a —
+        usado pelos 2 modos de Criar Bug. Só considera Teams cujo
+        escopo de Area Path REALMENTE inclui a Area Path escolhida
+        acima — sem isso, o Bug pode nascer com o campo de coluna
+        preenchido certinho e mesmo assim nunca aparecer em nenhum
+        board, porque o Team dono daquele board não "enxerga" essa
+        Area Path (era exatamente isso que estava acontecendo).
+
+        As chaves dos widgets de escolha (Coluna/Tags/Atribuir a) levam
+        "_{versao}" no final — mesma lógica do Título/Descrição em
+        _bug_from_test_case_flow/_bug_free_form_flow: apagar do
+        session_state nem sempre reseta visualmente um selectbox já
+        renderizado (mesmo comportamento conhecido do Streamlit, só que
+        pra widget de seleção em vez de campo de texto). Trocar a
+        versão força o widget a nascer de novo, do zero, de verdade.
+
+        Retorna {'team_id', 'coluna', 'tags', 'atribuir_a'} — campos
+        ficam None/vazios até tudo que é necessário estar escolhido.
+        """
+        versao = self.state.get(f'bug_{key_prefix}_form_versao') or 0
+        resultado = {"team_id": None, "coluna": None, "tags": [], "atribuir_a": None}
+
+        with st.container(key=f"azure_blue_btn_fetch_colunas_{key_prefix}"):
+            st.button(
+                "🔄 Buscar Colunas do Board",
+                disabled=self.state.get('is_processing'),
+                key=f"btn_fetch_colunas_{key_prefix}",
+                on_click=self.trigger_action,
+                args=(f"fetch_colunas_{key_prefix}",),
+                use_container_width=True,
+            )
+        if self.state.get('current_action') == f'fetch_colunas_{key_prefix}' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Buscando Colunas dos Boards que realmente incluem essa Area Path..."):
+                    teams = ado_client.list_teams()
+                    colunas_por_nome = {}
+                    algum_board_encontrado = False
+                    for team in teams:
+                        try:
+                            valores_time = ado_client.get_team_area_paths(team["id"])
+                        except Exception:
+                            continue
+                        if not self._area_path_pertence_ao_team(area_path_escolhida, valores_time):
+                            continue
+                        try:
+                            boards = ado_client.list_boards_for_team(team["id"])
+                        except Exception:
+                            continue
+                        for board in boards:
+                            try:
+                                colunas = ado_client.list_board_columns(team["id"], board["id"])
+                            except Exception:
+                                continue
+                            if colunas:
+                                algum_board_encontrado = True
+                                for c in colunas:
+                                    colunas_por_nome.setdefault(c["name"], {
+                                        "name": c["name"], "team_id": team["id"], "board_id": board["id"],
+                                        "state_bug": (c.get("state_mappings") or {}).get("Bug"),
+                                    })
+                self.state.set(f'bug_colunas_combinadas_{key_prefix}', list(colunas_por_nome.values()))
+                if not algum_board_encontrado:
+                    self._flash_error(
+                        f"Nenhum Team com Board configurado inclui a Area Path '{area_path_escolhida}' no "
+                        "escopo dele. Verifica no Azure DevOps (Configurações do Team → Área) se algum "
+                        "Team inclui essa Area Path especificamente."
+                    )
+            except Exception as error:
+                self._flash_error(f"Não foi possível buscar Boards/Colunas: {error}")
+                self.state.set(f'bug_colunas_combinadas_{key_prefix}', [])
+            self.clear_action()
+            st.rerun()
+
+        colunas = self.state.get(f'bug_colunas_combinadas_{key_prefix}')
+        if colunas is None:
+            st.caption("Busque as Colunas do Board acima pra continuar.")
+            return resultado
+        if not colunas:
+            st.caption("Nenhuma Coluna disponível — veja o aviso acima.")
+            return resultado
+
+        nomes_colunas = [c["name"] for c in colunas]
+        coluna_escolhida_nome = st.selectbox(
+            "Coluna do Board", options=nomes_colunas, index=0, key=f"bug_coluna_select_{key_prefix}_{versao}",
+            disabled=self.state.get('is_processing'),
+            help="Em qual coluna do Kanban o card do Bug já nasce.",
+        )
+        resultado["coluna"] = coluna_escolhida_nome
+        coluna_info = next((c for c in colunas if c["name"] == coluna_escolhida_nome), None)
+        if coluna_info:
+            resultado["team_id"] = coluna_info["team_id"]
+            resultado["coluna_board_id"] = coluna_info["board_id"]
+            resultado["coluna_state"] = coluna_info.get("state_bug")
+            if not resultado["coluna_state"]:
+                st.caption(
+                    "⚠️ Essa coluna não tem um State de Bug mapeado — o Bug pode nascer na coluna "
+                    "padrão do State inicial, em vez dessa aqui."
+                )
+
+        # --- Tags ---
+        with st.expander("🏷️ Tags (opcional)"):
+            with st.container(key=f"azure_blue_btn_fetch_tags_{key_prefix}"):
+                st.button(
+                    "🔄 Buscar Tags existentes no Projeto",
+                    disabled=self.state.get('is_processing'),
+                    key=f"btn_fetch_tags_{key_prefix}",
+                    on_click=self.trigger_action,
+                    args=(f"fetch_tags_{key_prefix}",),
+                    use_container_width=True,
+                )
+            if self.state.get('current_action') == f'fetch_tags_{key_prefix}' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner("Buscando Tags..."):
+                        tags_existentes = ado_client.list_project_tags()
+                    self.state.set(f'bug_tags_existentes_{key_prefix}', tags_existentes)
+                except Exception as error:
+                    self._flash_error(f"Não foi possível buscar Tags: {error}")
+                self.clear_action()
+                st.rerun()
+
+            tags_existentes = self.state.get(f'bug_tags_existentes_{key_prefix}')
+            if tags_existentes is None:
+                st.caption("Busque as Tags acima se quiser adicionar alguma.")
+            elif not tags_existentes:
+                st.caption("Não há Tags cadastradas nesse projeto.")
+            else:
+                resultado["tags"] = st.multiselect(
+                    "Tags", options=tags_existentes, key=f"bug_tags_select_{key_prefix}_{versao}",
+                    disabled=self.state.get('is_processing'),
+                )
+
+        # --- Atribuir a ---
+        with st.expander("👤 Atribuir a (opcional)"):
+            with st.container(key=f"azure_blue_btn_fetch_membros_{key_prefix}"):
+                st.button(
+                    "🔄 Buscar Pessoas pra Atribuir",
+                    disabled=self.state.get('is_processing'),
+                    key=f"btn_fetch_membros_{key_prefix}",
+                    on_click=self.trigger_action,
+                    args=(f"fetch_membros_{key_prefix}",),
+                    use_container_width=True,
+                )
+            if self.state.get('current_action') == f'fetch_membros_{key_prefix}' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner("Buscando Membros..."):
+                        membros = ado_client.list_team_members(resultado["team_id"])
+                    self.state.set(f'bug_membros_{key_prefix}', membros)
+                    if not membros:
+                        self._flash_warning("Nenhuma pessoa encontrada pra esse Board.")
+                except Exception as error:
+                    self._flash_error(f"Não foi possível buscar Membros: {error}")
+                self.clear_action()
+                st.rerun()
+
+            membros = self.state.get(f'bug_membros_{key_prefix}')
+            if membros:
+                opcoes_membro = ["(Ninguém)"] + [f"{m['display_name']} ({m['unique_name']})" for m in membros]
+                escolha_membro = st.selectbox(
+                    "Atribuir a", options=opcoes_membro, index=0, key=f"bug_membro_select_{key_prefix}_{versao}",
+                    disabled=self.state.get('is_processing'),
+                )
+                if escolha_membro != "(Ninguém)":
+                    idx = opcoes_membro.index(escolha_membro) - 1
+                    resultado["atribuir_a"] = membros[idx]["unique_name"]
+            elif membros is not None:
+                st.caption("Nenhuma pessoa disponível.")
+            else:
+                st.caption("Busque as Pessoas acima se quiser atribuir o Bug a alguém.")
+
+        return resultado
+
+    def _render_repro_steps_editor(self, key_prefix: str) -> list:
+        """
+        Lista dinâmica de Passos de Reprodução — adicionar/remover, com
+        numeração automática (a pessoa não digita "1.", "2."...) e mínimo
+        de 1 passo, mesmo padrão já usado pros Steps de Caso de Teste.
+        Retorna a lista de textos (str), na ordem.
+        """
+        steps_key = f'{key_prefix}_repro_steps_list'
+        if self.state.get(steps_key) is None:
+            self.state.set(steps_key, [{"uid": str(uuid.uuid4()), "texto": ""}])
+
+        steps_list = self.state.get(steps_key)
+        resultado = []
+        for index, passo in enumerate(steps_list):
+            uid = passo['uid']
+            col_texto, col_del = st.columns([9, 1])
+            with col_texto:
+                texto = st.text_area(
+                    f"Passo {index + 1} *", value=passo.get('texto', ''),
+                    key=f"{key_prefix}_repro_texto_{uid}", height=70,
+                    disabled=self.state.get('is_processing'),
+                )
+            with col_del:
+                st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+                if st.button("🗑️", key=f"{key_prefix}_repro_del_{uid}", disabled=len(steps_list) <= 1 or self.state.get('is_processing')):
+                    novos = [p for p in steps_list if p['uid'] != uid]
+                    self.state.set(steps_key, novos)
+                    st.rerun()
+            resultado.append({"uid": uid, "texto": texto})
+
+        if len(steps_list) <= 1:
+            st.caption("ℹ️ É necessário manter ao menos 1 passo.")
+        self.state.set(steps_key, resultado)
+
+        if st.button("➕ Adicionar Passo", key=f"{key_prefix}_repro_add", disabled=self.state.get('is_processing')):
+            atual = self.state.get(steps_key)
+            atual.append({"uid": str(uuid.uuid4()), "texto": ""})
+            self.state.set(steps_key, atual)
+            st.rerun()
+
+        return [p['texto'] for p in resultado]
+
+    def _bug_creation_page(self):
+        self._processing_banner()
+        st.markdown('<div id="bug-form-top-anchor"></div>', unsafe_allow_html=True)
+        st.subheader("🐛 Criar Bug")
+        if st.button("← Voltar", key="btn_bug_back"):
+            self.state.set('show_bug_page', False)
+            self.state.set('show_bug_confirm_modal', False)
+            st.rerun()
+
+        if not self._get_permission_cached("criar_bug"):
+            st.error("❌ Você não tem permissão pra acessar esta área.")
+            return
+
+        st.caption(
+            "Cria um Bug diretamente no Azure DevOps — livremente, ou a partir de um Caso de "
+            "Teste já vinculado a um Work Item específico (nesse caso, a maior parte das "
+            "informações já vem preenchida, e o Bug fica automaticamente vinculado de volta)."
+        )
+
+        conn = self._setup_azure_devops_connection(show_area_path_picker=False)
+        if conn is None:
+            return
+        ado_client, ado_org, ado_project, _default_area_path = conn
+
+        st.divider()
+        modo = st.radio(
+            "Como criar o Bug?",
+            options=["📝 Livre", "🔗 A partir de um Caso de Teste"],
+            index=0,
+            key="bug_modo_radio",
+            horizontal=True,
+            disabled=self.state.get('is_processing'),
+        )
+
+        if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+            area_path_options = self.state.get('ado_available_area_paths') or []
+        else:
+            try:
+                with st.spinner("Buscando Area Paths do projeto..."):
+                    area_path_options = ado_client.list_area_paths()
+                self.state.set('ado_available_area_paths', area_path_options)
+                self.state.set('ado_area_paths_project', ado_project)
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                area_path_options = []
+
+        board_escolhido = st.selectbox(
+            "Board (Area Path) *",
+            options=area_path_options,
+            index=None,
+            placeholder="Escolha o board...",
+            key="bug_board_select",
+            disabled=self.state.get('is_processing'),
+            help="Obrigatório nos dois modos — define em qual Area Path o Bug vai ser criado.",
+        )
+        if not board_escolhido:
+            st.caption("Escolha um board pra continuar.")
+            return
+
+        if modo.startswith("🔗"):
+            self._bug_from_test_case_flow(ado_client, board_escolhido)
+        else:
+            self._bug_free_form_flow(ado_client, board_escolhido)
+
+    def _bug_from_test_case_flow(self, ado_client, board_escolhido: str):
+        # Chamado aqui em cima (e não só no fim da função) porque agora
+        # _limpar_estado_bug apaga (na prática, aposenta via versão — ver
+        # abaixo) bug_wi_select/bug_caso_select depois de criar o Bug —
+        # se essa chamada continuasse só no fim, o "return" antecipado de
+        # "nenhum Work Item escolhido" (mais abaixo) nunca deixaria a
+        # mensagem de sucesso aparecer.
+        self._render_bug_confirmation_screen(ado_client, "de_caso", board_escolhido)
+
+        # Work Item/Caso de Teste também levam "_{versao}" na chave — não
+        # bastava apagar do session_state (del): um selectbox já renderizado
+        # às vezes não reseta visualmente mesmo com a chave removida (mesmo
+        # comportamento conhecido do Streamlit que já valia pra Título via
+        # bug_titulo_de_caso_{versao}, só que também acontecendo aqui).
+        versao = self.state.get('bug_de_caso_form_versao') or 0
+
+        st.divider()
+        st.markdown("##### 🔎 Escolha o Work Item de origem")
+
+        with st.container(key="azure_blue_btn_fetch_wi_bug"):
+            st.button(
+                "🔄 Buscar Work Items desse Board",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_wi_bug",
+                on_click=self.trigger_action,
+                args=("fetch_wi_bug",),
+                use_container_width=True,
+            )
+        if self.state.get('current_action') == 'fetch_wi_bug' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Buscando Work Items..."):
+                    items = ado_client.fetch_work_items_by_area_path(board_escolhido, excluded_states=set())
+                self.state.set('bug_board_items', items)
+                self.state.set('bug_test_cases', [])
+                if f'bug_wi_select_{versao}' in st.session_state:
+                    del st.session_state[f'bug_wi_select_{versao}']
+                if not items:
+                    self._flash_warning("Nenhum Work Item encontrado nesse board.")
+            except Exception as error:
+                self._flash_error(f"Não foi possível buscar Work Items: {error}")
+                self.state.set('bug_board_items', [])
+            self.clear_action()
+            st.rerun()
+
+        board_items = self.state.get('bug_board_items') or []
+        if not board_items:
+            st.caption("Busque os Work Items acima pra continuar.")
+            return
+
+        board_items = self._filtrar_por_coluna_e_tag(board_items, True, "bug_wi")
+        wi_labels = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
+        escolha_wi = st.selectbox(
+            "Work Item de origem", options=list(wi_labels.keys()), index=None,
+            placeholder="Escolha um Work Item...", key=f"bug_wi_select_{versao}",
+            disabled=self.state.get('is_processing'),
+        )
+        if not escolha_wi:
+            return
+        work_item_escolhido = wi_labels[escolha_wi]
+
+        with st.container(key="azure_blue_btn_fetch_tc_bug"):
+            st.button(
+                "🔄 Buscar Casos de Teste vinculados a esse Work Item",
+                disabled=self.state.get('is_processing'),
+                key="btn_fetch_tc_bug",
+                on_click=self.trigger_action,
+                args=("fetch_tc_bug",),
+                use_container_width=True,
+            )
+        if self.state.get('current_action') == 'fetch_tc_bug' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Buscando Casos de Teste vinculados..."):
+                    casos = ado_client.get_existing_test_cases_full(work_item_escolhido['id'])
+                self.state.set('bug_test_cases', casos)
+                if f'bug_caso_select_{versao}' in st.session_state:
+                    del st.session_state[f'bug_caso_select_{versao}']
+                if not casos:
+                    self._flash_warning("Esse Work Item não tem nenhum Caso de Teste vinculado no Azure DevOps.")
+            except Exception as error:
+                self._flash_error(f"Não foi possível buscar Casos de Teste: {error}")
+                self.state.set('bug_test_cases', [])
+            self.clear_action()
+            st.rerun()
+
+        casos = self.state.get('bug_test_cases') or []
+        if not casos:
+            st.caption("Busque os Casos de Teste vinculados acima pra continuar.")
+            return
+
+        caso_labels = {f"{c['id']} - {c['titulo']}": c for c in casos}
+        escolha_caso = st.selectbox(
+            "Caso de Teste de origem", options=list(caso_labels.keys()), index=None,
+            placeholder="Escolha um Caso de Teste...", key=f"bug_caso_select_{versao}",
+            disabled=self.state.get('is_processing'),
+        )
+        if not escolha_caso:
+            return
+        caso_escolhido = caso_labels[escolha_caso]
+
+        if self.state.get('bug_de_caso_repro_prefilled_from') != caso_escolhido['id']:
+            passos_iniciais = self._montar_passos_repro_de_caso(caso_escolhido)
+            self.state.set('bug_de_caso_repro_steps_list', [
+                {"uid": str(uuid.uuid4()), "texto": t} for t in passos_iniciais
+            ])
+            self.state.set('bug_de_caso_repro_prefilled_from', caso_escolhido['id'])
+
+        st.divider()
+        st.markdown("##### 🐞 Detalhes do Bug")
+        st.caption("Título e Passos de Reprodução já vêm preenchidos a partir do Caso de Teste — ajuste se precisar.")
+        titulo = st.text_input(
+            "Título *", value=f"Bug: {caso_escolhido['titulo']}", key=f"bug_titulo_de_caso_{versao}",
+            disabled=self.state.get('is_processing'),
+        )
+        descricao = st.text_area(
+            "Descrição do bug *", key=f"bug_descricao_de_caso_{versao}", height=120,
+            placeholder="Descreva o que aconteceu de errado...",
+            disabled=self.state.get('is_processing'),
+        )
+        st.markdown("**Passos de Reprodução ***")
+        passos = self._render_repro_steps_editor("bug_de_caso")
+
+        col_p, col_s = st.columns(2)
+        with col_p:
+            prioridade = st.selectbox("Prioridade", options=[1, 2, 3, 4], index=1, key=f"bug_prioridade_de_caso_{versao}",
+                                       disabled=self.state.get('is_processing'))
+        with col_s:
+            severidade = st.selectbox(
+                "Severidade", options=["1 - Critical", "2 - High", "3 - Medium", "4 - Low"],
+                index=2, key=f"bug_severidade_de_caso_{versao}", disabled=self.state.get('is_processing'),
+            )
+
+        st.divider()
+        metadata = self._render_bug_metadata_picker(ado_client, "de_caso", board_escolhido)
+
+        passos_preenchidos = [p.strip() for p in passos if p.strip()]
+        pode_confirmar = bool(titulo.strip()) and bool(descricao.strip()) and bool(passos_preenchidos) and bool(metadata['coluna'])
+
+        st.divider()
+        with st.container(key="azure_blue_btn_ir_confirmar_de_caso"):
+            if st.button(
+                "🐛 Criar Bug", type="primary", use_container_width=True,
+                disabled=self.state.get('is_processing') or not pode_confirmar,
+                key="btn_ir_confirmar_de_caso",
+            ):
+                self.state.set('bug_de_caso_snapshot', {
+                    "titulo": titulo.strip(), "descricao": descricao.strip(),
+                    "passos": passos_preenchidos, "prioridade": prioridade, "severidade": severidade,
+                    "board": board_escolhido, "coluna": metadata['coluna'],
+                    "coluna_team_id": metadata['team_id'], "coluna_board_id": metadata.get('coluna_board_id'),
+                    "coluna_state": metadata.get('coluna_state'),
+                    "tags": metadata['tags'], "atribuir_a": metadata['atribuir_a'],
+                    "vinculo": {
+                        "caso_id": caso_escolhido['id'], "caso_titulo": caso_escolhido['titulo'],
+                        "wi_id": work_item_escolhido['id'], "wi_titulo": work_item_escolhido['title'],
+                    },
+                })
+                self.state.set('bug_confirm_key_prefix', 'de_caso')
+                self.state.set('show_bug_confirm_modal', True)
+                st.rerun()
+        if not pode_confirmar:
+            faltando = []
+            if not titulo.strip():
+                faltando.append("Título")
+            if not descricao.strip():
+                faltando.append("Descrição")
+            if not passos_preenchidos:
+                faltando.append("pelo menos 1 Passo de Reprodução preenchido")
+            if not metadata['coluna']:
+                faltando.append("Coluna do Board (busque acima)")
+            st.caption(f"Preencha: {', '.join(faltando)}.")
+
+        self._render_bug_confirm_inline('de_caso')
+
+    def _bug_free_form_flow(self, ado_client, board_escolhido: str):
+        st.divider()
+        st.markdown("##### 🐞 Detalhes do Bug")
+        versao = self.state.get('bug_livre_form_versao') or 0
+        titulo = st.text_input("Título *", key=f"bug_titulo_livre_{versao}", disabled=self.state.get('is_processing'))
+        descricao = st.text_area(
+            f"Descrição *", key=f"bug_descricao_livre_{versao}", height=120,
+            placeholder="Descreva o que aconteceu de errado...",
+            disabled=self.state.get('is_processing'),
+        )
+        st.markdown("**Passos de Reprodução ***")
+        passos = self._render_repro_steps_editor("bug_livre")
+
+        col_p, col_s = st.columns(2)
+        with col_p:
+            prioridade = st.selectbox("Prioridade", options=[1, 2, 3, 4], index=1, key=f"bug_prioridade_livre_{versao}",
+                                       disabled=self.state.get('is_processing'))
+        with col_s:
+            severidade = st.selectbox(
+                "Severidade", options=["1 - Critical", "2 - High", "3 - Medium", "4 - Low"],
+                index=2, key=f"bug_severidade_livre_{versao}", disabled=self.state.get('is_processing'),
+            )
+
+        st.divider()
+        metadata = self._render_bug_metadata_picker(ado_client, "livre", board_escolhido)
+
+        passos_preenchidos = [p.strip() for p in passos if p.strip()]
+        pode_confirmar = bool(titulo.strip()) and bool(descricao.strip()) and bool(passos_preenchidos) and bool(metadata['coluna'])
+
+        st.divider()
+        with st.container(key="azure_blue_btn_ir_confirmar_livre"):
+            if st.button(
+                "🐛 Criar Bug", type="primary", use_container_width=True,
+                disabled=self.state.get('is_processing') or not pode_confirmar,
+                key="btn_ir_confirmar_livre",
+            ):
+                self.state.set('bug_livre_snapshot', {
+                    "titulo": titulo.strip(), "descricao": descricao.strip(),
+                    "passos": passos_preenchidos, "prioridade": prioridade, "severidade": severidade,
+                    "board": board_escolhido, "coluna": metadata['coluna'],
+                    "coluna_team_id": metadata['team_id'], "coluna_board_id": metadata.get('coluna_board_id'),
+                    "coluna_state": metadata.get('coluna_state'),
+                    "tags": metadata['tags'], "atribuir_a": metadata['atribuir_a'],
+                })
+                self.state.set('bug_confirm_key_prefix', 'livre')
+                self.state.set('show_bug_confirm_modal', True)
+                st.rerun()
+        if not pode_confirmar:
+            faltando = []
+            if not titulo.strip():
+                faltando.append("Título")
+            if not descricao.strip():
+                faltando.append("Descrição")
+            if not passos_preenchidos:
+                faltando.append("pelo menos 1 Passo de Reprodução preenchido")
+            if not metadata['coluna']:
+                faltando.append("Coluna do Board (busque acima)")
+            st.caption(f"Preencha: {', '.join(faltando)}.")
+
+        self._render_bug_confirm_inline('livre')
+        self._render_bug_confirmation_screen(ado_client, "livre", board_escolhido)
+
+    def _criar_bug_via_azure(self, ado_client, dados: dict):
+        """
+        Faz a chamada de verdade ao Azure DevOps pra criar o Bug (e os 2
+        vínculos, se vier de um Caso de Teste). Chamada de dentro de
+        _render_bug_confirmation_screen quando current_action ==
+        confirm_bug_{key_prefix}, igual a todo outro processamento do
+        app — o que dá de graça o overlay global "Processamento em
+        andamento" (_processing_banner), incluindo bloqueio de clique
+        na tela inteira e o botão real de Cancelar.
+        """
+        passos_html = [html.escape(p).replace("\n", "<br>") for p in dados['passos']]
+        repro_texto = "<br>".join(f"{i}. {p}" for i, p in enumerate(passos_html, start=1))
+        campo_coluna = None
+        if dados.get('coluna_team_id') and dados.get('coluna_board_id'):
+            campo_coluna = ado_client.get_board_column_field_name(
+                dados['coluna_team_id'], dados['coluna_board_id']
+            )
+        resultado = ado_client.create_bug(
+            dados['titulo'], dados['board'], dados['descricao'], repro_texto,
+            dados['prioridade'], dados['severidade'], dados['atribuir_a'],
+            "; ".join(dados['tags']) if dados['tags'] else None,
+            dados['coluna'], campo_coluna, dados.get('coluna_state'),
+        )
+        vinculo = dados.get('vinculo')
+        if vinculo:
+            ado_client.link_bug_to_test_case(resultado['id'], vinculo['caso_id'])
+            ado_client.link_bug_to_related_work_item(resultado['id'], vinculo['wi_id'])
+        return resultado
+
+    def _iniciar_novo_bug(self, key_prefix: str):
+        self.state.set(f'bug_ultimo_criado_{key_prefix}', None)
+        self._limpar_estado_bug(key_prefix, limpar_metadados=True)
+        self.state.set('scroll_to_top_pending', True)
+
+    def _render_bug_confirmation_screen(self, ado_client, key_prefix: str, board_escolhido: str):
+        """
+        Processa a criação do Bug (chamado pelos 2 modos) — a confirmação
+        de criação em si é renderizada inline por _render_bug_confirm_inline,
+        logo abaixo do botão "Criar Bug" em cada modo (não aqui, que roda
+        cedo demais na página pra isso fazer sentido visualmente). Esse
+        método cuida do que roda cedo: o processamento em si (current_action
+        == confirm_bug_{key_prefix} — mesmo padrão de todo outro
+        processamento do app, pra herdar o _processing_banner), o
+        resultado, e a confirmação de "Criar outro Bug".
+        """
+        if self.state.get(f'_bug_confirmado_{key_prefix}'):
+            # Render intermediário e rápido — ver docstring de
+            # _render_bug_confirm_inline pra entender por que isso não é
+            # feito direto no clique do botão "Sim, Criar Bug".
+            self.state.set(f'_bug_confirmado_{key_prefix}', False)
+            self.state.set('current_action', f'confirm_bug_{key_prefix}')
+            self.state.set('is_processing', True)
+            st.rerun()
+
+        if self.state.get('current_action') == f'confirm_bug_{key_prefix}' and not self.state.get('show_interrupt_modal'):
+            dados = self.state.get(f'bug_{key_prefix}_snapshot')
+            vinculo = dados.get('vinculo') if dados else None
+            try:
+                if not dados:
+                    raise ValueError("Os dados do Bug foram perdidos antes de confirmar — tenta preencher de novo.")
+                resultado = self._criar_bug_via_azure(ado_client, dados)
+                detalhe_log = f"Bug #{resultado['id']} '{dados['titulo']}' — coluna '{dados['coluna']}'"
+                log = [f"✅ Bug criado: **{dados['titulo']}** (ID {resultado['id']})"]
+                if vinculo:
+                    log.append(f"↳ Vinculado ao Caso de Teste '{vinculo['caso_titulo']}' (Caso {vinculo['caso_id']}) — Tested By")
+                    log.append(f"↳ Vinculado ao Work Item '{vinculo['wi_titulo']}' (Work Item {vinculo['wi_id']}) — Related")
+                    detalhe_log += f" — a partir do Caso {vinculo['caso_id']} (Work Item {vinculo['wi_id']})"
+                else:
+                    detalhe_log += " — modo livre"
+                if resultado.get('url'):
+                    log.append(f"\n🔗 Confira o Bug no Azure DevOps: {resultado['url']}")
+                self._log("Criar Bug", "Criar Bug", detalhe_log)
+                self.state.set(f'bug_ultimo_criado_{key_prefix}', {'resultado': resultado, 'log': log})
+                self.state.set('scroll_to_top_pending', True)
+                self._limpar_estado_bug(key_prefix)
+            except Exception as error:
+                self._flash_error(f"Erro ao criar o Bug: {error}")
+            self.clear_action()
+            st.rerun()
+
+        ultimo = self.state.get(f'bug_ultimo_criado_{key_prefix}')
+        if ultimo:
+            st.markdown('<div id="bug-sucesso-anchor"></div>', unsafe_allow_html=True)
+            st.markdown("#### 📋 Resultado da integração")
+            for line in ultimo['log']:
+                st.write(line)
+            if self.state.get(f'show_new_bug_modal_{key_prefix}'):
+                with st.container(border=True):
+                    st.markdown("##### ⚠️ Criar Outro Bug")
+                    st.markdown(
+                        "Isso vai limpar os campos já preenchidos pro próximo Bug — Work Item/Caso "
+                        "de Teste selecionado (se houver), título, passos, prioridade, etc., se você "
+                        "já tiver começado a preencher algo. Essas informações serão **perdidas "
+                        "permanentemente**. Tem certeza que deseja criar outro Bug?"
+                    )
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        if st.button("🔄 Sim, Criar Outro", use_container_width=True, type="primary",
+                                      key=f"confirm_new_bug_yes_{key_prefix}"):
+                            self._iniciar_novo_bug(key_prefix)
+                            self.state.set(f'show_new_bug_modal_{key_prefix}', False)
+                            st.rerun()
+                    with cc2:
+                        if st.button("Cancelar", use_container_width=True, key=f"confirm_new_bug_no_{key_prefix}"):
+                            self.state.set(f'show_new_bug_modal_{key_prefix}', False)
+                            st.rerun()
+            else:
+                if st.button("➕ Criar outro Bug", key=f"btn_bug_outro_{key_prefix}", use_container_width=True):
+                    self.state.set(f'show_new_bug_modal_{key_prefix}', True)
+                    st.rerun()
+
+    def _render_bug_confirm_inline(self, key_prefix: str):
+        """
+        Confirmação de criação do Bug, renderizada como conteúdo normal
+        da página — NÃO um st.dialog. Chamada logo abaixo do botão
+        "Criar Bug" em cada modo (_bug_from_test_case_flow /
+        _bug_free_form_flow), não em _render_bug_confirmation_screen (que
+        roda no topo da página, longe do botão — faria a confirmação
+        nascer fora da área visível).
+
+        Por que não é mais um st.dialog: em testes reais, o modal ficava
+        sobreposto à tela mesmo depois de "fechado" (show_bug_confirm_modal
+        = False + st.rerun()), inclusive por cima do overlay de
+        processamento — persistiu mesmo depois de isolar o fechamento num
+        render rápido, separado do processamento em si. Conteúdo normal
+        (não dialog) não tem essa ambiguidade: o Streamlit garante que ele
+        para de existir assim que a condição vira False, sem depender de
+        quando (ou se) o navegador decide desmontar um modal.
+
+        "Sim, Criar Bug" NÃO liga current_action/is_processing direto —
+        só marca _bug_confirmado_{key_prefix} e dá um rerun rápido, sem
+        trabalho lento nele. É em _render_bug_confirmation_screen, no
+        PRÓXIMO render (já sem esse bloco na tela), que essa marca liga
+        current_action/is_processing de verdade — daí sim o trabalho roda,
+        com o overlay global "Processamento em andamento".
+        """
+        if not (self.state.get('show_bug_confirm_modal') and self.state.get('bug_confirm_key_prefix') == key_prefix):
+            return
+        dados = self.state.get(f'bug_{key_prefix}_snapshot')
+        if not dados:
+            self.state.set('show_bug_confirm_modal', False)
+            return
+
+        with st.container(border=True):
+            st.markdown("##### 🐛 Confirmar Criação de Bug")
+            st.markdown(f"**Título:** {dados['titulo']}")
+            st.markdown(f"**Board (Area Path):** {dados['board']}")
+            st.markdown(f"**Coluna do Board:** {dados['coluna']}")
+            st.markdown(f"**Prioridade:** {dados['prioridade']}  |  **Severidade:** {dados['severidade']}")
+            if dados.get('tags'):
+                st.markdown(f"**Tags:** {', '.join(dados['tags'])}")
+            if dados.get('atribuir_a'):
+                st.markdown(f"**Atribuído a:** {dados['atribuir_a']}")
+
+            with st.expander("📋 Descrição e Passos de Reprodução", expanded=True):
+                st.markdown(f"**Descrição:**\n\n{dados['descricao']}")
+                st.markdown("**Passos de Reprodução:**")
+                for i, p in enumerate(dados['passos'], start=1):
+                    st.write(f"{i}. {p}")
+
+            vinculo = dados.get('vinculo')
+            if vinculo:
+                st.info(
+                    f"Esse Bug será vinculado automaticamente ao Caso de Teste **{vinculo['caso_titulo']}** "
+                    f"(Tested By) e ao Work Item **{vinculo['wi_titulo']}** (Related)."
+                )
+
+            st.warning(
+                "Essa ação cria um item real no seu projeto do Azure DevOps e **não pode ser desfeita "
+                "automaticamente** — se algo sair errado, a exclusão precisa ser feita manualmente lá. "
+                "Tem certeza que deseja prosseguir?"
+            )
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🐛 Sim, Criar Bug", use_container_width=True, type="primary",
+                              key=f"confirm_bug_yes_{key_prefix}"):
+                    self.state.set('show_bug_confirm_modal', False)
+                    self.state.set(f'_bug_confirmado_{key_prefix}', True)
+                    st.rerun()
+            with c2:
+                if st.button("❌ Cancelar", use_container_width=True, key=f"confirm_bug_no_{key_prefix}"):
+                    self.state.set('show_bug_confirm_modal', False)
+                    st.rerun()
+
+    def _limpar_estado_bug(self, key_prefix: str, limpar_metadados: bool = False):
+        """
+        Limpa o estado da tela de Criar Bug — nunca mexe em PAT/Org/
+        Projeto/Area Path (isso é gerenciado por
+        _setup_azure_devops_connection, sem prefixo "bug_", então
+        continua intacto).
+
+        As ESCOLHAS do formulário (Work Item/Caso de Teste de origem,
+        Coluna, Tags, Atribuir a, Prioridade, Severidade) são sempre
+        resetadas aqui, mesmo na chamada automática pós-sucesso — senão o
+        próximo Bug nascia herdando a seleção do Bug anterior: com o
+        mesmo Caso de Teste ainda selecionado, Título e Passos de
+        Reprodução voltavam a vir pré-preenchidos com os mesmos dados
+        de novo, dando a impressão de que nada tinha sido limpo.
+        limpar_metadados=True vai além disso e também descarta as
+        LISTAS já buscadas do Azure DevOps (Work Items, Casos de Teste,
+        Colunas, Tags, Membros) — usado em "Criar outro Bug", pra
+        começar do zero de verdade; a limpeza pós-sucesso comum não
+        mexe nessas listas, só nas escolhas, pra não obrigar buscar
+        tudo de novo à toa se o próximo Bug for do mesmo board.
+
+        Incrementa "bug_{prefixo}_form_versao" — TODOS os widgets de
+        escolha do formulário (Título, Descrição, Work Item, Caso de
+        Teste, Coluna, Tags, Atribuir a, Prioridade, Severidade) levam
+        essa versão como parte da própria chave (não uma chave fixa),
+        porque só apagar do session_state nem sempre reseta visualmente
+        um widget já renderizado antes — testei ao vivo e confirmei isso
+        também pra selectbox (Work Item ficava mostrando a escolha
+        anterior mesmo com a chave apagada de session_state), não só
+        pra campo de texto como se pensava antes. Trocar a versão força
+        o widget a nascer de novo, do zero, de verdade — mesma
+        estratégia já usada nos Passos de Reprodução, que usam um UUID
+        novo a cada reinício. Por isso o `del st.session_state[...]`
+        abaixo é só faxina (evita acumular chaves de versões antigas
+        órfãs) — quem garante o reset visual é a versão ter mudado.
+        """
+        self.state.set(f'bug_{key_prefix}_snapshot', None)
+        self.state.set('show_bug_confirm_modal', False)
+        self.state.set(f'bug_{key_prefix}_form_versao', (self.state.get(f'bug_{key_prefix}_form_versao') or 0) + 1)
+        if key_prefix == "de_caso":
+            self.state.set('bug_de_caso_repro_prefilled_from', None)
+            campos_limpar = ['bug_de_caso_repro_steps_list']
+        else:
+            campos_limpar = ['bug_livre_repro_steps_list']
+
+        # Faxina das chaves versionadas de versões anteriores (Work Item,
+        # Caso de Teste, Coluna, Tags, Atribuir a, Prioridade, Severidade)
+        # — sempre, independente de limpar_metadados. O reset visual em si
+        # já aconteceu ao incrementar form_versao acima; isso aqui só evita
+        # que session_state acumule lixo de reinícios anteriores.
+        for k in list(st.session_state.keys()):
+            if k.startswith((f'bug_wi_select_', f'bug_caso_select_', f'bug_coluna_select_{key_prefix}',
+                              f'bug_tags_select_{key_prefix}', f'bug_membro_select_{key_prefix}',
+                              f'bug_prioridade_{key_prefix}', f'bug_severidade_{key_prefix}')):
+                campos_limpar.append(k)
+
+        if limpar_metadados:
+            if key_prefix == "de_caso":
+                for k in ('bug_board_items', 'bug_test_cases'):
+                    self.state.set(k, [])
+            for k in list(st.session_state.keys()):
+                if k.startswith((f'bug_colunas_combinadas_{key_prefix}', f'bug_tags_existentes_{key_prefix}',
+                                  f'bug_membros_{key_prefix}')):
+                    campos_limpar.append(k)
+        for k in campos_limpar:
+            if k in st.session_state:
+                del st.session_state[k]
+
+    @staticmethod
+    def _montar_passos_repro_de_caso(caso: dict) -> list:
+        """
+        Converte os passos (Ação -> Resultado Esperado) de um Caso de
+        Teste já existente numa LISTA de textos, um por passo — usado
+        pra pré-preencher a lista dinâmica de Passos de Reprodução do
+        Bug (cada passo do Caso vira 1 item editável da lista).
+        """
+        passos_texto = []
+        for passo in (caso.get('passos') or []):
+            texto = passo.get('acao', '') or ''
+            if passo.get('resultado_esperado'):
+                texto = f"{texto}\nEsperado: {passo['resultado_esperado']}" if texto else f"Esperado: {passo['resultado_esperado']}"
+            if texto:
+                passos_texto.append(texto)
+        return passos_texto or [""]
+
+    @staticmethod
     def _parse_plans_csv(conteudo: bytes) -> dict:
         """
         Lê de volta o CSV gerado por AzureCsvFormatter.plans_suites_cases
@@ -7188,6 +8023,36 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 unsafe_allow_html=True
             )
 
+        # Rolagem pro topo de uma vez só — usada tanto após confirmar um
+        # Bug no modal quanto após confirmar "Criar outro Bug". Marcada
+        # logo depois de cada uma dessas ações, disparada aqui na próxima
+        # renderização, e imediatamente resetada pra não repetir em toda
+        # renderização seguinte. Mira primeiro na âncora da mensagem de
+        # sucesso (bug-sucesso-anchor) — existe só logo após criar um Bug.
+        # Se não achar (ex.: depois de "Criar outro Bug", quando a
+        # mensagem de sucesso já foi limpa), tenta bug-form-top-anchor
+        # (topo fixo da página de Criar Bug). Só em último caso cai pro
+        # topo cego da janela — porque o topo real da página (Config. do
+        # Azure DevOps / PAT) fica ACIMA de onde o formulário aparece,
+        # então rolar só até o topo não deixava os campos visíveis.
+        if self.state.get('scroll_to_top_pending'):
+            self.state.set('scroll_to_top_pending', False)
+            st.markdown(
+                """
+                <svg onload="
+                    var alvo = window.parent.document.getElementById('bug-sucesso-anchor')
+                        || window.parent.document.getElementById('bug-form-top-anchor');
+                    if (alvo) { alvo.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+                    else {
+                        window.parent.scrollTo({top: 0, behavior: 'smooth'});
+                        var m = window.parent.document.querySelector('.main');
+                        if(m) m.scrollTo({top: 0, behavior: 'smooth'});
+                    }
+                " style="display:none;"></svg>
+                """,
+                unsafe_allow_html=True
+            )
+
         if self.state.get('show_interrupt_modal'):
             confirm_interrupt_modal()
             
@@ -7223,6 +8088,10 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
         if self.state.get('show_mindmap_page'):
             self._mind_map_page()
+            return
+
+        if self.state.get('show_bug_page'):
+            self._bug_creation_page()
             return
 
         self._progress()
