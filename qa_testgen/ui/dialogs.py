@@ -3,8 +3,18 @@ import streamlit as st
 from qa_testgen.ui.auth import SESSION_AUTH_KEY, SESSION_USER_KEY, log_action
 
 # Chaves que NÃO devem ser apagadas ao iniciar uma "Nova Análise":
-# autenticação e o componente interno que lê o cookie de sessão.
-_PRESERVE_ON_RESET = {SESSION_AUTH_KEY, SESSION_USER_KEY}
+# autenticação, o componente interno que lê o cookie de sessão, e o PAT
+# do Azure DevOps (+ cache de validação) — o PAT é da PESSOA, não da
+# análise; digitar de novo a cada "Nova Análise" só pra continuar
+# trabalhando no mesmo Azure DevOps não fazia sentido. Só deve mesmo
+# sumir se a pessoa sair (logout) ou fechar a aba/navegador — os dois
+# casos já encerram a sessão inteira por conta própria, sem precisar de
+# nada extra aqui.
+_PRESERVE_ON_RESET = {
+    SESSION_AUTH_KEY, SESSION_USER_KEY,
+    'ado_user_pat', 'ado_last_validated_pat', 'ado_pat_validated',
+    'ado_orgs_fetch_done', 'ado_accessible_orgs', 'ado_orgs_fetch_error',
+}
 
 DIALOG_PREFIXES = (
     "mid_","mfunc_","mreq_","mcen_","mcat_","mpri_","mcrit_","mobs_","edit_m_",

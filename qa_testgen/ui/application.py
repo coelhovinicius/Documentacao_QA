@@ -1300,6 +1300,7 @@ class UserInterface:
             if not text:
                 st.error("Não foi possível extrair texto.")
                 self.clear_action()
+                st.rerun()
             else:
                 doc_wi_map = self.state.get('step1_doc_work_item_map') or {}
                 log_detail = f"Projeto '{project}' — {len(uploaded)} documento(s): {', '.join(f.name for f in uploaded)}"
@@ -1600,6 +1601,7 @@ class UserInterface:
             except Exception as error:
                 self._err(error)
                 self.clear_action()
+                st.rerun()
 
     def step_2(self):
         st.subheader("Passo 2 – Resolução de Conflitos e Ambiguidade")
@@ -1660,6 +1662,7 @@ class UserInterface:
                     else:
                         self._flash_error("Matriz vazia.")
                     self.clear_action()
+                    st.rerun()
                 else:
                     if erros:
                         status.update(label=f"Concluído com {len(erros)} lote(s) com falha.", state="complete")
@@ -1829,6 +1832,7 @@ class UserInterface:
                     status.update(label="Falha ao gerar Casos de Teste.", state="error", expanded=True)
                     self._flash_error("Não foi possível gerar nenhum Caso de Teste — todos os lotes falharam.")
                     self.clear_action()
+                    st.rerun()
                 elif erros or ids_sem_cobertura:
                     status.update(label="Concluído, mas com pendência(s) — veja o aviso.", state="complete")
                     partes_aviso = [f"{len(casos)} Caso(s) gerado(s)."]
@@ -2022,6 +2026,7 @@ class UserInterface:
                     else:
                         self._flash_error("Nenhum Plano de Teste retornado. Valide a chave JSON de saída no n8n.")
                     self.clear_action()
+                    st.rerun()
                 else:
                     if erros:
                         status.update(label=f"Concluído com {len(erros)} lote(s) com falha.", state="complete")
@@ -4084,6 +4089,7 @@ class UserInterface:
                 if not details:
                     st.error("❌ Não foi possível buscar os detalhes dos Work Items selecionados.")
                     self.clear_action()
+                    st.rerun()
                 else:
                     text_parts = []
                     for wi in details:
@@ -4111,6 +4117,7 @@ class UserInterface:
             except Exception as error:
                 self._flash_error(f"Erro ao buscar detalhes dos Work Items: {error}")
                 self.clear_action()
+                st.rerun()
 
     def _step1_from_query(self):
         """
@@ -6457,9 +6464,11 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 except AzureDevOpsError as error:
                     self._flash_error(f"Erro ao rodar a query: {error}")
                     self.clear_action()
+                    st.rerun()
                 except Exception as error:
                     self._flash_error(f"Erro inesperado: {error}")
                     self.clear_action()
+                    st.rerun()
 
             if self.state.get('current_action') == 'confirm_wiql' and not self.state.get('show_interrupt_modal'):
                 try:
@@ -6480,6 +6489,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 except Exception as error:
                     st.error(f"❌ Erro inesperado: {error}")
                 self.clear_action()
+                st.rerun()
         else:
             st.caption("Testa a query acima antes de poder confirmar a criação.")
 

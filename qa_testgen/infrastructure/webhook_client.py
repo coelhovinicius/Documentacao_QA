@@ -35,18 +35,44 @@ class WebhookClient:
                 raise requests.HTTPError(f"{error} — detalhe do servidor: {detalhe}", response=response) from None
             raise
 
+    # Chaves que os 10 workflows do n8n usam pra devolver o resultado de
+    # verdade quando dá certo — se o JSON tem "error" mas NENHUMA dessas,
+    # é o formato de erro comum a todos eles ({"error": "Todos os
+    # provedores de IA falharam...", "detalhe": ...}), não uma resposta
+    # de sucesso com formato inesperado. Ver _parse.
+    _CHAVES_DE_SUCESSO = ("casos_de_teste", "matriz", "duvidas", "planos_de_teste", "vinculos")
+
     def _parse(self, response: requests.Response) -> dict:
         raw = response.text.strip()
         if not raw:
+            # ANTES: essa mensagem "chutava" uma causa ("Deadlock no Merge
+            # Node do n8n ou falha de roteamento de rede") sem checar nada
+            # de verdade — nenhum código aqui sabe se houve deadlock ou
+            # problema de rede, então dizer isso era só um palpite escrito
+            # como se fosse diagnóstico. Corpo vazio com Status 200
+            # normalmente indica algo ENTRE o Streamlit e o n8n (proxy,
+            # túnel, o próprio node "Respond to Webhook" não montando o
+            # corpo por algum motivo específico daquela execução) — não dá
+            # pra saber qual sem olhar o log de execução do n8n direto.
             raise ValueError(
-                f"Payload vazio do orquestrador (Status {response.status_code}). "
-                "Causa raiz provável: Deadlock no Merge Node do n8n ou falha de roteamento de rede."
+                f"O n8n respondeu com o corpo vazio (Status {response.status_code}). "
+                "Não é possível determinar a causa a partir daqui — confira o log dessa "
+                "execução específica direto no n8n (aba Executions do workflow) pra ver "
+                "o que cada node realmente recebeu e devolveu."
             )
         if raw.startswith("```json"):
             raw = raw.replace("```json", "").replace("```", "").strip()
         elif raw.startswith("```"):
             raw = raw.replace("```", "").strip()
-        return json.loads(raw)
+        data = json.loads(raw)
+        if isinstance(data, dict) and "error" in data and not any(k in data for k in self._CHAVES_DE_SUCESSO):
+            # Formato usado pelos 10 workflows quando TODOS os provedores de
+            # IA falham (Respond to Webhook1) — mostra esse motivo real em
+            # vez de deixar cair no erro genérico de "chave obrigatória não
+            # encontrada" de _extract_required_list.
+            detalhe = data.get("detalhe", "")
+            raise ValueError(f"{data['error']} {detalhe}".strip())
+        return data
 
     def _find_key(self, raw, key: str):
         if isinstance(raw, list):
