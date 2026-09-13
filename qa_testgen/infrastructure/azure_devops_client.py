@@ -305,7 +305,8 @@ class AzureDevOpsClient:
     # rodando list_test_case_fields.py e ajuste aqui.
     PRECONDICOES_FIELD = "Custom.Precondicoes"
 
-    def create_test_case(self, titulo: str, pre_condicoes: str, passos: list, area_path: str = None, initial_state: str = None) -> dict:
+    def create_test_case(self, titulo: str, pre_condicoes: str, passos: list, area_path: str = None,
+                          initial_state: str = None, tags: str = None) -> dict:
         """
         Cria um work item do tipo Test Case e retorna {'id': int, 'state_warning': str|None}.
 
@@ -324,6 +325,8 @@ class AzureDevOpsClient:
         ]
         if area_path:
             body.append({"op": "add", "path": "/fields/System.AreaPath", "value": area_path})
+        if tags:
+            body.append({"op": "add", "path": "/fields/System.Tags", "value": tags})
 
         url = f"{self._base_url()}/wit/workitems/$Test%20Case?api-version={API_VERSION}"
         response = self.session.post(url, json=body, headers=self.headers_json_patch, timeout=60)

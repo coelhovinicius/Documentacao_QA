@@ -392,3 +392,32 @@ def confirm_leave_report_modal():
 # normal da página (não dialog) não tem essa ambiguidade: passa a
 # reaparecer/desaparecer só pela condição normal do Streamlit, sem
 # depender de quando o navegador decide desmontar um modal.
+#
+# aviso_pat_compartilhado_modal, abaixo, continua um st.dialog de verdade
+# porque não tem esse problema: é só "mostrar aviso, clicar OK, seguir" —
+# nada de trabalho longo rodando logo depois do fechamento.
+
+
+@st.dialog("📢 Mudança no PAT do Azure DevOps")
+def aviso_pat_compartilhado_modal(marcar_nao_mostrar_fn):
+    """
+    marcar_nao_mostrar_fn: callable() sem argumentos — grava que essa
+    pessoa não quer ver esse aviso de novo (chamado só se ela marcar a
+    caixinha e confirmar).
+    """
+    st.markdown(
+        "A partir de agora, o app usa um **PAT compartilhado**, configurado pelo "
+        "administrador — você não precisa mais informar nenhum token do Azure DevOps "
+        "em nenhuma tela."
+    )
+    st.markdown(
+        "Pra manter rastreabilidade de quem fez o quê, todo Bug e Test Case criado "
+        "recebe automaticamente a tag `criado-por:<seu usuário>` — visível direto no "
+        "próprio item, dentro do Azure DevOps."
+    )
+    nao_mostrar = st.checkbox("Não mostrar este aviso novamente", key="pat_notice_nao_mostrar_chk")
+    if st.button("Entendi", type="primary", use_container_width=True, key="pat_notice_ok_btn"):
+        if nao_mostrar:
+            marcar_nao_mostrar_fn()
+        st.session_state['_pat_notice_visto_nesta_sessao'] = True
+        st.rerun()

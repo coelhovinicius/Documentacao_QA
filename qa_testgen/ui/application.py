@@ -5,6 +5,7 @@ import hashlib
 import html
 import json
 import re
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,7 @@ from qa_testgen.ui.dialogs import (
     confirm_new_analysis_modal,
     confirm_new_report_modal,
     confirm_leave_report_modal,
+    aviso_pat_compartilhado_modal,
 )
 from qa_testgen.ui.auth import (
     require_login, render_logout_control, is_approver, has_permission,
@@ -183,6 +185,57 @@ class UserInterface:
     def _log(self, action_name: str, location: str, details: str = ""):
         username = st.session_state.get(SESSION_USER_KEY, "")
         log_action(self.config, username, action_name, location, details)
+
+    @staticmethod
+    def _tag_criado_por(tags_existentes: str = None) -> str:
+        """
+        Acrescenta "criado-por:<usuário logado>" à lista de tags — usada em
+        toda criação de Bug/Test Case no Azure DevOps. Existe pra dar
+        rastreabilidade de quem fez o quê mesmo quando todas as chamadas
+        usam o mesmo PAT compartilhado: o Azure DevOps grava toda mudança
+        no campo Tags como uma revisão normal na aba History do próprio
+        item — inclusive se alguém remover essa tag depois, a remoção
+        também fica lá, com quem tirou e quando.
+
+        tags_existentes: string já no formato "tag1; tag2" (ou None) —
+        outras tags que a pessoa já tenha escolhido manualmente, se houver.
+        """
+        username = st.session_state.get(SESSION_USER_KEY, "") or "desconhecido"
+        username_tag = username.strip().replace(";", "").replace(" ", "-").lower()
+        tag_autor = f"criado-por:{username_tag}"
+        if tags_existentes:
+            partes = [t.strip() for t in tags_existentes.split(";") if t.strip()]
+            if tag_autor not in partes:
+                partes.append(tag_autor)
+            return "; ".join(partes)
+        return tag_autor
+
+    # Arquivo simples (não é banco de dados) só pra lembrar quem já
+    # dispensou o aviso de "PAT virou compartilhado" — dura enquanto o
+    # container do Streamlit Cloud não reiniciar. Não é o tipo de dado que
+    # precisa sobreviver pra sempre (pior caso, a pessoa vê o aviso de novo
+    # depois de um restart raro), então não criei tabela nova só pra isso.
+    _PAT_NOTICE_FILE = Path(tempfile.gettempdir()) / "qa_testgen_pat_notice_dismissed.json"
+
+    @classmethod
+    def _pat_notice_ja_dispensado(cls, username: str) -> bool:
+        try:
+            dados = json.loads(cls._PAT_NOTICE_FILE.read_text(encoding="utf-8"))
+            return username in dados.get("usuarios", [])
+        except Exception:
+            return False
+
+    @classmethod
+    def _marcar_pat_notice_dispensado(cls, username: str):
+        try:
+            dados = {"usuarios": []}
+            if cls._PAT_NOTICE_FILE.exists():
+                dados = json.loads(cls._PAT_NOTICE_FILE.read_text(encoding="utf-8"))
+            if username not in dados.get("usuarios", []):
+                dados.setdefault("usuarios", []).append(username)
+            cls._PAT_NOTICE_FILE.write_text(json.dumps(dados), encoding="utf-8")
+        except Exception:
+            pass  # não crítico — pior caso, a pessoa vê o aviso de novo
 
     @staticmethod
     def _dedupe_case_assignments(links: dict, ordered_wids: list) -> dict:
@@ -2225,7 +2278,7 @@ class UserInterface:
             "Nome de quem está gerando este relatório",
             value=self.state.get('author_name', ''),
             key="author_name_input",
-            help="Aparece no rodapé do PDF. Se você já validou seu PAT no Passo 7 antes, isso é preenchido automaticamente.",
+            help="Aparece no rodapé do PDF. Pode vir preenchido automaticamente a partir do Passo 7 — confira se é o seu nome mesmo antes de gerar.",
         )
         self.state.set('author_name', author_name)
 
@@ -2510,7 +2563,8 @@ class UserInterface:
                 titulo = tc.get('titulo')
                 titulo_prefixado = titled.get(titulo, titulo)
                 result = ado_client.create_test_case(
-                    titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path, initial_state
+                    titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path, initial_state,
+                    tags=self._tag_criado_por(),
                 )
                 return titulo, result["id"]
 
@@ -2930,16 +2984,34 @@ class UserInterface:
             "Organização, Projeto e Area Path vêm direto do Azure DevOps — nada aqui é digitado livremente."
         )
 
-        st.markdown("##### 🔑 Seu Personal Access Token (PAT)")
-        st.caption(
-            "Use o **seu próprio** PAT do Azure DevOps aqui — não é mais um token único compartilhado "
-            "por todo mundo. Isso garante que as ações feitas no Azure DevOps (criar Test Cases, Test "
-            "Plans, vínculos) fiquem registradas em seu nome, não no de outra pessoa. O token não é "
-            "salvo em nenhum lugar — vale só para esta sessão."
-        )
-        with st.expander("❓ Como criar meu próprio PAT no Azure DevOps"):
-            st.markdown(
-                """
+        st.markdown("##### 🔑 Personal Access Token (PAT)")
+
+        pat_compartilhado = ""
+        try:
+            pat_compartilhado = st.secrets.get("AZURE_DEVOPS_PAT", "")
+        except Exception:
+            pat_compartilhado = ""
+
+        if pat_compartilhado:
+            user_pat = pat_compartilhado
+            self.state.set('ado_user_pat', user_pat)
+            st.caption(
+                "PAT compartilhado, configurado pelo administrador — você não precisa "
+                "informar nada aqui. Toda ação continua registrada em seu nome no "
+                "histórico interno do app (visível só para administradores); só o "
+                "Azure DevOps em si (campos como \"Created by\") vai mostrar a conta "
+                "dona do token compartilhado, não a sua."
+            )
+        else:
+            st.caption(
+                "Use o **seu próprio** PAT do Azure DevOps aqui — não é mais um token único compartilhado "
+                "por todo mundo. Isso garante que as ações feitas no Azure DevOps (criar Test Cases, Test "
+                "Plans, vínculos) fiquem registradas em seu nome, não no de outra pessoa. O token não é "
+                "salvo em nenhum lugar — vale só para esta sessão."
+            )
+            with st.expander("❓ Como criar meu próprio PAT no Azure DevOps"):
+                st.markdown(
+                    """
 1. Acesse `https://dev.azure.com/{sua-organização}/_usersSettings/tokens`
    (troque `{sua-organização}` pelo nome real, ex.: `refuturiza`)
 2. Clique em **"+ New Token"**
@@ -2954,21 +3026,21 @@ class UserInterface:
 7. Clique em **Create**, e **copie o token imediatamente** — o Azure DevOps
    só mostra ele uma vez; se perder, precisa criar outro
 8. Cole o token no campo abaixo
-                """
+                    """
+                )
+            user_pat = st.text_input(
+                "Personal Access Token (PAT)",
+                type="password",
+                value=self.state.get('ado_user_pat', ''),
+                disabled=self.state.get('is_processing'),
+                key="ado_user_pat_input",
+                help="Nunca é salvo em disco — fica só na memória desta sessão.",
             )
-        user_pat = st.text_input(
-            "Personal Access Token (PAT)",
-            type="password",
-            value=self.state.get('ado_user_pat', ''),
-            disabled=self.state.get('is_processing'),
-            key="ado_user_pat_input",
-            help="Nunca é salvo em disco — fica só na memória desta sessão.",
-        )
-        self.state.set('ado_user_pat', user_pat)
+            self.state.set('ado_user_pat', user_pat)
 
-        if not user_pat:
-            st.info("Informe seu PAT acima para continuar.")
-            return None
+            if not user_pat:
+                st.info("Informe seu PAT acima para continuar.")
+                return None
 
         # 1) Organizações — busca automática (é só 1 chamada rápida, ou nem
         # isso quando cai no fallback abaixo), então não precisa de um botão
@@ -3023,7 +3095,7 @@ class UserInterface:
                     pass  # não crítico — a pessoa sempre pode digitar manualmente no Passo 6
 
             if self.state.get('ado_pat_validated'):
-                self._log("PAT Validado", "Azure DevOps", "PAT pessoal validado com sucesso")
+                self._log("PAT Validado", "Azure DevOps", "PAT validado com sucesso")
 
         if not self.state.get('ado_pat_validated'):
             st.error(
@@ -3875,7 +3947,7 @@ class UserInterface:
             "Escolhe Work Items existentes no Azure DevOps pra usar como especificação, no lugar "
             "de enviar um documento — a Descrição e os Critérios de Aceite de cada um viram o "
             "texto de entrada, e o resto do processo segue igual (Dúvidas → Matriz → Casos → Planos). "
-            "Disponível pra qualquer pessoa logada — usa o seu PAT pessoal, igual ao Passo 7."
+            "Disponível pra qualquer pessoa logada — usa a mesma conexão com o Azure DevOps do Passo 7."
         )
 
         conn = self._setup_azure_devops_connection(show_area_path_picker=False)
@@ -5033,7 +5105,7 @@ class UserInterface:
         resultado = ado_client.create_bug(
             dados['titulo'], dados['board'], dados['descricao'], repro_texto,
             dados['prioridade'], dados['severidade'], dados['atribuir_a'],
-            "; ".join(dados['tags']) if dados['tags'] else None,
+            self._tag_criado_por("; ".join(dados['tags']) if dados['tags'] else None),
             dados['coluna'], campo_coluna, dados.get('coluna_state'),
         )
         vinculo = dados.get('vinculo')
@@ -7543,7 +7615,8 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 titulo = tc.get('titulo')
                 titulo_prefixado = titled.get(titulo, titulo)
                 result = ado_client.create_test_case(
-                    titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path, initial_state
+                    titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path, initial_state,
+                    tags=self._tag_criado_por(),
                 )
                 return titulo, titulo_prefixado, result["id"], result.get("state_warning")
 
@@ -7773,8 +7846,9 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         st.caption(
             "O acesso passa por aprovação antes de entrar. Depois disso, o time de QA usa o "
             "app, que aciona o n8n (onde a IA gera o conteúdo, e onde o controle de acesso/logs "
-            "também vivem) e integra tudo direto no Azure DevOps, usando o PAT pessoal de cada "
-            "pessoa — não mais um token único compartilhado."
+            "também vivem) e integra tudo direto no Azure DevOps, usando um PAT compartilhado "
+            "configurado pelo administrador — quem fez cada ação fica registrado por uma tag "
+            "automática (`criado-por:<usuário>`) em cada item, e no histórico interno do app."
         )
         st.markdown(self._flatten_html(self._svg_architecture_diagram()), unsafe_allow_html=True)
 
@@ -7861,9 +7935,11 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "- **Sessão via ID opaco na URL**: o link de sessão não revela usuário nem senha "
             "nenhuma — o dado real fica guardado no n8n, e pode ser revogado remotamente a "
             "qualquer momento (a sua própria sessão, ou a de outra pessoa) em Administração\n"
-            "- **PAT pessoal**: cada pessoa usa o próprio token do Azure DevOps — as ações ficam "
-            "registradas no nome de quem fez, não de uma conta compartilhada, e o token nunca é "
-            "salvo em disco\n"
+            "- **PAT compartilhado**: configurado uma vez pelo administrador (nos Secrets do "
+            "Streamlit) — ninguém mais precisa digitar token nenhum. Cada Bug/Test Case criado "
+            "recebe automaticamente a tag `criado-por:<usuário>`, então dá pra saber quem fez o "
+            "quê mesmo com o token sendo o mesmo para todos; e toda ação continua registrada "
+            "com o usuário logado no histórico interno do app, independente da tag\n"
             "- **Permissões granulares**: acesso à Integração com Azure DevOps, ao Relatório de "
             "Testes, e ao modo \"Gerar a partir de uma Query\" são liberados individualmente — "
             "quem não tem permissão nem vê a opção\n"
@@ -7901,7 +7977,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             </defs>
             {node(40, "Usuário", "Time de QA")}
             <line x1="340" y1="96" x2="340" y2="156" {arrow} />
-            {node(156, "Login", "Aprovação + PAT pessoal")}
+            {node(156, "Login", "Aprovação + PAT compartilhado")}
             <line x1="340" y1="212" x2="340" y2="272" {arrow} />
             {node(272, "App QA Automation", "Streamlit")}
             <line x1="340" y1="328" x2="340" y2="388" {arrow} />
@@ -7945,7 +8021,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             <path d="M572.5 146 L572.5 195 L135.5 195 L135.5 250" fill="none" {arrow} />
             {node(43, 250, 185, "5. Planos", "Organiza em suítes")}
             {node(248, 250, 185, "6. Download", "CSV e PDF prontos")}
-            {node(453, 250, 185, "7. Azure DevOps", "PAT pessoal + merge")}
+            {node(453, 250, 185, "7. Azure DevOps", "PAT compartilhado + merge")}
             <line x1="228" y1="278" x2="248" y2="278" {arrow} />
             <line x1="433" y1="278" x2="453" y2="278" {arrow} />
         </svg>
@@ -8016,7 +8092,18 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         self._header()
         render_logout_control(self.config)
         self._render_flash_message()
-        
+
+        username = st.session_state.get(SESSION_USER_KEY, "")
+        is_owner = username == self.config.owner_username
+        if (
+            not is_owner
+            and not self.state.get('_pat_notice_visto_nesta_sessao')
+            and not self._pat_notice_ja_dispensado(username)
+            and not self.state.get('show_interrupt_modal')
+            and not self.state.get('show_new_analysis_modal')
+        ):
+            aviso_pat_compartilhado_modal(lambda: self._marcar_pat_notice_dispensado(username))
+
         # Scroll Viewport to Top Tracking System
         current_step = self.state.get('step')
         if current_step != self.state.get('last_viewed_step'):
