@@ -84,6 +84,27 @@ class UserInterface:
         self.state.set('is_processing', False)
         self.state.set('processing_interrupted', False)
 
+    def _iniciar_geracao_em_lotes(self, action_name: str, state_prefix: str):
+        """
+        Callback dos botões "Gerar Matriz/Casos/Planos" — sempre limpa
+        qualquer estado de lote (`_{state_prefix}_pendentes/acumulado/
+        erros/total`) deixado por uma tentativa anterior ANTES de disparar
+        a ação de novo.
+
+        Por quê: _processar_um_lote_por_execucao usa "pendentes is None"
+        pra decidir se monta lotes novos ou continua de onde parou — o que
+        é certo ENQUANTO os reruns automáticos entre lotes de uma mesma
+        rodada acontecem, mas quebra se a sessão cair no meio (conexão,
+        timeout do navegador) e a pessoa clicar "Gerar" de novo: sem essa
+        limpeza, ele silenciosamente retoma da lista velha, pulando os
+        lotes já consumidos pela tentativa anterior — mesmo que ela nunca
+        tenha terminado de verdade. Foi exatamente isso que fez um
+        documento de 18 itens da Matriz gerar Casos só pros 2 últimos.
+        """
+        for suffix in ('_pendentes', '_acumulado', '_erros', '_total'):
+            self.state.delete(f'_{state_prefix}{suffix}')
+        self.trigger_action(action_name)
+
     def interrupt_processing(self):
         self.state.set('current_action', None)
         self.state.set('is_processing', False)
@@ -1691,8 +1712,8 @@ class UserInterface:
                 "📊 Gerar Matriz de Cobertura",
                 use_container_width=True,
                 type="primary",
-                on_click=self.trigger_action,
-                args=("generate_matrix",),
+                on_click=self._iniciar_geracao_em_lotes,
+                args=("generate_matrix", "geracao_matriz"),
                 disabled=self.state.get('is_processing'),
             )
 
@@ -1846,8 +1867,8 @@ class UserInterface:
                     "🚀 Gerar Casos de Teste",
                     use_container_width=True,
                     type="primary",
-                    on_click=self.trigger_action,
-                    args=("generate_cases",),
+                    on_click=self._iniciar_geracao_em_lotes,
+                    args=("generate_cases", "geracao_casos"),
                     disabled=self.state.get('is_processing'),
                 )
 
@@ -2054,8 +2075,8 @@ class UserInterface:
                     "📁 Gerar Planos de Teste",
                     use_container_width=True,
                     type="primary",
-                    on_click=self.trigger_action,
-                    args=("generate_plans",),
+                    on_click=self._iniciar_geracao_em_lotes,
+                    args=("generate_plans", "geracao_planos"),
                     disabled=self.state.get('is_processing'),
                 )
 
@@ -2613,6 +2634,27 @@ class UserInterface:
                 except Exception as error:
                     log.append(f"❌ Erro inesperado na Suíte '{nome_suite}': {error}")
                 progress2.progress(idx / total_suites, text=f"Criando/atualizando Suítes no Azure DevOps... ({idx}/{total_suites})")
+
+        total_casos_esperados = sum(
+            len([t for t in suite.get('casos', []) if t not in excluded_titles])
+            for plan in test_plans for suite in plan.get('suites', [])
+        )
+        total_casos_vinculados = sum(len(case_id_list) for _, case_id_list in suite_tasks)
+
+        if total_casos_esperados and not total_casos_vinculados:
+            self._flash_error(
+                f"O Test Plan foi criado, mas NENHUM dos {total_casos_esperados} Caso(s) de Teste "
+                "esperado(s) foi vinculado a nenhuma Suíte — o Test Plan ficou vazio no Azure DevOps. "
+                "Confira o log abaixo: se aparecer '❌ Falha ao criar um Caso de Teste', a criação em "
+                "si falhou; se os Casos aparecem como criados mas mesmo assim nenhuma Suíte foi "
+                "processada, os títulos gerados pelos Planos não bateram com os títulos dos Casos."
+            )
+        elif total_casos_esperados and total_casos_vinculados < total_casos_esperados:
+            self._flash_error(
+                f"Só {total_casos_vinculados} de {total_casos_esperados} Caso(s) de Teste esperado(s) "
+                "foram vinculados a alguma Suíte no Azure DevOps — confira o log abaixo pra ver quais "
+                "faltaram e por quê."
+            )
 
         log.append(f"\n🔗 Confira o Test Plan completo: {ado_client.test_plan_url(plan_id)}")
         self._log(
