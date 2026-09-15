@@ -1514,12 +1514,16 @@ class UserInterface:
         return lotes
 
     # Intervalo mínimo entre o FIM de um lote e o INÍCIO do próximo, na
-    # geração de Matriz/Casos/Planos — dá tempo da cota por minuto dos
-    # provedores de IA no n8n (rate limit) se recuperar entre uma chamada e
-    # outra. Motivo de existir: batidas de execuções seguidas mostraram TODOS
-    # os fallbacks de IA do workflow (OpenAI, Groq x3, Gemini, Mistral)
-    # esgotados ao mesmo tempo a partir do 2º lote disparado em sequência.
-    _ESPERA_ENTRE_LOTES_SEGUNDOS = 20
+    # geração de Matriz/Casos/Planos — dá tempo da cota por minuto (TPM) dos
+    # provedores de IA no n8n se recuperar entre uma chamada e outra.
+    # Motivo de existir: erro real capturado num lote (Groq, modelo
+    # openai/gpt-oss-20b): "Limit 8000, Used 2331, Requested 6285" — ou seja,
+    # UM ÚNICO lote já pede ~6285 tokens, quase 80% do limite de 8000/min
+    # inteiro. Não é "a soma de vários lotes estoura o limite" — é que um
+    # lote sozinho já deixa pouquíssima folga pro próximo dentro da MESMA
+    # janela de 60s. Por isso a espera aqui é alinhada à janela real do
+    # rate limit (60s), não um valor arbitrário menor.
+    _ESPERA_ENTRE_LOTES_SEGUNDOS = 62
 
     def _processar_um_lote_por_execucao(self, state_prefix: str, montar_lotes_fn, processar_um_lote_fn, status):
         """
