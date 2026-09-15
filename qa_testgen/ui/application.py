@@ -6,6 +6,7 @@ import html
 import json
 import re
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,9 +101,9 @@ class UserInterface:
     def _iniciar_geracao_em_lotes(self, action_name: str, state_prefix: str):
         """
         Callback dos botões "Gerar Matriz/Casos/Planos" — sempre limpa
-        qualquer estado de lote (`_{state_prefix}_pendentes/acumulado/
-        erros/total`) deixado por uma tentativa anterior ANTES de disparar
-        a ação de novo.
+        qualquer estado de lote (`_{state_prefix}_lotes_pendentes/acumulado/
+        erros/total/proxima_liberacao`) deixado por uma tentativa anterior
+        ANTES de disparar a ação de novo.
 
         Por quê: _processar_um_lote_por_execucao usa "pendentes is None"
         pra decidir se monta lotes novos ou continua de onde parou — o que
@@ -113,8 +114,16 @@ class UserInterface:
         lotes já consumidos pela tentativa anterior — mesmo que ela nunca
         tenha terminado de verdade. Foi exatamente isso que fez um
         documento de 18 itens da Matriz gerar Casos só pros 2 últimos.
+
+        BUG histórico corrigido aqui: o sufixo usado abaixo pra apagar a
+        fila era '_pendentes', mas a chave DE VERDADE usada em
+        _processar_um_lote_por_execucao é '_lotes_pendentes' — ou seja,
+        essa limpeza NUNCA removia a fila antiga (só os outros 3 campos),
+        deixando `acumulado/erros/total` zerados mas `pendentes` com uma
+        lista velha, causando "None - int" (TypeError) na próxima geração
+        depois de uma tentativa interrompida no meio.
         """
-        for suffix in ('_pendentes', '_acumulado', '_erros', '_total'):
+        for suffix in ('_lotes_pendentes', '_acumulado', '_erros', '_total', '_proxima_liberacao'):
             self.state.delete(f'_{state_prefix}{suffix}')
         self.trigger_action(action_name)
 
@@ -1504,6 +1513,14 @@ class UserInterface:
             lotes.append("\n\n".join(lote_atual))
         return lotes
 
+    # Intervalo mínimo entre o FIM de um lote e o INÍCIO do próximo, na
+    # geração de Matriz/Casos/Planos — dá tempo da cota por minuto dos
+    # provedores de IA no n8n (rate limit) se recuperar entre uma chamada e
+    # outra. Motivo de existir: batidas de execuções seguidas mostraram TODOS
+    # os fallbacks de IA do workflow (OpenAI, Groq x3, Gemini, Mistral)
+    # esgotados ao mesmo tempo a partir do 2º lote disparado em sequência.
+    _ESPERA_ENTRE_LOTES_SEGUNDOS = 20
+
     def _processar_um_lote_por_execucao(self, state_prefix: str, montar_lotes_fn, processar_um_lote_fn, status):
         """
         Processa SÓ 1 lote por execução do script Streamlit, disparando
@@ -1522,6 +1539,14 @@ class UserInterface:
         resetando qualquer relógio de conexão que exista no meio do
         caminho, fora do meu controle via código Python.
 
+        Entre um lote e outro (a partir do 2º) também é respeitado
+        `_ESPERA_ENTRE_LOTES_SEGUNDOS` — mas SEM travar a execução inteira
+        num único `time.sleep(20)`: em vez disso, cada execução dorme só uns
+        2s por vez e dispara rerun() de novo até o relógio liberar. Isso
+        preserva o motivo do parágrafo acima (nenhuma execução individual
+        fica bloqueada por muito tempo) enquanto ainda espaça as chamadas de
+        verdade pro n8n.
+
         montar_lotes_fn: função sem argumento, chamada só na primeira
         execução, que retorna a lista de lotes já dividida.
         processar_um_lote_fn: recebe 1 lote, retorna (lista_de_itens, erro_ou_None).
@@ -1535,6 +1560,7 @@ class UserInterface:
         key_acumulado = f"_{state_prefix}_acumulado"
         key_erros = f"_{state_prefix}_erros"
         key_total = f"_{state_prefix}_total"
+        key_proxima_liberacao = f"_{state_prefix}_proxima_liberacao"
 
         if self.state.get(key_pendentes) is None:
             lotes = montar_lotes_fn()
@@ -1542,6 +1568,7 @@ class UserInterface:
             self.state.set(key_acumulado, [])
             self.state.set(key_erros, [])
             self.state.set(key_total, len(lotes))
+            self.state.set(key_proxima_liberacao, None)
 
         pendentes = self.state.get(key_pendentes)
         acumulado = self.state.get(key_acumulado)
@@ -1551,6 +1578,19 @@ class UserInterface:
         varios = total > 1
 
         if pendentes:
+            proxima_liberacao = self.state.get(key_proxima_liberacao)
+            if proxima_liberacao:
+                faltam = proxima_liberacao - time.time()
+                if faltam > 0:
+                    status.update(
+                        label=f"Aguardando {int(faltam) + 1}s antes do lote {concluidos + 1} de {total} "
+                        "(dá tempo da cota da IA no n8n se recuperar)..."
+                    )
+                    time.sleep(min(faltam, 2))
+                    st.rerun()
+                    return None
+                self.state.set(key_proxima_liberacao, None)
+
             if varios:
                 status.update(label=f"Processando lote {concluidos + 1} de {total}...")
             lote_atual = pendentes[0]
@@ -1570,6 +1610,7 @@ class UserInterface:
             self.state.set(key_erros, erros)
 
             if novos_pendentes:
+                self.state.set(key_proxima_liberacao, time.time() + self._ESPERA_ENTRE_LOTES_SEGUNDOS)
                 st.rerun()
                 return None
 
@@ -1577,6 +1618,7 @@ class UserInterface:
         self.state.set(key_acumulado, None)
         self.state.set(key_erros, None)
         self.state.set(key_total, None)
+        self.state.set(key_proxima_liberacao, None)
         return acumulado, erros
 
     _TAMANHO_LOTE_PLANOS = 10
@@ -2611,6 +2653,31 @@ class UserInterface:
             st.rerun()
             return
 
+        # Segunda trava: `test_plans` pode não estar vazio mas ainda assim
+        # não ter NENHUMA Suíte com Caso dentro (ex.: um Plano "casca vazia"
+        # devolvido pela IA quando o provedor falhou/ficou sem cota no Passo
+        # 5-6, mas mesmo assim retornou um plano com nome e 0 suítes). A
+        # checagem "not test_plans" acima não pega isso — a lista tem 1
+        # item, só que inútil. Sem essa trava aqui, o Test Plan é criado no
+        # Azure DevOps igual, vazio, sem nenhum aviso.
+        titulos_necessarios = set()
+        for plan in test_plans:
+            for suite in plan.get('suites', []):
+                titulos_necessarios.update(suite.get('casos', []))
+        if not titulos_necessarios:
+            log.append(
+                "❌ Os Planos de Teste gerados não têm nenhuma Suíte com Caso associado — nada foi "
+                "enviado ao Azure DevOps. Volte ao Passo 5/6 e gere os Planos de Teste novamente."
+            )
+            self.state.set('ado_static_push_log', log)
+            self._flash_error(
+                "Os Planos de Teste gerados estão vazios (sem Suítes/Casos) — a integração foi cancelada "
+                "antes de criar o Test Plan. Gere os Planos de Teste de novo antes de tentar integrar."
+            )
+            self.clear_action()
+            st.rerun()
+            return
+
         # 1) Test Plan: cria novo ou reaproveita existente.
         if existing_plan_id:
             plan_id = existing_plan_id
@@ -2649,12 +2716,8 @@ class UserInterface:
 
         # 2) Garante que todos os Casos de Teste necessários existem no
         # Azure DevOps (os já existentes/duplicados/excluídos são pulados —
-        # mesma regra do modo com Work Items).
-        titulos_necessarios = set()
-        for plan in test_plans:
-            for suite in plan.get('suites', []):
-                titulos_necessarios.update(suite.get('casos', []))
-
+        # mesma regra do modo com Work Items). `titulos_necessarios` já foi
+        # calculado antes de criar o Test Plan (ver trava de segurança acima).
         cases_to_create = [
             tc for tc in test_cases
             if tc.get('titulo') in titulos_necessarios

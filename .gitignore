@@ -33,3 +33,6 @@ n8n_workflows/
 
 # Hash de senha
 qa_testgen/scripts/
+
+# Configuracao/sessao local do Claude Code
+.claude/
