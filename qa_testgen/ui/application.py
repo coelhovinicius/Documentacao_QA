@@ -54,6 +54,18 @@ from qa_testgen.ui.auth import (
 # Coloque True quando quiser reativar a integração.
 AZURE_DEVOPS_INTEGRATION_ENABLED = True
 
+# Desliga temporariamente TODOS os pontos de envio de documento do app (Passo 1,
+# complementares do fluxo de Work Items e Manual de Reprodução), sem remover a
+# funcionalidade — usado enquanto investigamos o travamento/processamento
+# parcial na geração de Casos de Teste a partir de documento anexado.
+# Coloque True quando quiser reativar o upload.
+DOCUMENT_UPLOAD_ENABLED = False
+DOCUMENT_UPLOAD_DISABLED_MSG = (
+    "📄 O envio de documentos está temporariamente desativado enquanto corrigimos um "
+    "problema no processamento. Use as outras origens de especificação (Work Items/Query "
+    "do Azure DevOps) enquanto isso."
+)
+
 
 class UserInterface:
     def __init__(self):
@@ -206,6 +218,31 @@ class UserInterface:
     def _log(self, action_name: str, location: str, details: str = ""):
         username = st.session_state.get(SESSION_USER_KEY, "")
         log_action(self.config, username, action_name, location, details)
+
+    @staticmethod
+    def _erro_lote_amigavel(error: Exception) -> str:
+        """
+        Mensagem de erro de 1 lote de geração (Matriz/Casos/Planos) — pra
+        Timeout/ConnectionError/corpo vazio, acrescenta a causa mais comum
+        num setup com n8n self-hosted atrás de proxy reverso: o proxy
+        (Nginx/Nginx Proxy Manager etc.) derruba a conexão com um timeout
+        PRÓPRIO, mais curto que os 300s que o app espera, antes do n8n
+        terminar de chamar a IA — o app nunca chega a saber que era só
+        lentidão, e trata como falha. Ver n8n_workflows/nginx_docker_timeout.md
+        pra aumentar esse timeout no proxy.
+        """
+        msg = str(error)
+        dica = (
+            " 💡 Se isso se repete (principalmente em lotes maiores/documentos maiores), "
+            "suspeite do timeout do proxy reverso na frente do n8n — ele pode estar "
+            "encerrando a conexão antes da IA terminar de responder, mesmo dentro do "
+            "limite de 300s configurado aqui. Veja n8n_workflows/nginx_docker_timeout.md."
+        )
+        if isinstance(error, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+            return msg + dica
+        if isinstance(error, ValueError) and "corpo vazio" in msg:
+            return msg + dica
+        return msg
 
     @staticmethod
     def _tag_criado_por(tags_existentes: str = None) -> str:
@@ -1167,11 +1204,13 @@ class UserInterface:
 
         col1, col2 = st.columns(2)
         with col1:
+            if not DOCUMENT_UPLOAD_ENABLED:
+                st.warning(DOCUMENT_UPLOAD_DISABLED_MSG)
             uploaded_new = st.file_uploader(
                 "Documento(s) de Requisitos (Máx 20MB cada) *",
                 type=["pdf", "txt", "docx"],
                 key='step1_uploaded_file',
-                disabled=self.state.get('is_processing'),
+                disabled=(not DOCUMENT_UPLOAD_ENABLED) or self.state.get('is_processing'),
                 accept_multiple_files=True,
                 help="Você pode anexar mais de um documento — o texto de todos será combinado numa única análise. Arraste e solte os arquivos aqui, ou clique para escolher.",
             )
@@ -1571,7 +1610,7 @@ class UserInterface:
                 resp = self.client.trigger_plans("", matriz, lote_casos, answers, project)
                 return resp.get('planos_de_teste') or [], None
             except Exception as error:
-                return None, str(error)
+                return None, self._erro_lote_amigavel(error)
 
         resultado = self._processar_um_lote_por_execucao("geracao_planos", montar_lotes, processar_um_lote, status)
         if resultado is None:
@@ -1608,7 +1647,7 @@ class UserInterface:
                 resp = self.client.trigger_matrix(lote_texto, answers, project, tipo_documento)
                 return resp.get('matriz') or [], None
             except Exception as error:
-                return None, str(error)
+                return None, self._erro_lote_amigavel(error)
 
         resultado = self._processar_um_lote_por_execucao("geracao_matriz", montar_lotes, processar_um_lote, status)
         if resultado is None:
@@ -1629,6 +1668,36 @@ class UserInterface:
         """
         m = re.match(r'^\s*(MC-\d+)', str(valor or ''), re.IGNORECASE)
         return m.group(1).upper() if m else str(valor or '').strip().upper()
+
+    def _invalidar_estado_dependente_de_casos(self):
+        """
+        Limpa tudo que foi derivado de uma versão ANTERIOR de `test_cases` —
+        chamado sempre que os Casos de Teste são (re)gerados no Passo 3.
+
+        Por quê: repetir "Gerar Casos de Teste" (ex.: depois de um lote
+        falhar/travar) troca a lista de Casos, mas Planos de Teste
+        (`test_plans`), vínculos com Work Items (`ado_wi_case_links`),
+        cache de IDs já criados no Azure (`ado_test_case_ids`) e a análise
+        de duplicados (`ado_duplicate_case_titles`/`ado_duplicate_analysis`)
+        continuavam com os TÍTULOS da tentativa antiga. Na hora do push pro
+        Azure DevOps, esses títulos não batem mais com os Casos atuais —
+        os Test Cases certos entram em `case_ids`, mas a Suite/vínculo é
+        montado a partir da lista velha, então nenhum Caso entra de
+        verdade nela: o Test Plan sobe criado, porém vazio, sem nenhum
+        erro que explique o motivo. Cada chave abaixo volta ao default
+        (`SessionState.DEFAULTS`) no próximo rerun, já que ela é
+        reconstruída do zero a cada execução do script.
+        """
+        for key in (
+            'test_plans', 'csv_cases', 'csv_plans',
+            'pdf_report_bytes', 'pdf_report_fingerprint',
+            'ado_wi_case_links', 'ado_test_case_ids', 'ado_case_links',
+            'ado_duplicate_case_titles', 'ado_duplicate_analysis',
+            'ado_excluded_case_titles', 'ado_suggest_message',
+            'ado_wi_prelinked_marker', 'ado_wi_prelink_diag',
+            'ado_full_push_log', 'ado_static_push_log',
+        ):
+            self.state.delete(key)
 
     def _gerar_casos_em_lotes(self, doc_text: str, matriz_completa: list, answers: dict,
                                 project: str, tipo_documento: str, status):
@@ -1653,7 +1722,7 @@ class UserInterface:
                 resp = self.client.trigger_generation(doc_text, lote, answers, project, tipo_documento)
                 return resp.get('casos_de_teste') or [], None
             except Exception as error:
-                return None, str(error)
+                return None, self._erro_lote_amigavel(error)
 
         return self._processar_um_lote_por_execucao("geracao_casos", montar_lotes, processar_um_lote, status)
 
@@ -1920,12 +1989,14 @@ class UserInterface:
                         )
                     partes_aviso.append("Revise a lista abaixo, gere manualmente o que faltar, ou volte e tente de novo.")
                     self._flash_warning(" ".join(partes_aviso))
+                    self._invalidar_estado_dependente_de_casos()
                     self.state.set('test_cases', casos)
                     self._set_step(4, allow_during_processing=True)
                     self.clear_action()
                     st.rerun()
                 else:
                     status.update(label=f"{len(casos)} Caso(s) de Teste gerado(s).", state="complete")
+                    self._invalidar_estado_dependente_de_casos()
                     self.state.set('test_cases', casos)
                     self._set_step(4, allow_during_processing=True)
                     self.clear_action()
@@ -2523,6 +2594,21 @@ class UserInterface:
         duplicate_titles = set(self.state.get('ado_duplicate_case_titles') or [])
         titled = AzureCsvFormatter._titled(test_cases, self.state.get('ambiente_testes', ''))
         log = []
+
+        # Trava de segurança: sem Casos de Teste e/ou sem Planos gerados,
+        # não há nada de verdade pra criar/vincular — antes disso o código
+        # criava o Test Plan igual, resultando num Test Plan vazio no Azure
+        # DevOps sem nenhum erro explicando o motivo.
+        if not test_cases or not test_plans:
+            log.append(
+                "❌ Não há Casos de Teste e/ou Planos de Teste gerados — nada foi enviado ao Azure DevOps. "
+                "Volte às etapas de geração antes de integrar."
+            )
+            self.state.set('ado_static_push_log', log)
+            self._flash_error("Nenhum Caso/Plano de Teste gerado — a integração foi cancelada antes de criar o Test Plan.")
+            self.clear_action()
+            st.rerun()
+            return
 
         # 1) Test Plan: cria novo ou reaproveita existente.
         if existing_plan_id:
@@ -4134,12 +4220,14 @@ class UserInterface:
             "complementar a especificação — o texto de todos é combinado numa única análise, "
             "junto com a Descrição e os Critérios de Aceite dos Work Items."
         )
+        if not DOCUMENT_UPLOAD_ENABLED:
+            st.warning(DOCUMENT_UPLOAD_DISABLED_MSG)
         uploaded_complementares = st.file_uploader(
             "Documento(s) complementar(es) (PDF, DOCX ou TXT)",
             type=["pdf", "docx", "txt"],
             accept_multiple_files=True,
             key="wigen_uploaded_files_input",
-            disabled=self.state.get('is_processing'),
+            disabled=(not DOCUMENT_UPLOAD_ENABLED) or self.state.get('is_processing'),
         )
         if uploaded_complementares:
             self.state.set('wigen_uploaded_files', uploaded_complementares)
@@ -6032,12 +6120,14 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         st.divider()
         if usa_documentos:
             st.markdown("##### 📄 Documentos")
+            if not DOCUMENT_UPLOAD_ENABLED:
+                st.warning(DOCUMENT_UPLOAD_DISABLED_MSG)
             uploaded_manual = st.file_uploader(
                 "Documento(s) (PDF, DOCX, TXT ou CSV — pode anexar mais de um, de formatos diferentes)",
                 type=["pdf", "docx", "txt", "csv"],
                 accept_multiple_files=True,
                 key="manual_uploaded_files_input",
-                disabled=self.state.get('is_processing'),
+                disabled=(not DOCUMENT_UPLOAD_ENABLED) or self.state.get('is_processing'),
             )
             if uploaded_manual:
                 self.state.set('manual_uploaded_files', uploaded_manual)
@@ -7612,6 +7702,24 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         excluded_titles = set(self.state.get('ado_excluded_case_titles') or [])
         log = []
 
+        # Trava de segurança: sem nenhum Caso de Teste em `test_cases`, não
+        # existe nada de verdade pra criar/vincular — sem essa checagem, o
+        # código seguia em frente e criava o Test Plan (e possivelmente
+        # Suites) igual, resultando num Test Plan vazio no Azure DevOps sem
+        # nenhum erro que explicasse o motivo. Costuma acontecer quando os
+        # Casos foram gerados de forma incompleta (ex.: um lote travou/falhou
+        # na geração) e a pessoa avançou mesmo assim.
+        if not test_cases:
+            log.append(
+                "❌ Não há nenhum Caso de Teste gerado (`test_cases` está vazio) — nada foi enviado ao "
+                "Azure DevOps. Volte ao Passo 3/4 e gere os Casos de Teste antes de integrar."
+            )
+            self.state.set('ado_full_push_log', log)
+            self._flash_error("Nenhum Caso de Teste gerado — a integração foi cancelada antes de criar o Test Plan.")
+            self.clear_action()
+            st.rerun()
+            return
+
         if excluded_titles:
             log.append(f"🚫 {len(excluded_titles)} Caso(s) excluído(s) do envio, por escolha sua: {', '.join(excluded_titles)}")
 
@@ -7826,6 +7934,39 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                     )
 
         self.state.set('ado_case_links', case_links)
+
+        # Mesma checagem de "sucesso incompleto e silencioso" do modo sem
+        # Work Items (_push_static_suites_azure_devops): olha o que
+        # REALMENTE ficou vinculado no fim, não só se alguma exceção foi
+        # levantada — pega o caso de `items_with_cases` referenciar títulos
+        # de uma tentativa de geração anterior (ex.: Casos regerados depois
+        # de um lote falhar), que não existem mais em `test_cases`/`case_ids`
+        # agora: cada vínculo é pulado silenciosamente (linha "não existe no
+        # Azure DevOps, pulando vínculo"), a Suite chega a ser criada, mas
+        # fica vazia — sem isso, a única pista ficava escondida no meio do
+        # log.
+        total_vinculos_esperados = sum(len(casos) for casos in items_with_cases.values())
+        total_vinculos_ok = sum(
+            1
+            for wid_str, casos in items_with_cases.items()
+            for titulo in casos
+            if int(wid_str) in case_links.get(titulo, [])
+        )
+        if total_vinculos_esperados and not total_vinculos_ok:
+            self._flash_error(
+                f"O Test Plan foi criado, mas NENHUM dos {total_vinculos_esperados} vínculo(s) "
+                "Caso↔Work Item esperado(s) foi efetivado — o Test Plan ficou vazio no Azure DevOps. "
+                "Confira o log abaixo: se aparecer '⚠️ ... não existe no Azure DevOps', os títulos dos "
+                "Casos vinculados não batem com os Casos atuais (comum depois de regerar os Casos de "
+                "Teste) — volte ao Passo 7 e refaça o vínculo com a IA."
+            )
+        elif total_vinculos_esperados and total_vinculos_ok < total_vinculos_esperados:
+            self._flash_error(
+                f"Só {total_vinculos_ok} de {total_vinculos_esperados} vínculo(s) Caso↔Work Item "
+                "esperado(s) foram efetivados no Azure DevOps — confira o log abaixo pra ver quais "
+                "faltaram e por quê."
+            )
+
         log.append(f"\n🔗 Confira o Test Plan completo: {ado_client.test_plan_url(plan_id)}")
         self.state.set('ado_full_push_log', log)
         self._log(
