@@ -54,12 +54,13 @@ from qa_testgen.ui.auth import (
 # Coloque True quando quiser reativar a integração.
 AZURE_DEVOPS_INTEGRATION_ENABLED = True
 
-# Desliga temporariamente TODOS os pontos de envio de documento do app (Passo 1,
+# Liga/desliga TODOS os pontos de envio de documento do app (Passo 1,
 # complementares do fluxo de Work Items e Manual de Reprodução), sem remover a
-# funcionalidade — usado enquanto investigamos o travamento/processamento
-# parcial na geração de Casos de Teste a partir de documento anexado.
-# Coloque True quando quiser reativar o upload.
-DOCUMENT_UPLOAD_ENABLED = False
+# funcionalidade — reativado pra testar em produção (com os Logs do Streamlit
+# Community Cloud abertos) se o travamento/processamento parcial na geração de
+# Casos de Teste ainda ocorre depois das correções de estado já aplicadas.
+# Coloque False de novo se precisar voltar a desativar durante a investigação.
+DOCUMENT_UPLOAD_ENABLED = True
 DOCUMENT_UPLOAD_DISABLED_MSG = (
     "📄 O envio de documentos está temporariamente desativado enquanto corrigimos um "
     "problema no processamento. Use as outras origens de especificação (Work Items/Query "
