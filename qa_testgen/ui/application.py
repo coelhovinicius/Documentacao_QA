@@ -7,6 +7,7 @@ import json
 import re
 import tempfile
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1627,6 +1628,69 @@ class UserInterface:
 
     _TAMANHO_LOTE_PLANOS = 10
 
+    @staticmethod
+    def _normalizar_titulo_caso(titulo: str) -> str:
+        """
+        Normaliza um título de Caso de Teste pra comparação TOLERANTE a
+        pequenas diferenças de formatação — remove acentos, baixa a caixa,
+        colapsa espaços. Usado só pra RECONCILIAR o título que a IA dos
+        Planos devolve com o título real do Caso (ver
+        _reconciliar_titulos_planos) — o restante do código continua
+        comparando string exata contra o título original/canônico.
+        """
+        t = unicodedata.normalize('NFKD', titulo or '')
+        t = ''.join(c for c in t if not unicodedata.combining(c))
+        t = re.sub(r'\s+', ' ', t).strip().lower()
+        return t
+
+    def _reconciliar_titulos_planos(self, planos: list, test_cases: list) -> tuple:
+        """
+        Corrige, EM CADA Suíte de CADA Plano, o título de cada 'caso'
+        referenciado pra bater com o título REAL de algum Caso de Teste
+        (comparação normalizada — sem acento, minúsculo, espaços
+        colapsados), substituindo pelo título CANÔNICO verdadeiro.
+
+        Por quê: os Planos de Teste são gerados numa chamada de IA
+        SEPARADA da que gerou os Casos (self.client.trigger_plans, que
+        passa por até 5 provedores de IA em cascata de fallback) — o
+        vínculo entre "qual título de Caso pertence a qual Suíte" depende
+        inteiramente da IA reproduzir o título EXATO, caractere por
+        caractere. Qualquer diferença mínima (acento, espaço extra,
+        maiúscula, reticências) faz o vínculo falhar — em TODO o resto do
+        código essa comparação é sempre string EXATA (`titulo in
+        titulos_necessarios`, `case_ids[titulo]`), sem normalização
+        nenhuma. Sem essa reconciliação logo na origem, o sintoma é o
+        Test Plan subir criado no Azure DevOps com Suítes vazias, sem
+        nenhum erro ANTES do push de verdade — só depois, e só se TODAS
+        as Suítes falharem ao mesmo tempo (ver aviso em
+        _push_static_suites_azure_devops).
+
+        Retorna (planos_corrigidos, titulos_orfaos) — títulos_orfaos é a
+        lista de títulos referenciados que não bateram com NENHUM Caso
+        real, nem normalizados (provavelmente a IA inventou/alucinou um
+        título) — removidos das Suítes e reportados separadamente, pra
+        não ficarem escondidos atrás de um "Test Plan vazio" silencioso.
+        """
+        titulo_real_por_chave = {}
+        for tc in test_cases:
+            titulo_real = tc.get('titulo', '')
+            chave = self._normalizar_titulo_caso(titulo_real)
+            if chave and chave not in titulo_real_por_chave:
+                titulo_real_por_chave[chave] = titulo_real
+
+        titulos_orfaos = set()
+        for plano in planos:
+            for suite in plano.get('suites', []):
+                casos_corrigidos = []
+                for titulo in suite.get('casos', []):
+                    titulo_real = titulo_real_por_chave.get(self._normalizar_titulo_caso(titulo))
+                    if titulo_real:
+                        casos_corrigidos.append(titulo_real)
+                    else:
+                        titulos_orfaos.add(titulo)
+                suite['casos'] = casos_corrigidos
+        return planos, sorted(titulos_orfaos)
+
     def _gerar_planos_em_lotes(self, doc_text: str, matriz: list, test_cases: list, answers: dict,
                                  project: str, status):
         """
@@ -1671,7 +1735,9 @@ class UserInterface:
             if nomes_vistos[nome] > 1:
                 plano['nome'] = f"{nome} ({nomes_vistos[nome]})"
 
-        return planos_combinados, erros
+        planos_combinados, titulos_orfaos = self._reconciliar_titulos_planos(planos_combinados, test_cases)
+
+        return planos_combinados, erros, titulos_orfaos
 
     def _gerar_matriz_em_lotes(self, doc_text: str, answers: dict, project: str, tipo_documento: str, status):
         """
@@ -2210,7 +2276,7 @@ class UserInterface:
                 )
                 if resultado_planos is None:
                     return
-                plans, erros = resultado_planos
+                plans, erros, titulos_orfaos = resultado_planos
                 if not plans:
                     status.update(label="Falha ao gerar Planos de Teste.", state="error", expanded=True)
                     if erros:
@@ -2220,12 +2286,22 @@ class UserInterface:
                     self.clear_action()
                     st.rerun()
                 else:
+                    avisos = []
                     if erros:
-                        status.update(label=f"Concluído com {len(erros)} lote(s) com falha.", state="complete")
-                        self._flash_warning(
-                            f"{len(plans)} Plano(s) gerado(s), mas {len(erros)} lote(s) de Casos "
-                            "falharam — pode faltar algum Caso sem Plano. Revise antes de prosseguir."
+                        avisos.append(
+                            f"{len(erros)} lote(s) de Casos falharam — pode faltar algum Caso sem Plano."
                         )
+                    if titulos_orfaos:
+                        preview = ", ".join(titulos_orfaos[:5]) + ("..." if len(titulos_orfaos) > 5 else "")
+                        avisos.append(
+                            f"{len(titulos_orfaos)} título(s) que os Planos referenciaram não correspondem a "
+                            f"nenhum Caso de Teste real e foram removidos das Suítes ({preview}) — a IA pode "
+                            "ter reescrito o título ao gerar os Planos. Revise as Suítes no Passo 5 antes de "
+                            "integrar com o Azure DevOps."
+                        )
+                    if avisos:
+                        status.update(label=f"Concluído com {len(erros)} lote(s) com falha.", state="complete")
+                        self._flash_warning(f"{len(plans)} Plano(s) gerado(s), mas " + " ".join(avisos))
                     else:
                         status.update(label=f"{len(plans)} Plano(s) de Teste gerado(s).", state="complete")
                     self.state.set('test_plans', plans)
