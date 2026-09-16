@@ -438,9 +438,16 @@ def _render_user_management_section(config, client, current_username: str):
 def render_admin_panel(config):
     """
     Solicitações Pendentes fica visível pra qualquer aprovador (dono do app
-    incluso), fora das abas. O resto (usuários, aprovadores, permissões
-    granulares, sessões, logs) é restrito ao dono do app
-    (config.owner_username), organizado em abas.
+    incluso), fora das abas. O resto (usuários, sessões, logs) é restrito
+    ao dono do app (config.owner_username), organizado em abas.
+
+    Não existem mais abas separadas de "Aprovadores"/"Permissões" — eram
+    100% redundantes com a aba "Usuários": update_user_full já sincroniza
+    status de aprovador e a lista completa de permissões (adiciona as que
+    faltam, remove as que sobram) numa única chamada, por usuário. Duas
+    telas fazendo a mesma escrita por caminhos de código diferentes só
+    aumentava a superfície de manutenção sem ganhar nenhuma capacidade
+    nova.
     """
     username = st.session_state.get(SESSION_USER_KEY, "")
 
@@ -452,77 +459,12 @@ def render_admin_panel(config):
     client = AccessControlClient(config)
     st.divider()
 
-    aba_usuarios, aba_aprovadores, aba_permissoes, aba_sessoes, aba_logs = st.tabs(
-        ["👤 Usuários", "🛡️ Aprovadores", "🔑 Permissões", "🖥️ Sessões Ativas", "📜 Logs de Auditoria"]
+    aba_usuarios, aba_sessoes, aba_logs = st.tabs(
+        ["👤 Usuários", "🖥️ Sessões Ativas", "📜 Logs de Auditoria"]
     )
 
     with aba_usuarios:
         _render_user_management_section(config, client, username)
-
-    with aba_aprovadores:
-        st.subheader("🛡️ Aprovadores de Acesso")
-        st.caption(
-            "Pessoas cadastradas aqui podem aprovar ou negar solicitações de login de outros "
-            "usuários, além de você. Você (dono do app) já é sempre um aprovador, não precisa "
-            "se cadastrar. Pra usuários cadastrados na aba \"Usuários\", também dá pra marcar/"
-            "desmarcar isso direto no cadastro deles."
-        )
-
-        try:
-            approvers = client.list_approvers()
-        except Exception as error:
-            st.error(f"❌ Não foi possível carregar os aprovadores: {error}")
-            approvers = None
-
-        if approvers is not None:
-            if approvers:
-                st.write("**Aprovadores atuais:**")
-                for a in approvers:
-                    c1, c2 = st.columns([4, 1])
-                    with c1:
-                        st.write(f"- {a}")
-                    with c2:
-                        if st.button("Remover", key=f"remove_approver_{a}"):
-                            try:
-                                client.remove_approver(a)
-                                log_action(config, username, "Remover Aprovador", "Administração", f"Removeu {a} da lista de aprovadores")
-                                st.rerun()
-                            except Exception as error:
-                                st.error(f"❌ {error}")
-            else:
-                st.caption("Nenhum aprovador cadastrado além de você.")
-
-            st.divider()
-            known_users = sorted(u for u in _get_all_known_usernames(config, client) if u != config.owner_username)
-            with st.form("add_approver_form", clear_on_submit=True):
-                if known_users:
-                    new_username = st.selectbox("Usuário a cadastrar como aprovador", options=known_users)
-                else:
-                    new_username = st.text_input("Usuário a cadastrar como aprovador")
-                submitted = st.form_submit_button("➕ Adicionar Aprovador", type="primary")
-                if submitted and new_username and new_username.strip():
-                    new_username = new_username.strip()
-                    if new_username not in _get_all_known_usernames(config, client):
-                        st.error("❌ Esse nome de usuário não existe (nem no `secrets.toml`, nem nos usuários cadastrados).")
-                    else:
-                        try:
-                            client.add_approver(new_username)
-                            log_action(config, username, "Adicionar Aprovador", "Administração", f"Adicionou {new_username} como aprovador")
-                            st.success(f"{new_username} adicionado como aprovador.")
-                            st.rerun()
-                        except Exception as error:
-                            st.error(f"❌ {error}")
-
-    with aba_permissoes:
-        st.subheader("🔑 Permissões Granulares")
-        st.caption(
-            "Pra usuários cadastrados na aba \"Usuários\", também dá pra marcar/desmarcar "
-            "qualquer uma dessas direto no cadastro deles."
-        )
-        for i, (perm_key, perm_label) in enumerate(_PERMISSOES_CONHECIDAS):
-            if i > 0:
-                st.divider()
-            _render_permission_management(config, client, perm_key, perm_label)
 
     with aba_sessoes:
         _render_active_sessions(config, client)
@@ -621,64 +563,6 @@ def _render_audit_logs(config, client):
             "Detalhes": log.get("details", ""),
         })
     st.dataframe(rows, use_container_width=True, hide_index=True)
-
-
-def _render_permission_management(config, client, permission: str, title: str):
-    """
-    Bloco reutilizável de cadastro/remoção pra uma permissão granular
-    específica — usado tanto pra Azure DevOps quanto pro Relatório de Testes.
-    """
-    st.subheader(title)
-    st.caption(
-        "Além de você (dono do app, que sempre tem acesso), essas pessoas também podem acessar essa área."
-    )
-    try:
-        authorized = client.list_permission(permission)
-    except Exception as error:
-        st.error(f"❌ Não foi possível carregar a lista: {error}")
-        return
-
-    if authorized:
-        for a in authorized:
-            c1, c2 = st.columns([4, 1])
-            with c1:
-                st.write(f"- {a}")
-            with c2:
-                if st.button("Remover", key=f"remove_perm_{permission}_{a}"):
-                    try:
-                        client.revoke_permission(a, permission)
-                        log_action(
-                            config, st.session_state.get(SESSION_USER_KEY, ""),
-                            "Revogar Permissão", "Administração", f"Revogou '{permission}' de {a}",
-                        )
-                        st.rerun()
-                    except Exception as error:
-                        st.error(f"❌ {error}")
-    else:
-        st.caption("Ninguém além de você tem acesso ainda.")
-
-    known_users = sorted(u for u in _get_all_known_usernames(config, client) if u != config.owner_username)
-    with st.form(f"add_perm_form_{permission}", clear_on_submit=True):
-        if known_users:
-            new_username = st.selectbox("Usuário a autorizar", options=known_users, key=f"perm_select_{permission}")
-        else:
-            new_username = st.text_input("Usuário a autorizar", key=f"perm_input_{permission}")
-        submitted = st.form_submit_button("➕ Autorizar", type="primary", key=f"perm_submit_{permission}")
-        if submitted and new_username and new_username.strip():
-            new_username = new_username.strip()
-            if new_username not in _get_all_known_usernames(config, client):
-                st.error("❌ Esse nome de usuário não existe (nem no `secrets.toml`, nem nos usuários cadastrados).")
-            else:
-                try:
-                    client.grant_permission(new_username, permission)
-                    log_action(
-                        config, st.session_state.get(SESSION_USER_KEY, ""),
-                        "Conceder Permissão", "Administração", f"Concedeu '{permission}' a {new_username}",
-                    )
-                    st.success(f"{new_username} autorizado.")
-                    st.rerun()
-                except Exception as error:
-                    st.error(f"❌ {error}")
 
 
 # --------------------------------------------------------------------------- #
