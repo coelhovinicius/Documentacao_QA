@@ -83,7 +83,7 @@ A aplicação é usada publicamente via navegador, protegida por login.
 
 ### 4.2 Workflows existentes
 
-O app depende de **5 workflows** publicados e **ativos** no n8n:
+O app depende de **11 workflows** publicados e **ativos** no n8n:
 
 | Workflow | Endpoint (webhook) | Função |
 |---|---|---|
@@ -92,29 +92,37 @@ O app depende de **5 workflows** publicados e **ativos** no n8n:
 | `Doc_QA_Generation` | `/webhook/qa-testgen-generation` | Gera os Casos de Teste (com rastreabilidade — `requisitos_relacionados` apontando pra Matriz) |
 | `Doc_QA_Plans` | `/webhook/qa-testgen-plans` | Gera os Planos de Teste (Planos → Suites → Casos) |
 | `Doc_QA_Matching` | `/webhook/qa-testgen-matching` | Sugere automaticamente o vínculo entre Casos de Teste gerados e Work Items existentes no Azure DevOps |
+| `Doc_QA_Access_Control` | `/webhook/qa-testgen-access-control` | Controle de acesso: aprovações de login, permissões granulares, sessões ativas, logs de auditoria (todo o "banco de dados" de acesso mora aqui, via workflow static data) |
+| `Doc_QA_Image_Interpretation` | `/webhook/qa-testgen-image-interpretation` | Interpreta (descreve em texto) uma imagem extraída de um documento ou de um Work Item |
+| `Doc_QA_Execution_Report_Narrative` | `/webhook/qa-testgen-execution-report-narrative` | Sugere os textos narrativos (Contexto, Escopo, Conclusão, Próximos Passos) do Relatório de Testes |
+| `Doc_QA_WIQL_Generation` | `/webhook/qa-testgen-wiql-generation` | Traduz uma descrição em linguagem natural pra uma query WIQL válida do Azure DevOps |
+| `Doc_QA_Manual_Generation` | `/webhook/qa-testgen-manual-generation` | Gera o Manual de Testes (UAT) em linguagem simples, sugerindo quais imagens disponíveis combinam com cada passo |
+| `Doc_QA_Duplicate_Comparison` | `/webhook/qa-testgen-duplicate-comparison` | Compara o CONTEÚDO (pré-condições/passos) de um par Caso novo × Caso já existente que pareceu duplicado por título, decidindo se são de fato o mesmo teste |
 
 ### 4.3 Padrão interno de cada workflow
 
-Todos os 5 workflows seguem a mesma estrutura, por resiliência:
+> ⚠️ Modelos e ordem exata da cadeia mudam com frequência (o dono ajusta direto no n8n conforme provedores saem do ar/mudam de preço) — os valores abaixo já ficaram desatualizados uma vez neste mesmo documento em poucos meses. Trate como "a mecânica geral não muda", não como um valor fixo — **confira o node de cada Chain direto no n8n** pra saber o modelo/ordem exatos vigentes.
+
+Praticamente todos os workflows de geração (todos, exceto `Doc_QA_Access_Control`, que é lógica pura sem IA) seguem a mesma estrutura, por resiliência:
 
 ```
-Webhook → Gemini Chain → (erro) → Groq Chain → (erro) → OpenAI Chain
-                                                              │
-                                                          (erro)
-                                                              ▼
-                                            Groq Chain (2ª tentativa) → (erro) → Mistral Chain
+Webhook → Chain (Provedor A) → (erro) → Chain (Provedor B) → (erro) → Chain (Provedor C)
+                                                                            │
+                                                                        (erro)
+                                                                            ▼
+                                                    Chain (Provedor D) → (erro) → Chain (Provedor E)
                                                                                        │
-                                                                                       ▼
-                                                                          Respond to Webhook
+                                                                            ┌──────────┴──────────┐
+                                                                            ▼                      ▼
+                                                              Respond to Webhook      Respond to Webhook1
+                                                                (sucesso, 200)      (todos falharam, 502,
+                                                                                     JSON {"error","detalhe"})
 ```
 
-- **Cadeia de fallback entre 5 provedores de IA**: se um provedor falhar (erro, schema inválido, timeout), o n8n tenta automaticamente o próximo, na ordem acima
-- Cada chain node usa um **Structured Output Parser**, com schema JSON definido e campos marcados como `required` — isso força o modelo a devolver exatamente o formato esperado, e rejeita respostas incompletas (acionando o fallback)
-- **Modelos configurados atualmente**:
-  - Gemini: `gemini-3.5-flash` (rápido; requer chave paga para acesso — chave gratuita pode não ter esse modelo liberado, causando timeout/travamento — nesse caso, usar `gemini-2.5-flash`)
-  - Groq: `llama-3.3-70b-versatile` (usado 2x na cadeia, em posições diferentes)
-  - OpenAI: `gpt-5.4-mini` (recomendado — `gpt-4o` foi descontinuado pela OpenAI em 2026)
-  - Mistral: `mistral-small-latest`
+- **Cadeia de fallback entre 5 provedores de IA** (Google Gemini, Groq — normalmente 2x na cadeia, com modelos/posições que podem diferir entre workflows —, OpenAI, e Mistral): se um provedor falhar (erro, schema inválido, rate limit, timeout), o n8n tenta automaticamente o próximo. A ORDEM exata varia de workflow pra workflow (não é sempre a mesma sequência) — confira o diagrama real de cada um em **n8n → workflow → Editor**.
+- Cada chain node usa um **Structured Output Parser**, com schema JSON definido e campos marcados como `required` — isso força o modelo a devolver exatamente o formato esperado, e rejeita respostas incompletas (acionando o fallback).
+- **Falha de TODOS os provedores**: o nó final de erro (`Respond to Webhook1`, ou nome equivalente) responde com status **502** e um corpo JSON `{"error": "Todos os provedores de IA falharam (...)", "detalhe": "..."}` — o app (`webhook_client.py`) já sabe extrair e mostrar esse `detalhe` como mensagem amigável. **Confirmado, por teste real, que essas falhas costumam ser rate limit passageiro** (ex.: mensagem "OpenAI: Rate limit reached" capturada ao vivo) — o app já tenta cada lote de novo automaticamente (até 3x, esperando entre tentativas) antes de reportar como erro de verdade.
+- **Rate limit por lote**: um único lote de geração já pode consumir a maior parte da cota por minuto (TPM) de um provedor — erro real capturado no Groq: `Limit 8000, Used 2331, Requested 6285` (~78% do limite numa chamada só). Por isso o app espaça os lotes em ~62s, alinhado à janela real do rate limit, não um valor arbitrário menor.
 
 ### 4.4 Contratos de dados (payloads)
 
@@ -151,7 +159,9 @@ Todas as chamadas do app para o n8n são `POST`, com corpo JSON. Listas/objetos 
 
 - Feita via **Personal Access Token (PAT)**, com Basic Auth (usuário vazio + PAT em Base64)
 - Escopos necessários no PAT: **Work Items (Read & Write)** e **Test Management (Read & Write)**
-- O PAT é configurado **apenas no backend** (`secrets.toml` / Secrets do Streamlit Cloud) — nunca é digitado, exibido ou editável na interface, por segurança
+- Dois modos, controlados pela presença de `AZURE_DEVOPS_PAT` no `secrets.toml`:
+  - **Sem `AZURE_DEVOPS_PAT` (padrão)**: cada usuário digita o próprio PAT num campo de senha, na hora — nunca é salvo em disco, só na memória da sessão (`st.session_state`)
+  - **Com `AZURE_DEVOPS_PAT` configurado**: vira um PAT compartilhado por todo mundo, sem precisar digitar nada — a rastreabilidade de quem fez o quê passa a vir da tag automática `criado-por:<usuário>` (`UserInterface._tag_criado_por`), acrescentada a todo Bug/Test Case criado. Um aviso único (`aviso_pat_compartilhado_modal`) informa cada usuário na primeira vez que esse modo estiver ativo pra ela
 - **PATs expiram** — é preciso renovar manualmente antes do vencimento (a data é definida na criação do token, em `https://dev.azure.com/{org}/_usersSettings/tokens`)
 
 ### 5.2 Seleção de Organização / Projeto / Area Path
@@ -194,10 +204,13 @@ Para cada análise, o Passo 7 do app permite:
 
 ## 6. Autenticação e Sessão do App
 
-- Login com usuário/senha, senhas armazenadas como **hash bcrypt** (nunca texto puro) em `st.secrets["credentials"]["usernames"]`
-- Sessão mantida via um **token assinado (HMAC) guardado como parâmetro na própria URL** (`?auth=...`) — não usa cookies, evitando problemas de cookies bloqueados/isolados em iframes de componentes de terceiros
-- **Logout automático por inatividade**: 60 minutos sem interação invalida o token (configurável via `INACTIVITY_TIMEOUT_MINUTES` em `auth.py`)
-- Um botão "Sair" fixo no rodapé da sidebar encerra a sessão manualmente
+> ⚠️ Seção reescrita — a versão anterior descrevia um mecanismo de token HMAC assinado na URL que **não existe mais** (foi substituído por sessão via ID opaco, abaixo).
+
+- Login com usuário/senha. Usuários podem vir do `st.secrets["credentials"]["usernames"]` (fixos, definidos no `secrets.toml`) **ou** ser cadastrados dinamicamente pelo dono do app na aba "Usuários" da Administração — em ambos os casos, a senha é sempre um **hash bcrypt**, nunca texto puro.
+- **Login com aprovação**: só o dono do app (`APP_OWNER_USERNAME`) entra direto. Qualquer outro usuário, mesmo já cadastrado, precisa que um aprovador aceite a solicitação a **cada nova sessão** — a não ser que o cadastro dele tenha "Acesso direto (sem aprovação)" marcado.
+- **Sessão via ID opaco**: depois de aprovado, o app gera um ID aleatório (`sid`) e coloca só ele na URL (`?sid=...`) — não é um token assinado, é uma referência opaca. Todo o dado real da sessão (usuário, validade) fica guardado do lado do **n8n** (`create_session`/`get_session` em `access_control_client.py`), então **revogar remotamente** (a própria sessão ou a de outra pessoa) é possível a qualquer momento pela aba "Sessões Ativas" da Administração — não depende de derrubar cookie/token local nenhum.
+- **Logout automático por inatividade**: 60 minutos sem interação expira a sessão (constante `INACTIVITY_TIMEOUT_MINUTES` em `auth.py`) — a expiração é conferida no lado do n8n, não só localmente.
+- Um botão "Sair" fixo no rodapé da sidebar encerra a sessão manualmente (remove o `sid` da URL e revoga do lado do n8n).
 
 ---
 
@@ -221,13 +234,20 @@ projeto/
 │   ├── domain/
 │   │   ├── models/                     # MatrixRow, TestCase, TestPlan, TestStep
 │   │   └── validators/                 # validação de campos obrigatórios
-│   └── infrastructure/
-│       ├── webhook_client.py           # chamadas aos 5 webhooks do n8n
-│       ├── azure_devops_client.py      # cliente da API do Azure DevOps
-│       ├── csv_formatter.py            # exportação CSV (Azure DevOps import)
-│       ├── document_processor.py       # extração de texto (PDF/DOCX/TXT)
-│       └── pdf_report.py               # geração do relatório PDF
-└── (scripts auxiliares de teste/diagnóstico, fora do fluxo principal do app)
+│   ├── infrastructure/
+│   │   ├── webhook_client.py           # chamadas aos 11 webhooks do n8n
+│   │   ├── azure_devops_client.py      # cliente da API do Azure DevOps
+│   │   ├── access_control_client.py    # controle de acesso/logs/sessões (n8n)
+│   │   ├── csv_formatter.py            # exportação CSV (Azure DevOps import)
+│   │   ├── document_processor.py       # extração de texto (PDF/DOCX/TXT)
+│   │   ├── document_store.py           # Documentos Armazenados (Turso/libsql)
+│   │   ├── pdf_report.py               # PDF (Documentação QA e Relatório de Testes)
+│   │   └── manual_pdf.py               # PDF do Manual de Testes (UAT)
+│   └── (scripts auxiliares de teste/diagnóstico, fora do fluxo principal do app)
+└── docs/
+    ├── documentacao_tecnica.md         # este documento
+    ├── Guia_Usuario.pdf / .docx        # guia do usuário final
+    └── Guia_Administrador.pdf / .docx  # guia do usuário administrador
 ```
 
 ---
@@ -235,27 +255,37 @@ projeto/
 ## 8. Configuração (`secrets.toml`)
 
 ```toml
-# --- n8n ---
+# --- n8n (11 workflows) ---
 N8N_WEBHOOK_URL_ANALYSIS = "http://seu-n8n/webhook/qa-testgen-analysis"
 N8N_WEBHOOK_URL_MATRIX = "http://seu-n8n/webhook/qa-testgen-matrix"
 N8N_WEBHOOK_URL_GENERATION = "http://seu-n8n/webhook/qa-testgen-generation"
 N8N_WEBHOOK_URL_PLANS = "http://seu-n8n/webhook/qa-testgen-plans"
 N8N_WEBHOOK_URL_MATCHING = "http://seu-n8n/webhook/qa-testgen-matching"
+N8N_WEBHOOK_URL_ACCESS_CONTROL = "http://seu-n8n/webhook/qa-testgen-access-control"
+N8N_WEBHOOK_URL_IMAGE_INTERPRETATION = "http://seu-n8n/webhook/qa-testgen-image-interpretation"
+N8N_WEBHOOK_URL_EXECUTION_REPORT_NARRATIVE = "http://seu-n8n/webhook/qa-testgen-execution-report-narrative"
+N8N_WEBHOOK_URL_WIQL_GENERATION = "http://seu-n8n/webhook/qa-testgen-wiql-generation"
+N8N_WEBHOOK_URL_MANUAL_GENERATION = "http://seu-n8n/webhook/qa-testgen-manual-generation"
+N8N_WEBHOOK_URL_DUPLICATE_COMPARISON = "http://seu-n8n/webhook/qa-testgen-duplicate-comparison"
 N8N_API_KEY = "..."
 
-# --- Azure DevOps (Organização/PAT como padrão; Projeto é opcional/dinâmico) ---
-AZURE_DEVOPS_ORG = "refuturiza"
-AZURE_DEVOPS_PROJECT = ""
-AZURE_DEVOPS_PAT = "..."
+APP_OWNER_USERNAME = "admin"
 
-[credentials]
-cookie_secret = "string aleatória longa — assina o token de sessão"
+# --- Azure DevOps (Organização é usada como fallback; Projeto vem sempre da API) ---
+AZURE_DEVOPS_ORG = "refuturiza"
+# AZURE_DEVOPS_PAT = "..."  # opcional — liga o modo de PAT compartilhado (ver seção 5.1)
+
+# --- Documentos Armazenados (opcional — feature fica indisponível sem isso) ---
+TURSO_DATABASE_URL = "libsql://seu-banco.turso.io"
+TURSO_AUTH_TOKEN = "..."
 
 [credentials.usernames]
 admin = "$2b$12$....hash-bcrypt...."
 ```
 
-⚠️ **Atenção à ordem no TOML**: tudo que vem depois de um cabeçalho `[tabela]` pertence a ela até aparecer outro cabeçalho — por isso as chaves "soltas" (webhooks, Azure DevOps) ficam sempre **antes** de qualquer `[tabela]` no arquivo.
+⚠️ **Atenção à ordem no TOML**: tudo que vem depois de um cabeçalho `[tabela]` pertence a ela até aparecer outro cabeçalho — por isso as chaves "soltas" (webhooks, Azure DevOps, Turso) ficam sempre **antes** de qualquer `[tabela]` no arquivo.
+
+Não existe mais `cookie_secret` — a sessão não usa assinatura local, valida direto no n8n (ver seção 6).
 
 ---
 
@@ -280,3 +310,5 @@ admin = "$2b$12$....hash-bcrypt...."
 - **Workflows do n8n precisam estar ativos** (`Active`) — se desativados, os webhooks somem
 - **Campo `Custom.Precondicoes`** é específico da organização `refuturiza` — reaproveitar essa integração em outra organização/processo do Azure DevOps exige confirmar o nome real do campo
 - **`secrets.toml` não sobe pro Git** — precisa ser configurado manualmente em cada ambiente (local + Streamlit Cloud)
+- **Rate limit dos provedores de IA**: a geração em lote (Matriz/Casos/Planos) espera ~62s entre lotes e tenta cada lote até 3 vezes antes de desistir — confirmado, por teste real, que falhas do tipo "Todos os provedores de IA falharam" costumam ser rate limit passageiro (ex.: Groq TPM), resolvido tentando de novo
+- **Timeout do proxy na frente do n8n**: se o n8n estiver atrás de Nginx/Nginx Proxy Manager, aumente `proxy_read_timeout`/`proxy_connect_timeout`/`proxy_send_timeout` pra pelo menos 300s — sem isso, o proxy pode cortar a conexão antes do n8n terminar, mesmo quando a IA responderia a tempo (ver `n8n_workflows/nginx_docker_timeout.md`)

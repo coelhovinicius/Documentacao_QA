@@ -101,14 +101,15 @@ Escolhidos na tela, com sugestão automática baseada no Tipo de Documento do Pa
 - **🗄️ Documentos Armazenados** *(permissão `documentos_armazenados`)* — guarda CSVs/PDFs gerados no banco de documentos, organizados por grupo, pra buscar depois sem precisar gerar de novo. Qualquer pessoa com a permissão salva e visualiza; **excluir um grupo é exclusivo do dono do app**, mesmo para quem tem a permissão.
 - **🧠 Mapa Mental** *(permissão `mapa_mental`)* — visualização em árvore (Work Item → Suítes → Casos), navegável e com zoom. Exporta em SVG (direto do navegador) ou PDF (gerado no servidor), sempre com tudo expandido no arquivo exportado, independente do que estiver expandido/recolhido na tela.
 - **📊 Relatório de Testes** *(permissão `execution_report`)* — documenta o que foi **executado**. Status calculado pela **coluna do board (Kanban)** de cada Work Item vinculado (não pelo outcome do Test Point), com Status geral escolhido manualmente. Monta uma Matriz de Cobertura independente quando a sessão não tem uma.
-- **🛡️ Administração** *(dono do app)* — usuários, aprovadores, permissões granulares, **Sessões Ativas** (revogação remota), e **Logs de Auditoria**.
+- **🐛 Criar Bug** *(permissão `criar_bug`)* — cria um Bug diretamente no Azure DevOps: livremente, ou a partir de um Caso de Teste já vinculado a um Work Item (nesse caso, título e Passos de Reprodução já vêm pré-preenchidos, e o Bug fica vinculado de volta ao Caso e ao Work Item). Campos extras opcionais: **System Info**, **Acceptance Criteria**, **Discussion**, e evidências em **imagem** (sobem como anexo formal do Bug e ficam também embutidas no System Info).
+- **🛡️ Administração** *(dono do app)* — cadastro de usuários (nome, e-mail, senha, modo de acesso, status de aprovador e todas as permissões granulares, tudo num único formulário por pessoa), **Sessões Ativas** (revogação remota), e **Logs de Auditoria**.
 
 ### Controle de acesso e governança
 
 - **Login com aprovação**: só o dono entra direto; demais usuários precisam de aprovação a cada sessão.
 - **Sessão via ID opaco**: a URL não revela usuário nem senha — o dado fica no n8n, revogável a qualquer momento (a própria sessão, ou a de outra pessoa).
-- **PAT pessoal**: nunca salvo em disco, só na memória da sessão.
-- **Permissões granulares**: acesso à Integração com Azure DevOps, ao Relatório de Testes, e ao modo "Gerar a partir de uma Query", liberados individualmente.
+- **PAT do Azure DevOps**: por padrão, cada usuário informa o próprio — nunca salvo em disco, só na memória da sessão. Opcionalmente, o dono pode configurar `AZURE_DEVOPS_PAT` nos Secrets pra usar um PAT compartilhado (ninguém mais digita token; a rastreabilidade de quem fez o quê passa a vir da tag automática `criado-por:<usuário>` em cada Bug/Test Case criado).
+- **Permissões granulares**: acesso à Integração com Azure DevOps, ao Relatório de Testes, ao modo "Gerar a partir de uma Query", ao Manual de Testes, aos Documentos Armazenados, ao Mapa Mental, e ao Criar Bug — liberados individualmente (lista completa em [Conceitos importantes](#conceitos-importantes)).
 - **Logs de auditoria**: últimos 500 eventos, visíveis só ao dono.
 
 ---
@@ -130,18 +131,26 @@ app.py                              # ponto de entrada
 requirements.txt
 
 qa_testgen/
-├── config/settings.py              # AppConfiguration (lê st.secrets)
+├── config/
+│   ├── settings.py                 # AppConfiguration (lê st.secrets)
+│   └── constants.py                # cores, caminhos de logo, timezone
 ├── ui/
-│   ├── application.py              # UserInterface — toda a lógica de tela
-│   ├── auth.py                     # login, sessão (ID opaco), permissões, logout
+│   ├── application.py              # UserInterface — toda a lógica de tela (7 passos + sidebar)
+│   ├── auth.py                     # login, sessão (ID opaco), permissões, logout, Administração
 │   └── dialogs.py                  # modais de confirmação
+├── domain/
+│   ├── models/                     # MatrixRow, TestCase, TestPlan, TestStep
+│   └── validators/                 # validação de campos obrigatórios (Matriz/Caso/Plano)
 ├── infrastructure/
 │   ├── webhook_client.py           # chamadas aos webhooks de IA do n8n
 │   ├── azure_devops_client.py      # cliente REST completo do Azure DevOps
 │   ├── access_control_client.py    # controle de acesso/logs/sessões (n8n)
 │   ├── document_processor.py       # extração de texto + imagens
+│   ├── document_store.py           # Documentos Armazenados (Turso/libsql)
 │   ├── csv_formatter.py            # exportação CSV
-│   └── pdf_report.py               # PDFs (Documentação QA e Relatório de Testes)
+│   ├── pdf_report.py               # PDFs (Documentação QA e Relatório de Testes)
+│   └── manual_pdf.py               # PDF do Manual de Testes (UAT)
+├── assets/                         # Guia_Usuario.pdf, Guia_Administrador.pdf (baixáveis em "Sobre o App")
 └── application/session.py          # SessionState (defaults do st.session_state)
 ```
 
@@ -158,6 +167,8 @@ qa_testgen/
 | `Doc_QA_Image_Interpretation` | Interpreta imagens extraídas dos documentos |
 | `Doc_QA_Execution_Report_Narrative` | Sugere textos do Relatório de Testes |
 | `Doc_QA_WIQL_Generation` | Traduz descrição em linguagem natural para WIQL |
+| `Doc_QA_Manual_Generation` | Gera o Manual de Testes (UAT) em linguagem simples |
+| `Doc_QA_Duplicate_Comparison` | Compara o conteúdo de Casos "parecidos" (candidatos a duplicata) antes de decidir se vincula/cria |
 
 ---
 
@@ -173,7 +184,11 @@ pymupdf
 python-docx
 pillow
 bcrypt
+libsql-client            # Documentos Armazenados (Turso)
+extra-streamlit-components
 ```
+
+Lista completa e travada por versão em `requirements.txt`.
 
 ### `secrets.toml`
 
@@ -187,16 +202,24 @@ N8N_WEBHOOK_URL_ACCESS_CONTROL = "http://SEU-N8N/webhook/qa-testgen-access-contr
 N8N_WEBHOOK_URL_IMAGE_INTERPRETATION = "http://SEU-N8N/webhook/qa-testgen-image-interpretation"
 N8N_WEBHOOK_URL_EXECUTION_REPORT_NARRATIVE = "http://SEU-N8N/webhook/qa-testgen-execution-report-narrative"
 N8N_WEBHOOK_URL_WIQL_GENERATION = "http://SEU-N8N/webhook/qa-testgen-wiql-generation"
+N8N_WEBHOOK_URL_MANUAL_GENERATION = "http://SEU-N8N/webhook/qa-testgen-manual-generation"
+N8N_WEBHOOK_URL_DUPLICATE_COMPARISON = "http://SEU-N8N/webhook/qa-testgen-duplicate-comparison"
 N8N_API_KEY = "GERE_UM_VALOR_ALEATORIO_LONGO"
 APP_OWNER_USERNAME = "admin"
 AZURE_DEVOPS_ORG = "sua-organizacao"
+
+# AZURE_DEVOPS_PAT = "..."  # opcional — liga o modo de PAT compartilhado (ver nota abaixo)
+
+# Documentos Armazenados (opcional — feature fica indisponível sem isso)
+TURSO_DATABASE_URL = "libsql://seu-banco.turso.io"
+TURSO_AUTH_TOKEN = "..."
 
 [credentials]
 [credentials.usernames]
 admin = "$2b$12$...hash-bcrypt-aqui..."
 ```
 
-> Não existe `AZURE_DEVOPS_PAT` (cada pessoa usa o próprio) nem `cookie_secret` (a sessão não usa mais assinatura local — valida direto no n8n).
+> `AZURE_DEVOPS_PAT` é opcional: por padrão não existe (cada pessoa usa o próprio PAT), mas configurar essa chave liga o modo de PAT compartilhado pra todo mundo (ver [Controle de acesso e governança](#controle-de-acesso-e-governança)). `cookie_secret` não é mais usado (a sessão não usa mais assinatura local — valida direto no n8n).
 
 Gerando um hash bcrypt: `bcrypt.hashpw(b"senha", bcrypt.gensalt()).decode()`
 
@@ -230,7 +253,7 @@ Streamlit Community Cloud com auto-deploy a partir do `main` — Secrets configu
 
 **PAT pessoal** — Work Items (Read & Write) + Test Management (Read & Write). Nunca salvo em disco.
 
-**Permissões granulares** — `azure_devops` (Passo 7, Criar Query com IA), `execution_report` (Relatório de Testes), `azure_query` (Passo 1 — Gerar a partir de uma Query), `manual_testes` (Manual de Testes), `documentos_armazenados` (salvar/ver Documentos Armazenados — excluir continua exclusivo do dono, mesmo com a permissão), e `mapa_mental` (Mapa Mental), concedidas individualmente. "Gerar a partir de Work Items" (Passo 1) não exige nenhuma dessas — disponível pra qualquer pessoa logada, usa o PAT pessoal.
+**Permissões granulares** — `azure_devops` (Passo 7, Criar Query com IA), `execution_report` (Relatório de Testes), `azure_query` (Passo 1 — Gerar a partir de uma Query), `manual_testes` (Manual de Testes), `documentos_armazenados` (salvar/ver Documentos Armazenados — excluir continua exclusivo do dono, mesmo com a permissão), `mapa_mental` (Mapa Mental), e `criar_bug` (Criar Bug), concedidas individualmente — tudo num único cadastro por usuário, na aba "Usuários" da Administração. "Gerar a partir de Work Items" (Passo 1) não exige nenhuma dessas — disponível pra qualquer pessoa logada, usa o PAT pessoal.
 
 **Status de QA via coluna do board** — no Relatório de Testes, vem da coluna do Kanban do Work Item vinculado, não do outcome do Test Point:
 
@@ -257,3 +280,5 @@ O Status **geral** do relatório é escolhido manualmente.
 
 - **Modelos de IA**: os workflows do n8n fixam versões de modelo — provedores mudam/depreciam modelos com frequência.
 - **Credenciais do n8n**: o fallback entre provedores cobre a maioria dos casos de expiração, mas vale monitorar os logs de execução do n8n.
+- **Rate limit dos provedores de IA**: a geração em lote (Matriz/Casos/Planos) espera ~62s entre lotes e tenta cada lote até 3 vezes antes de desistir — confirmado, por teste real, que falhas do tipo "Todos os provedores de IA falharam" costumam ser rate limit passageiro, resolvido tentando de novo.
+- **Timeout do proxy na frente do n8n**: se o n8n estiver atrás de Nginx/Nginx Proxy Manager, aumente `proxy_read_timeout`/`proxy_connect_timeout`/`proxy_send_timeout` pra pelo menos 300s (mesmo valor do timeout do app pra cada chamada) — sem isso, o proxy pode cortar a conexão antes do n8n terminar, mesmo quando a IA responderia a tempo.

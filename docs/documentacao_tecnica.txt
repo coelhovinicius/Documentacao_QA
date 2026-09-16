@@ -70,7 +70,7 @@ O n8n é a ferramenta que realmente "conversa" com as IAs
         recebe os pedidos de fora e encaminha pro n8n certinho
 
   O que o n8n faz, na prática:
-      Existem 5 "workflows" (processos automatizados) dentro do
+      Existem 11 "workflows" (processos automatizados) dentro do
       n8n, um pra cada tarefa:
         1. Analisar o documento e gerar dúvidas
         2. Gerar a Matriz de Cobertura
@@ -78,12 +78,26 @@ O n8n é a ferramenta que realmente "conversa" com as IAs
         4. Gerar os Planos de Teste
         5. Sugerir quais Casos de Teste se relacionam com quais
            itens já existentes no board do Azure DevOps
+        6. Controle de acesso (login, aprovações, permissões,
+           sessões ativas e logs de auditoria)
+        7. Interpretar (descrever em texto) imagens extraídas de
+           documentos ou de itens do Azure DevOps
+        8. Sugerir os textos do Relatório de Testes
+        9. Traduzir uma busca em português pra uma query técnica
+           do Azure DevOps (WIQL)
+        10. Gerar o Manual de Testes (UAT) em linguagem simples
+        11. Comparar dois Casos de Teste parecidos e decidir se são
+            realmente duplicados
 
   Como cada workflow tenta gerar o conteúdo:
       Cada um tenta até 5 provedores de IA diferentes, em ordem,
       um atrás do outro, só passando pro próximo se o anterior
       falhar. Isso evita que o app pare de funcionar só porque
       uma IA específica está fora do ar ou lenta naquele momento.
+      Mesmo assim, às vezes TODOS os provedores estão ocupados ao
+      mesmo tempo (rate limit) - por isso o app espera cerca de 1
+      minuto e tenta de novo, até 3 vezes, antes de avisar que
+      falhou de verdade.
 
 
 5. COMO O APP SE CONECTA COM O AZURE DEVOPS?
@@ -92,8 +106,13 @@ Usando um "token de acesso" (PAT - Personal Access Token), que é
 tipo uma senha especial só pra esse tipo de conexão automática.
 
   Esse token:
-      - Fica guardado só no "backend" (na configuração escondida
-        do app) - nunca aparece na tela pro usuário digitar ou ver
+      - Por padrão, cada pessoa digita o PRÓPRIO token na hora que
+        vai usar - nunca fica salvo, só na memória daquela sessão
+      - Opcionalmente, o administrador pode configurar um token
+        único, compartilhado por todo mundo, direto no "backend"
+        (nesse caso, ninguém mais precisa digitar nada - e pra
+        saber quem fez o quê, todo Bug/Caso criado ganha uma
+        etiqueta automática com o nome de quem criou)
       - Tem prazo de validade - precisa ser renovado de vez em
         quando (a pessoa que criou o token vê a data de expiração)
 
@@ -163,8 +182,25 @@ O app funciona em 7 etapas, uma de cada vez:
       teste se relacionam com quais itens, você revisa/ajusta essa
       sugestão, e confirma o envio.
 
+  Além dos 7 passos, tem um botão fixo na barra lateral, "Criar
+  Bug", disponível a qualquer momento (pra quem tem permissão):
+  cria um Bug direto no Azure DevOps, livremente ou a partir de um
+  Caso de Teste já vinculado a um item do board (nesse caso, título
+  e Passos de Reprodução já vêm preenchidos sozinhos). Tem campos
+  opcionais pra System Info, Acceptance Criteria e Discussion, e dá
+  pra anexar imagens como evidência.
 
-8. PRINCIPAIS CUIDADOS PARA MANTER O APP FUNCIONANDO
+
+8. COMO FUNCIONA A ÁREA DE ADMINISTRAÇÃO?
+-------------------------------------------------------------------
+  Só quem é administrador vê essa área. Nela dá pra:
+      - Criar, editar e remover usuários, e definir as permissões
+        de cada um (o que cada pessoa pode ou não fazer no app)
+      - Ver quem está com sessão ativa no momento
+      - Consultar o histórico (log) de tudo que foi feito no app
+
+
+9. PRINCIPAIS CUIDADOS PARA MANTER O APP FUNCIONANDO
 -------------------------------------------------------------------
   - O token do Azure DevOps (PAT) expira - fique de olho na data
   - Os workflows do n8n precisam estar "ativados" - se alguém
@@ -177,6 +213,15 @@ O app funciona em 7 etapas, uma de cada vez:
     no computador local quanto no Streamlit Cloud
   - Qualquer mudança no código só aparece pro público depois de
     git push - lembrar sempre desse passo
+  - Às vezes a geração de Matriz/Casos/Planos falha dizendo que
+    "todos os provedores de IA falharam" - na maioria das vezes é
+    só um pico de uso passageiro (rate limit); o app já tenta de
+    novo sozinho até 3 vezes, esperando cerca de 1 minuto entre as
+    tentativas
+  - Se o n8n estiver atrás de um "nginx" (proxy), esse proxy precisa
+    ter um tempo de espera (timeout) configurado de pelo menos 5
+    minutos - senão ele pode cortar a conexão antes da IA terminar
+    de responder, mesmo quando ela responderia a tempo
 
 
 ===================================================================

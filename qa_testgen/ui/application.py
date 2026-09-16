@@ -8509,12 +8509,21 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 _botao_download_guia("Guia_Administrador.pdf", "🛡️ Baixar Guia do Administrador", "btn_download_guia_admin")
 
         st.markdown("#### 🧭 Arquitetura geral")
+        if self.config.azure_devops_pat:
+            pat_caption = (
+                "usando um PAT compartilhado, configurado pelo administrador nos Secrets — "
+                "quem fez cada ação fica registrado por uma tag automática "
+                "(`criado-por:<usuário>`) em cada item, e no histórico interno do app"
+            )
+        else:
+            pat_caption = (
+                "usando o PAT pessoal que cada usuário informa na hora — nunca salvo em disco, "
+                "só na memória da sessão"
+            )
         st.caption(
             "O acesso passa por aprovação antes de entrar. Depois disso, o time de QA usa o "
             "app, que aciona o n8n (onde a IA gera o conteúdo, e onde o controle de acesso/logs "
-            "também vivem) e integra tudo direto no Azure DevOps, usando um PAT compartilhado "
-            "configurado pelo administrador — quem fez cada ação fica registrado por uma tag "
-            "automática (`criado-por:<usuário>`) em cada item, e no histórico interno do app."
+            f"também vivem) e integra tudo direto no Azure DevOps, {pat_caption}."
         )
         st.markdown(self._flatten_html(self._svg_architecture_diagram()), unsafe_allow_html=True)
 
@@ -8580,7 +8589,11 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "- **🗄️ Documentos Armazenados**: qualquer pessoa com a permissão salva e visualiza; "
             "**excluir um grupo é exclusivo do dono do app**, mesmo pra quem tem a permissão\n"
             "- **🧠 Mapa Mental**: exporta em SVG ou PDF sempre com tudo expandido no arquivo, "
-            "independente do que estiver aberto/fechado na tela"
+            "independente do que estiver aberto/fechado na tela\n"
+            "- **🐛 Criar Bug**: cria um Bug no Azure DevOps livremente, ou a partir de um Caso "
+            "de Teste já vinculado a um Work Item (título e Passos de Reprodução pré-preenchidos). "
+            "Campos extras opcionais: System Info, Acceptance Criteria, Discussion, e evidências "
+            "em imagem (sobem como anexo do Bug e ficam também embutidas no System Info)"
         )
         st.caption(
             "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "
@@ -8601,14 +8614,17 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "- **Sessão via ID opaco na URL**: o link de sessão não revela usuário nem senha "
             "nenhuma — o dado real fica guardado no n8n, e pode ser revogado remotamente a "
             "qualquer momento (a sua própria sessão, ou a de outra pessoa) em Administração\n"
-            "- **PAT compartilhado**: configurado uma vez pelo administrador (nos Secrets do "
-            "Streamlit) — ninguém mais precisa digitar token nenhum. Cada Bug/Test Case criado "
-            "recebe automaticamente a tag `criado-por:<usuário>`, então dá pra saber quem fez o "
-            "quê mesmo com o token sendo o mesmo para todos; e toda ação continua registrada "
-            "com o usuário logado no histórico interno do app, independente da tag\n"
+            "- **PAT do Azure DevOps**: por padrão, cada usuário informa o próprio (nunca salvo "
+            "em disco, só na memória da sessão) — opcionalmente, o administrador pode configurar "
+            "um PAT compartilhado nos Secrets do Streamlit, e nesse caso ninguém mais precisa "
+            "digitar token nenhum. No modo compartilhado, cada Bug/Test Case criado recebe "
+            "automaticamente a tag `criado-por:<usuário>` pra manter a rastreabilidade de quem "
+            "fez o quê; e toda ação continua registrada com o usuário logado no histórico "
+            "interno do app de qualquer forma\n"
             "- **Permissões granulares**: acesso à Integração com Azure DevOps, ao Relatório de "
-            "Testes, e ao modo \"Gerar a partir de uma Query\" são liberados individualmente — "
-            "quem não tem permissão nem vê a opção\n"
+            "Testes, ao modo \"Gerar a partir de uma Query\", ao Manual de Testes, aos "
+            "Documentos Armazenados, ao Mapa Mental e ao Criar Bug são liberados "
+            "individualmente — quem não tem permissão nem vê a opção\n"
             "- **Logs de auditoria**: os últimos 500 eventos do app (login, aprovações, "
             "integrações, relatórios gerados, sessões revogadas) ficam visíveis só pro dono, em "
             "Administração"
@@ -8643,7 +8659,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             </defs>
             {node(40, "Usuário", "Time de QA")}
             <line x1="340" y1="96" x2="340" y2="156" {arrow} />
-            {node(156, "Login", "Aprovação + PAT compartilhado")}
+            {node(156, "Login", "Aprovação + PAT (pessoal ou compartilhado)")}
             <line x1="340" y1="212" x2="340" y2="272" {arrow} />
             {node(272, "App QA Automation", "Streamlit")}
             <line x1="340" y1="328" x2="340" y2="388" {arrow} />
@@ -8687,7 +8703,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             <path d="M572.5 146 L572.5 195 L135.5 195 L135.5 250" fill="none" {arrow} />
             {node(43, 250, 185, "5. Planos", "Organiza em suítes")}
             {node(248, 250, 185, "6. Download", "CSV e PDF prontos")}
-            {node(453, 250, 185, "7. Azure DevOps", "PAT compartilhado + merge")}
+            {node(453, 250, 185, "7. Azure DevOps", "PAT + merge")}
             <line x1="228" y1="278" x2="248" y2="278" {arrow} />
             <line x1="433" y1="278" x2="453" y2="278" {arrow} />
         </svg>
@@ -8735,13 +8751,14 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
         return f"""
         <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
-        <svg width="100%" viewBox="0 0 460 210" style="max-width:460px;display:block;margin:0 auto;">
+        <svg width="100%" viewBox="0 0 460 285" style="max-width:460px;display:block;margin:0 auto;">
             {node(20, 15, 200, "🔎 Criar Query com IA", "WIQL por descrição")}
             {node(240, 15, 200, "📘 Manual de Testes", "Reprodução em UAT")}
             {node(20, 90, 200, "🗄️ Documentos Armazenados", "Excluir é só do dono")}
             {node(240, 90, 200, "🧠 Mapa Mental", "Árvore navegável")}
             {node(20, 165, 200, "📊 Relatório de Testes", "Status real do board")}
-            {node(240, 165, 200, "🛡️ Administração", "Permissões e Logs")}
+            {node(240, 165, 200, "🐛 Criar Bug", "Com evidências em imagem")}
+            {node(130, 240, 200, "🛡️ Administração", "Permissões e Logs")}
         </svg>
         </div>
         """
