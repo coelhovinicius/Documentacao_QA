@@ -104,8 +104,8 @@ class UserInterface:
         """
         Callback dos botões "Gerar Matriz/Casos/Planos" — sempre limpa
         qualquer estado de lote (`_{state_prefix}_lotes_pendentes/acumulado/
-        erros/total/proxima_liberacao`) deixado por uma tentativa anterior
-        ANTES de disparar a ação de novo.
+        erros/total/proxima_liberacao/tentativas_lote_atual`) deixado por
+        uma tentativa anterior ANTES de disparar a ação de novo.
 
         Por quê: _processar_um_lote_por_execucao usa "pendentes is None"
         pra decidir se monta lotes novos ou continua de onde parou — o que
@@ -125,7 +125,7 @@ class UserInterface:
         lista velha, causando "None - int" (TypeError) na próxima geração
         depois de uma tentativa interrompida no meio.
         """
-        for suffix in ('_lotes_pendentes', '_acumulado', '_erros', '_total', '_proxima_liberacao'):
+        for suffix in ('_lotes_pendentes', '_acumulado', '_erros', '_total', '_proxima_liberacao', '_tentativas_lote_atual'):
             self.state.delete(f'_{state_prefix}{suffix}')
         self.trigger_action(action_name)
 
@@ -1527,6 +1527,16 @@ class UserInterface:
     # rate limit (60s), não um valor arbitrário menor.
     _ESPERA_ENTRE_LOTES_SEGUNDOS = 62
 
+    # Quantas vezes tenta de novo o MESMO lote antes de desistir e marcar
+    # como falha de verdade. Motivo de existir: confirmado repetidas vezes
+    # (inclusive com a mensagem exata "OpenAI: Rate limit reached" vinda do
+    # próprio n8n) que essas falhas são rate limit passageiro dos
+    # provedores de IA — na prática, tentar de novo depois da mesma espera
+    # de _ESPERA_ENTRE_LOTES_SEGUNDOS resolve na maioria das vezes. Sem
+    # isso, o app desistia na PRIMEIRA falha e jogava o problema de volta
+    # pra pessoa clicar "Gerar" de novo à mão.
+    _MAX_TENTATIVAS_POR_LOTE = 3
+
     def _processar_um_lote_por_execucao(self, state_prefix: str, montar_lotes_fn, processar_um_lote_fn, status):
         """
         Processa SÓ 1 lote por execução do script Streamlit, disparando
@@ -1553,6 +1563,14 @@ class UserInterface:
         fica bloqueada por muito tempo) enquanto ainda espaça as chamadas de
         verdade pro n8n.
 
+        Um lote que FALHA tenta de novo automaticamente (até
+        `_MAX_TENTATIVAS_POR_LOTE` vezes, com a mesma espera entre
+        tentativas) antes de desistir e marcar como erro de verdade —
+        confirmado repetidas vezes que essas falhas são rate limit
+        passageiro dos provedores de IA no n8n, então esperar e tentar de
+        novo resolve na maioria dos casos, sem precisar que a pessoa clique
+        em "Gerar" à mão outra vez.
+
         montar_lotes_fn: função sem argumento, chamada só na primeira
         execução, que retorna a lista de lotes já dividida.
         processar_um_lote_fn: recebe 1 lote, retorna (lista_de_itens, erro_ou_None).
@@ -1567,6 +1585,7 @@ class UserInterface:
         key_erros = f"_{state_prefix}_erros"
         key_total = f"_{state_prefix}_total"
         key_proxima_liberacao = f"_{state_prefix}_proxima_liberacao"
+        key_tentativas = f"_{state_prefix}_tentativas_lote_atual"
 
         if self.state.get(key_pendentes) is None:
             lotes = montar_lotes_fn()
@@ -1575,6 +1594,7 @@ class UserInterface:
             self.state.set(key_erros, [])
             self.state.set(key_total, len(lotes))
             self.state.set(key_proxima_liberacao, None)
+            self.state.set(key_tentativas, 0)
 
         pendentes = self.state.get(key_pendentes)
         acumulado = self.state.get(key_acumulado)
@@ -1603,14 +1623,31 @@ class UserInterface:
             lote_atual = pendentes[0]
             itens, erro = processar_um_lote_fn(lote_atual)
             if erro:
+                tentativas = (self.state.get(key_tentativas) or 0) + 1
+                if tentativas < self._MAX_TENTATIVAS_POR_LOTE:
+                    # Falha, mas ainda sobra tentativa — NÃO avança pro
+                    # próximo lote: espera de novo e tenta O MESMO lote.
+                    self.state.set(key_tentativas, tentativas)
+                    status.write(
+                        f"⚠️ Lote {concluidos + 1} de {total} falhou (tentativa {tentativas}/"
+                        f"{self._MAX_TENTATIVAS_POR_LOTE}): {erro} — tentando de novo..."
+                    )
+                    self.state.set(key_proxima_liberacao, time.time() + self._ESPERA_ENTRE_LOTES_SEGUNDOS)
+                    status.update(state="complete")
+                    st.rerun()
+                    return None
                 erros.append((concluidos + 1, erro))
                 if varios:
-                    status.write(f"❌ Lote {concluidos + 1} de {total} falhou: {erro}")
+                    status.write(
+                        f"❌ Lote {concluidos + 1} de {total} falhou após "
+                        f"{self._MAX_TENTATIVAS_POR_LOTE} tentativas: {erro}"
+                    )
             else:
                 acumulado.extend(itens)
                 if varios:
                     status.write(f"✅ Lote {concluidos + 1} de {total}: {len(itens)} item(ns).")
 
+            self.state.set(key_tentativas, 0)  # zera pro próximo lote
             novos_pendentes = pendentes[1:]
             self.state.set(key_pendentes, novos_pendentes)
             self.state.set(key_acumulado, acumulado)
@@ -1638,6 +1675,7 @@ class UserInterface:
         self.state.set(key_erros, None)
         self.state.set(key_total, None)
         self.state.set(key_proxima_liberacao, None)
+        self.state.set(key_tentativas, None)
         return acumulado, erros
 
     _TAMANHO_LOTE_PLANOS = 10
