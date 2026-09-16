@@ -353,6 +353,221 @@ class AzureDevOpsClient:
         self._handle_response(response, f"Mudar estado do Work Item {work_item_id} para '{state}'")
 
     # ------------------------------------------------------------------ #
+    # Criação livre de Work Item (qualquer tipo) — usada pela área
+    # "Criar Work Item". Diferente de create_test_case/create_bug, que têm
+    # forma fixa, aqui o formulário é montado dinamicamente a partir dos
+    # metadados do processo do próprio projeto.
+    # ------------------------------------------------------------------ #
+
+    # Campos que o Azure DevOps expõe (às vezes até como "alwaysRequired")
+    # mas que NUNCA devem aparecer num formulário manual: são internos,
+    # derivados de outros campos, ou somente-leitura na prática.
+    # - System.AreaId/IterationId: derivados de AreaPath/IterationPath
+    # - System.BoardColumn/BoardLane: somente-leitura na API (erro TF401326);
+    #   pra escrever a coluna é preciso o campo "WEF_<hash>_Kanban.Column"
+    #   do board específico (ver get_board_column_field_name)
+    # - System.History: não é campo comum, é a aba Discussion (API de
+    #   comentários, ver add_work_item_comment)
+    CAMPOS_NAO_EDITAVEIS = {
+        "System.Id", "System.Rev", "System.AreaId", "System.IterationId",
+        "System.WorkItemType", "System.TeamProject", "System.NodeName",
+        "System.AreaLevel1", "System.AreaLevel2", "System.AreaLevel3",
+        "System.IterationLevel1", "System.IterationLevel2", "System.IterationLevel3",
+        "System.CreatedBy", "System.CreatedDate", "System.ChangedBy",
+        "System.ChangedDate", "System.AuthorizedAs", "System.AuthorizedDate",
+        "System.RevisedDate", "System.Watermark", "System.CommentCount",
+        "System.PersonId", "System.StateChangeDate", "System.Parent",
+        "System.BoardColumn", "System.BoardColumnDone", "System.BoardLane",
+        "System.ExternalLinkCount", "System.HyperLinkCount",
+        "System.AttachedFileCount", "System.RelatedLinkCount",
+        "System.RemoteLinkCount", "System.History",
+    }
+
+    # Campos que a área de Criar Work Item já trata com widget dedicado
+    # (fora da lista genérica de "outros campos"), pra não aparecerem duas
+    # vezes na tela.
+    CAMPOS_COM_WIDGET_PROPRIO = {
+        "System.Title", "System.Description", "System.AreaPath",
+        "System.IterationPath", "System.AssignedTo", "System.Tags",
+        "System.State",
+    }
+
+    def list_work_item_types(self) -> list:
+        """
+        Lista os tipos de Work Item que o processo do projeto atual
+        permite (inclui tipos customizados da organização, ex.: "Spike",
+        "Improvement", "UX Story"). Retorna
+        [{'name', 'reference_name', 'description', 'color', 'icon'}, ...]
+        na ordem que a API devolve.
+        """
+        url = f"{self._base_url()}/wit/workitemtypes?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar tipos de Work Item do Projeto")
+        tipos = []
+        for t in data.get("value", []):
+            if not t.get("name"):
+                continue
+            tipos.append({
+                "name": t["name"],
+                "reference_name": t.get("referenceName", ""),
+                "description": t.get("description", "") or "",
+                "color": t.get("color", "") or "",
+                "icon": (t.get("icon") or {}).get("id", "") or "",
+            })
+        return tipos
+
+    def get_work_item_type_fields(self, work_item_type: str) -> list:
+        """
+        Lista os campos de UM tipo de Work Item, com os metadados
+        necessários pra montar o formulário: se é obrigatório, valores
+        permitidos (quando o campo é uma lista fechada), valor padrão e
+        texto de ajuda. Retorna
+        [{'reference_name', 'name', 'always_required', 'allowed_values',
+          'default_value', 'help_text'}, ...]
+
+        Campos internos/somente-leitura (CAMPOS_NAO_EDITAVEIS) já vêm
+        filtrados — inclusive os que o Azure marca como obrigatórios mas
+        preenche sozinho (System.AreaId/IterationId), que se aparecessem
+        no formulário só confundiriam.
+        """
+        url = (f"{self._base_url()}/wit/workitemtypes/{quote(work_item_type, safe='')}/fields"
+               f"?$expand=allowedValues&api-version={API_VERSION}")
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, f"Listar campos do tipo '{work_item_type}'")
+        campos = []
+        for f in data.get("value", []):
+            ref = f.get("referenceName", "")
+            if not ref or ref in self.CAMPOS_NAO_EDITAVEIS:
+                continue
+            campos.append({
+                "reference_name": ref,
+                "name": f.get("name", ref),
+                "always_required": bool(f.get("alwaysRequired")),
+                "allowed_values": list(f.get("allowedValues") or []),
+                "default_value": f.get("defaultValue"),
+                "help_text": f.get("helpText", "") or "",
+            })
+        return campos
+
+    def list_project_fields(self) -> dict:
+        """
+        Catálogo de TODOS os campos do projeto, indexado por reference
+        name, com o tipo de dado de cada um — é isso que decide qual
+        widget usar no formulário dinâmico (texto, número, data, etc.).
+
+        Retorna {reference_name: {'type', 'read_only', 'is_identity',
+        'is_picklist', 'name'}}. Tipos possíveis vistos na API:
+        string, plainText, html, integer, double, boolean, dateTime,
+        treePath, history.
+        """
+        url = f"{self._base_url()}/wit/fields?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar catálogo de campos do Projeto")
+        catalogo = {}
+        for f in data.get("value", []):
+            ref = f.get("referenceName")
+            if not ref:
+                continue
+            catalogo[ref] = {
+                "name": f.get("name", ref),
+                "type": f.get("type", "string"),
+                "read_only": bool(f.get("readOnly")),
+                "is_identity": bool(f.get("isIdentity")),
+                "is_picklist": bool(f.get("isPicklist")),
+            }
+        return catalogo
+
+    def list_iteration_paths(self) -> list:
+        """
+        Lista os Iteration Paths (Sprints) existentes no projeto, no
+        mesmo formato que o Azure DevOps espera no campo
+        System.IterationPath. Mesma varredura de árvore usada em
+        list_area_paths, só trocando o nó raiz (Iterations).
+        """
+        url = f"{self._base_url()}/wit/classificationnodes/Iterations?$depth=50&api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Iteration Paths do Projeto")
+
+        paths = []
+
+        def _walk(node, prefix):
+            name = node.get("name", "")
+            full = f"{prefix}\\{name}" if prefix else name
+            if full:
+                paths.append(full)
+            for child in node.get("children") or []:
+                _walk(child, full)
+
+        _walk(data, "")
+        return paths
+
+    def create_work_item(self, work_item_type: str, campos: dict, parent_id: int = None,
+                          state: str = None) -> dict:
+        """
+        Cria um Work Item de QUALQUER tipo, com os campos passados em
+        `campos` ({reference_name: valor}).
+
+        parent_id: se informado, já nasce como FILHO desse Work Item
+        (vínculo Parent/Child via System.LinkTypes.Hierarchy-Reverse, que
+        é o que faz o item aparecer na lista de filhos do pai no Azure
+        DevOps). O vínculo vai na MESMA chamada da criação — uma ida só.
+
+        state: tratado à parte dos outros campos porque o Azure DevOps
+        valida State como transição de workflow, e alguns processos
+        recusam certos estados já na criação (é o mesmo motivo do
+        tratamento em create_test_case). Tenta junto na criação; se a
+        criação falhar por causa disso, cria sem o State e aplica depois
+        numa segunda chamada.
+
+        Retorna {'id', 'url', 'state_warning': str|None}.
+        """
+        def _montar_body(incluir_state: bool) -> list:
+            body = []
+            for ref, valor in (campos or {}).items():
+                if valor is None or valor == "":
+                    continue
+                body.append({"op": "add", "path": f"/fields/{ref}", "value": valor})
+            if incluir_state and state:
+                body.append({"op": "add", "path": "/fields/System.State", "value": state})
+            if parent_id:
+                body.append({
+                    "op": "add",
+                    "path": "/relations/-",
+                    "value": {
+                        "rel": "System.LinkTypes.Hierarchy-Reverse",
+                        "url": f"{self._base_url()}/wit/workItems/{parent_id}",
+                        "attributes": {"comment": "Criado via QA TestGen"},
+                    },
+                })
+            return body
+
+        url = f"{self._base_url()}/wit/workitems/${quote(work_item_type, safe='')}?api-version={API_VERSION}"
+        titulo_log = (campos or {}).get("System.Title", "(sem título)")
+
+        state_warning = None
+        response = self.session.post(url, json=_montar_body(True), headers=self.headers_json_patch, timeout=60)
+        if state and response.status_code >= 400:
+            # Pode ter sido só o State recusado na criação — tenta sem ele
+            # e aplica depois, em vez de falhar o item inteiro.
+            response = self.session.post(url, json=_montar_body(False), headers=self.headers_json_patch, timeout=60)
+            data = self._handle_response(response, f"Criar {work_item_type} '{titulo_log}'")
+            try:
+                self.set_work_item_state(data["id"], state)
+            except AzureDevOpsError as error:
+                state_warning = (
+                    f"{work_item_type} criado, mas não foi possível definir o estado "
+                    f"'{state}' (ficou no estado padrão): {error}"
+                )
+        else:
+            data = self._handle_response(response, f"Criar {work_item_type} '{titulo_log}'")
+
+        return {
+            "id": data["id"],
+            "url": data.get("_links", {}).get("html", {}).get("href", ""),
+            "state_warning": state_warning,
+        }
+
+    # ------------------------------------------------------------------ #
     # Test Plans
     # ------------------------------------------------------------------ #
     def list_test_plans(self) -> list:

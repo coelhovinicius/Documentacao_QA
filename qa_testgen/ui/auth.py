@@ -228,6 +228,7 @@ _PERMISSOES_CONHECIDAS = [
     ("documentos_armazenados", "🗄️ Documentos Armazenados"),
     ("mapa_mental", "🧠 Mapa Mental"),
     ("criar_bug", "🐛 Criar Bug"),
+    ("criar_work_item", "🧱 Criar Work Item"),
 ]
 
 

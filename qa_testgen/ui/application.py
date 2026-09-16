@@ -732,7 +732,7 @@ class UserInterface:
                     'show_about_page': True, 'show_admin_page': False,
                     'show_execution_report_page': False,
                     'show_wiql_generation_page': False, 'show_manual_page': False,
-                    'show_document_store_page': False, 'show_mindmap_page': False, 'show_bug_page': False,
+                    'show_document_store_page': False, 'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                 })
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
@@ -742,7 +742,7 @@ class UserInterface:
                         'show_manual_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_document_store_page': False,
-                        'show_mindmap_page': False, 'show_bug_page': False,
+                        'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                     })
             if self._get_permission_cached("documentos_armazenados"):
                 if st.button("🗄️ Documentos Armazenados", use_container_width=True, key="btn_document_store_sidebar", disabled=self.state.get('is_processing')):
@@ -750,12 +750,12 @@ class UserInterface:
                         'show_document_store_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
-                        'show_mindmap_page': False, 'show_bug_page': False,
+                        'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                     })
             if self._get_permission_cached("mapa_mental"):
                 if st.button("🧠 Mapa Mental", use_container_width=True, key="btn_mindmap_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
-                        'show_mindmap_page': True, 'show_bug_page': False, 'show_about_page': False,
+                        'show_mindmap_page': True, 'show_bug_page': False, 'show_work_item_page': False, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
                         'show_document_store_page': False,
@@ -763,7 +763,17 @@ class UserInterface:
             if self._get_permission_cached("criar_bug"):
                 if st.button("🐛 Criar Bug", use_container_width=True, key="btn_bug_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
-                        'show_bug_page': True, 'show_mindmap_page': False, 'show_about_page': False,
+                        'show_bug_page': True, 'show_work_item_page': False,
+                        'show_mindmap_page': False, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wiql_generation_page': False, 'show_manual_page': False,
+                        'show_document_store_page': False,
+                    })
+            if self._get_permission_cached("criar_work_item"):
+                if st.button("🧱 Criar Work Item", use_container_width=True, key="btn_work_item_sidebar", disabled=self.state.get('is_processing')):
+                    self._navigate_or_confirm({
+                        'show_work_item_page': True, 'show_bug_page': False,
+                        'show_mindmap_page': False, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
                         'show_document_store_page': False,
@@ -774,7 +784,7 @@ class UserInterface:
                         'show_wiql_generation_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
                         'show_manual_page': False, 'show_document_store_page': False,
-                        'show_mindmap_page': False, 'show_bug_page': False,
+                        'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                     })
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
@@ -799,7 +809,7 @@ class UserInterface:
                         'show_admin_page': True, 'show_about_page': False,
                         'show_execution_report_page': False,
                         'show_wiql_generation_page': False, 'show_manual_page': False,
-                        'show_document_store_page': False, 'show_mindmap_page': False, 'show_bug_page': False,
+                        'show_document_store_page': False, 'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                     })
 
         img_b64 = self._load_logo_b64(str(LOGO_PATH))
@@ -887,6 +897,15 @@ class UserInterface:
             'check_ado_plan_name': 'Verificando se já existe um Test Plan com esse nome',
             'confirm_bug_de_caso': 'Criando o Bug no Azure DevOps',
             'confirm_bug_livre': 'Criando o Bug no Azure DevOps',
+            'wi_confirm_criar': 'Criando o Work Item no Azure DevOps',
+            'wi_lote_confirm': 'Criando os Work Items filhos no Azure DevOps',
+            'wi_fetch_membros_unico': 'Buscando pessoas nos Times do projeto',
+            'wi_fetch_membros_lote': 'Buscando pessoas nos Times do projeto',
+            'wi_fetch_pais_unico': 'Buscando Work Items do Board',
+            'wi_fetch_pais_lote': 'Buscando Work Items do Board',
+            'wi_fetch_colunas_unico': 'Buscando Colunas dos Boards',
+            'wi_fetch_tags_unico': 'Buscando Tags do projeto',
+            'wi_fetch_tags_lote': 'Buscando Tags do projeto',
         }
         action = labels.get(self.state.get('current_action'), 'Processando informações')
 
@@ -5325,6 +5344,929 @@ class UserInterface:
             "imagens": imagens,
         }
 
+    # ------------------------------------------------------------------ #
+    # Criar Work Item (livre, qualquer tipo) — o formulário é montado a
+    # partir dos metadados do processo do projeto, não hardcoded, porque
+    # cada organização/processo tem tipos e campos próprios (ex.: "Spike",
+    # "Improvement", "Custom.Bloqueado").
+    # ------------------------------------------------------------------ #
+    _WI_CAMPOS_DESTAQUE = [
+        # Ordem em que os campos "conhecidos" aparecem, quando o tipo os
+        # tiver. O resto vai pro expander de "outros campos".
+        "Microsoft.VSTS.Common.AcceptanceCriteria",
+        "Microsoft.VSTS.TCM.ReproSteps",
+        "Microsoft.VSTS.TCM.SystemInfo",
+        "Microsoft.VSTS.Common.Priority",
+        "Microsoft.VSTS.Common.Severity",
+        "Microsoft.VSTS.Common.ValueArea",
+        "Microsoft.VSTS.Common.Risk",
+        "Microsoft.VSTS.Scheduling.StoryPoints",
+        "Microsoft.VSTS.Scheduling.Effort",
+        "Microsoft.VSTS.Scheduling.OriginalEstimate",
+        "Microsoft.VSTS.Scheduling.RemainingWork",
+        "Microsoft.VSTS.Common.BusinessValue",
+    ]
+
+    def _render_campo_wi(self, campo: dict, tipo_dado: str, key: str, membros: list = None):
+        """
+        Renderiza UM campo de Work Item escolhendo o widget pelo tipo de
+        dado que a própria API do Azure DevOps informa, e devolve o valor
+        pronto pra mandar no PATCH (ou None quando vazio).
+
+        Regras:
+        - campo com lista fechada (allowed_values) -> selectbox; quando não
+          é obrigatório, entra um "(vazio)" na frente pra poder não mandar
+        - html -> text_area, convertido pra HTML (quebra de linha -> <br>),
+          igual ao que os fluxos de Bug já fazem
+        - identidade (ex.: Assigned To) -> selectbox de pessoas quando a
+          lista já foi buscada; se não, campo de texto pra digitar o e-mail
+        - dateTime -> date_input, serializado em ISO (o que a API espera)
+        """
+        label = campo["name"] + (" *" if campo["always_required"] else "")
+        help_text = campo.get("help_text") or None
+        desabilitado = self.state.get('is_processing')
+
+        if campo.get("allowed_values"):
+            opcoes = list(campo["allowed_values"])
+            if not campo["always_required"]:
+                opcoes = ["(vazio)"] + opcoes
+            escolha = st.selectbox(label, options=opcoes, index=0, key=key,
+                                    disabled=desabilitado, help=help_text)
+            if escolha == "(vazio)":
+                return None
+            # Campos numéricos com lista fechada chegam como texto ("1",
+            # "2"...) — a API recusa string onde espera número.
+            if tipo_dado == "integer":
+                try:
+                    return int(escolha)
+                except (TypeError, ValueError):
+                    return escolha
+            if tipo_dado == "double":
+                try:
+                    return float(escolha)
+                except (TypeError, ValueError):
+                    return escolha
+            return escolha
+
+        if tipo_dado in ("html", "plainText"):
+            texto = st.text_area(label, key=key, height=110, disabled=desabilitado, help=help_text)
+            if not texto.strip():
+                return None
+            if tipo_dado == "html":
+                return html.escape(texto).replace("\n", "<br>")
+            return texto.strip()
+
+        if tipo_dado == "boolean":
+            return st.checkbox(label, key=key, disabled=desabilitado, help=help_text)
+
+        if tipo_dado == "integer":
+            valor = st.number_input(label, value=0, step=1, key=key,
+                                     disabled=desabilitado, help=help_text)
+            return int(valor) if valor else None
+
+        if tipo_dado == "double":
+            valor = st.number_input(label, value=0.0, step=0.5, key=key,
+                                     disabled=desabilitado, help=help_text)
+            return float(valor) if valor else None
+
+        if tipo_dado == "dateTime":
+            data = st.date_input(label, value=None, key=key, disabled=desabilitado, help=help_text)
+            return data.isoformat() if data else None
+
+        if membros is not None and campo["reference_name"] == "System.AssignedTo":
+            opcoes = ["(Ninguém)"] + [f"{m['display_name']} ({m['unique_name']})" for m in membros]
+            escolha = st.selectbox(label, options=opcoes, index=0, key=key,
+                                    disabled=desabilitado, help=help_text)
+            if escolha == "(Ninguém)":
+                return None
+            return membros[opcoes.index(escolha) - 1]["unique_name"]
+
+        texto = st.text_input(label, key=key, disabled=desabilitado, help=help_text)
+        return texto.strip() or None
+
+    def _wi_carregar_metadados(self, ado_client, ado_project: str):
+        """
+        Garante que os tipos de Work Item e o catálogo de campos do
+        projeto estão em memória (1 chamada cada, por projeto). Devolve
+        (tipos, catalogo_campos) ou (None, None) se ainda não deu pra
+        carregar — nesse caso a mensagem já foi mostrada.
+        """
+        if self.state.get('wi_metadados_project') != ado_project:
+            self.state.set('wi_tipos', None)
+            self.state.set('wi_catalogo_campos', None)
+            self.state.set('wi_campos_por_tipo', {})
+
+        if self.state.get('wi_tipos') is None:
+            try:
+                with st.spinner("Carregando tipos de Work Item e campos do projeto..."):
+                    tipos = ado_client.list_work_item_types()
+                    catalogo = ado_client.list_project_fields()
+                self.state.set('wi_tipos', tipos)
+                self.state.set('wi_catalogo_campos', catalogo)
+                self.state.set('wi_metadados_project', ado_project)
+            except Exception as error:
+                st.error(f"❌ Não foi possível carregar os tipos de Work Item: {error}")
+                return None, None
+
+        return self.state.get('wi_tipos'), self.state.get('wi_catalogo_campos')
+
+    def _wi_campos_do_tipo(self, ado_client, tipo_nome: str):
+        """Campos de um tipo, com cache por tipo (evita rebuscar a cada rerun)."""
+        cache = self.state.get('wi_campos_por_tipo') or {}
+        if tipo_nome not in cache:
+            try:
+                with st.spinner(f"Carregando campos do tipo '{tipo_nome}'..."):
+                    cache[tipo_nome] = ado_client.get_work_item_type_fields(tipo_nome)
+                self.state.set('wi_campos_por_tipo', cache)
+            except Exception as error:
+                st.error(f"❌ Não foi possível carregar os campos de '{tipo_nome}': {error}")
+                return None
+        return cache.get(tipo_nome)
+
+    def _wi_render_tags(self, ado_client, key_prefix: str) -> str:
+        """
+        Tags: escolhe entre as que já existem no projeto E/OU digita novas.
+        Tag nova não precisa ser cadastrada antes — o Azure DevOps cria
+        sozinho quando o Work Item nasce com ela em System.Tags.
+        Retorna a string no formato que a API espera ("tag1; tag2") ou "".
+        """
+        with st.expander("🏷️ Tags (opcional)"):
+            st.button(
+                "🔄 Buscar Tags existentes no Projeto",
+                disabled=self.state.get('is_processing'),
+                key=f"btn_wi_fetch_tags_{key_prefix}",
+                on_click=self.trigger_action,
+                args=(f"wi_fetch_tags_{key_prefix}",),
+                use_container_width=True,
+            )
+            if self.state.get('current_action') == f'wi_fetch_tags_{key_prefix}' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner("Buscando Tags..."):
+                        self.state.set(f'wi_tags_existentes_{key_prefix}', ado_client.list_project_tags())
+                except Exception as error:
+                    self._flash_error(f"Não foi possível buscar Tags: {error}")
+                self.clear_action()
+                st.rerun()
+
+            existentes = self.state.get(f'wi_tags_existentes_{key_prefix}')
+            escolhidas = []
+            if existentes:
+                escolhidas = st.multiselect(
+                    "Tags existentes", options=existentes,
+                    key=f"wi_tags_select_{key_prefix}",
+                    disabled=self.state.get('is_processing'),
+                )
+            elif existentes is not None:
+                st.caption("Não há Tags cadastradas nesse projeto — use o campo abaixo pra criar.")
+            else:
+                st.caption("Busque as Tags acima se quiser reaproveitar alguma já existente.")
+
+            novas = st.text_input(
+                "Criar tag(s) nova(s)", key=f"wi_tags_novas_{key_prefix}",
+                placeholder="ex.: regressao; sprint-42",
+                disabled=self.state.get('is_processing'),
+                help="Separe por ponto e vírgula. Tags novas são criadas automaticamente no Azure DevOps junto com o Work Item.",
+            )
+            novas_lista = [t.strip() for t in (novas or "").split(";") if t.strip()]
+
+            todas = list(dict.fromkeys(list(escolhidas) + novas_lista))
+            if todas:
+                st.caption(f"Tags que vão no Work Item: {', '.join(todas)}")
+            return "; ".join(todas)
+
+    def _wi_render_pessoas(self, ado_client, key_prefix: str):
+        """
+        Lista de pessoas pra atribuir — mesma lógica do Criar Bug: varre
+        TODOS os Times do projeto, porque atribuição no Azure DevOps não é
+        restrita por Time/board. Retorna a lista (ou None se não buscou).
+        """
+        st.button(
+            "🔄 Buscar Pessoas pra Atribuir",
+            disabled=self.state.get('is_processing'),
+            key=f"btn_wi_fetch_membros_{key_prefix}",
+            on_click=self.trigger_action,
+            args=(f"wi_fetch_membros_{key_prefix}",),
+            use_container_width=True,
+            help="Busca em todos os Times do projeto. Pode levar alguns segundos em projetos com muitos Times.",
+        )
+        if self.state.get('current_action') == f'wi_fetch_membros_{key_prefix}' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Buscando pessoas em todos os Times do projeto..."):
+                    membros_por_chave = {}
+                    for equipe in ado_client.list_teams():
+                        try:
+                            for m in ado_client.list_team_members(equipe["id"]):
+                                chave = m.get("unique_name") or m.get("display_name")
+                                if chave:
+                                    membros_por_chave.setdefault(chave, m)
+                        except Exception:
+                            continue
+                    membros = sorted(membros_por_chave.values(), key=lambda m: m["display_name"].lower())
+                self.state.set(f'wi_membros_{key_prefix}', membros)
+                if not membros:
+                    self._flash_warning("Nenhuma pessoa encontrada nos Times desse projeto.")
+            except Exception as error:
+                self._flash_error(f"Não foi possível buscar Pessoas: {error}")
+            self.clear_action()
+            st.rerun()
+        return self.state.get(f'wi_membros_{key_prefix}')
+
+    def _wi_render_coluna(self, ado_client, key_prefix: str, area_path: str, tipo_nome: str):
+        """
+        Coluna do board (opcional). Ao contrário de "Atribuir a", aqui o
+        escopo de Area Path importa de verdade: um Work Item só aparece no
+        board de um Team se o escopo daquele Team incluir a Area Path dele.
+        Também pega o State que a coluna representa PRO TIPO escolhido
+        (stateMappings é por tipo de Work Item), porque a posição real no
+        board vem principalmente do State.
+
+        Retorna {'coluna', 'campo_coluna', 'state'} — tudo None se não
+        escolhido/não aplicável.
+        """
+        vazio = {"coluna": None, "campo_coluna": None, "state": None}
+        with st.expander("📋 Coluna do Board (opcional)"):
+            if not area_path:
+                st.caption("Escolha uma Area Path acima pra poder posicionar o item numa coluna de board.")
+                return vazio
+
+            st.button(
+                "🔄 Buscar Colunas do Board",
+                disabled=self.state.get('is_processing'),
+                key=f"btn_wi_fetch_colunas_{key_prefix}",
+                on_click=self.trigger_action,
+                args=(f"wi_fetch_colunas_{key_prefix}",),
+                use_container_width=True,
+            )
+            if self.state.get('current_action') == f'wi_fetch_colunas_{key_prefix}' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner("Buscando Colunas dos Boards que incluem essa Area Path..."):
+                        colunas_por_nome = {}
+                        for team in ado_client.list_teams():
+                            try:
+                                valores = ado_client.get_team_area_paths(team["id"])
+                            except Exception:
+                                continue
+                            if not self._area_path_pertence_ao_team(area_path, valores):
+                                continue
+                            try:
+                                boards = ado_client.list_boards_for_team(team["id"])
+                            except Exception:
+                                continue
+                            for board in boards:
+                                try:
+                                    colunas = ado_client.list_board_columns(team["id"], board["id"])
+                                except Exception:
+                                    continue
+                                for c in colunas:
+                                    mapeamentos = c.get("state_mappings") or {}
+                                    # Só oferece a coluna se ela realmente
+                                    # existe pro tipo escolhido — board de
+                                    # Bug não serve pra Epic, por exemplo.
+                                    if tipo_nome not in mapeamentos:
+                                        continue
+                                    colunas_por_nome.setdefault(c["name"], {
+                                        "name": c["name"], "team_id": team["id"],
+                                        "board_id": board["id"], "state": mapeamentos.get(tipo_nome),
+                                    })
+                    self.state.set(f'wi_colunas_{key_prefix}', list(colunas_por_nome.values()))
+                    if not colunas_por_nome:
+                        self._flash_warning(
+                            f"Nenhum board que inclui '{area_path}' tem coluna pro tipo '{tipo_nome}'. "
+                            "O item vai nascer na coluna padrão do estado inicial."
+                        )
+                except Exception as error:
+                    self._flash_error(f"Não foi possível buscar Colunas: {error}")
+                self.clear_action()
+                st.rerun()
+
+            colunas = self.state.get(f'wi_colunas_{key_prefix}')
+            if not colunas:
+                if colunas is not None:
+                    st.caption("Nenhuma coluna disponível — veja o aviso acima.")
+                else:
+                    st.caption("Busque as Colunas acima se quiser escolher em qual o item nasce.")
+                return vazio
+
+            nomes = ["(padrão do estado inicial)"] + [c["name"] for c in colunas]
+            escolha = st.selectbox("Coluna do Board", options=nomes, index=0,
+                                    key=f"wi_coluna_select_{key_prefix}",
+                                    disabled=self.state.get('is_processing'))
+            if escolha == nomes[0]:
+                return vazio
+
+            info = next((c for c in colunas if c["name"] == escolha), None)
+            if not info:
+                return vazio
+            try:
+                campo_coluna = ado_client.get_board_column_field_name(info["team_id"], info["board_id"])
+            except Exception as error:
+                st.caption(f"⚠️ Não foi possível descobrir o campo de coluna desse board: {error}")
+                return vazio
+            if not info.get("state"):
+                st.caption("⚠️ Essa coluna não tem um State mapeado pra esse tipo — pode nascer na coluna padrão.")
+            return {"coluna": info["name"], "campo_coluna": campo_coluna, "state": info.get("state")}
+
+    def _work_item_creation_page(self):
+        self._processing_banner()
+        st.subheader("🧱 Criar Work Item")
+        if st.button("← Voltar", key="btn_wi_back"):
+            self.state.set('show_work_item_page', False)
+            st.rerun()
+
+        if not self._get_permission_cached("criar_work_item"):
+            st.error("❌ Você não tem permissão pra acessar esta área.")
+            return
+
+        st.caption(
+            "Cria Work Items de qualquer tipo direto no Azure DevOps — os campos do formulário "
+            "vêm do processo do próprio projeto, então tipos e campos customizados da sua "
+            "organização aparecem aqui automaticamente."
+        )
+
+        conn = self._setup_azure_devops_connection(show_area_path_picker=False)
+        if conn is None:
+            return
+        ado_client, _ado_org, ado_project, _default_area_path = conn
+
+        tipos, catalogo = self._wi_carregar_metadados(ado_client, ado_project)
+        if not tipos:
+            return
+
+        st.divider()
+        modo = st.radio(
+            "O que você quer criar?",
+            options=["📝 Um Work Item", "🧩 Vários filhos de um Work Item (quebrar em Tasks)"],
+            index=0,
+            key="wi_modo_radio",
+            horizontal=True,
+            disabled=self.state.get('is_processing'),
+            help=(
+                "O segundo modo é pro fluxo de quebrar uma User Story em Tasks: escolhe a Story, "
+                "lista as Tasks, e cria todas de uma vez já vinculadas como filhas dela."
+            ),
+        )
+
+        if modo.startswith("🧩"):
+            self._wi_modo_filhos_em_lote(ado_client, ado_project, tipos, catalogo)
+        else:
+            self._wi_modo_unico(ado_client, ado_project, tipos, catalogo)
+
+    def _wi_selecionar_area_e_iteration(self, ado_client, ado_project: str, key_prefix: str):
+        """Area Path e Iteration Path (os dois opcionais). Retorna (area_path, iteration_path)."""
+        col_a, col_i = st.columns(2)
+        with col_a:
+            if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+                area_options = self.state.get('ado_available_area_paths') or []
+            else:
+                try:
+                    with st.spinner("Buscando Area Paths..."):
+                        area_options = ado_client.list_area_paths()
+                    self.state.set('ado_available_area_paths', area_options)
+                    self.state.set('ado_area_paths_project', ado_project)
+                except Exception as error:
+                    st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                    area_options = []
+            area_path = st.selectbox(
+                "Area Path (opcional)", options=area_options, index=None,
+                placeholder="Padrão do projeto...", key=f"wi_area_select_{key_prefix}",
+                disabled=self.state.get('is_processing'),
+            )
+        with col_i:
+            if self.state.get('wi_iterations_project') != ado_project:
+                self.state.set('wi_iterations', None)
+            if self.state.get('wi_iterations') is None:
+                try:
+                    with st.spinner("Buscando Iterations..."):
+                        self.state.set('wi_iterations', ado_client.list_iteration_paths())
+                    self.state.set('wi_iterations_project', ado_project)
+                except Exception:
+                    self.state.set('wi_iterations', [])
+            iteration_path = st.selectbox(
+                "Iteration / Sprint (opcional)", options=self.state.get('wi_iterations') or [], index=None,
+                placeholder="Padrão do projeto...", key=f"wi_iter_select_{key_prefix}",
+                disabled=self.state.get('is_processing'),
+            )
+        return area_path, iteration_path
+
+    def _wi_modo_unico(self, ado_client, ado_project: str, tipos: list, catalogo: dict):
+        """Modo 'um Work Item': formulário completo, montado conforme o tipo."""
+        nomes_tipos = [t["name"] for t in tipos]
+        tipo_nome = st.selectbox(
+            "Tipo de Work Item *", options=nomes_tipos, index=None,
+            placeholder="Escolha o tipo...", key="wi_tipo_select",
+            disabled=self.state.get('is_processing'),
+        )
+        if not tipo_nome:
+            st.caption("Escolha o tipo pra montar o formulário.")
+            return
+
+        campos = self._wi_campos_do_tipo(ado_client, tipo_nome)
+        if campos is None:
+            return
+
+        por_ref = {c["reference_name"]: c for c in campos}
+        valores = {}
+
+        st.divider()
+        st.markdown("##### 📌 Principais")
+        campo_titulo = por_ref.get("System.Title")
+        titulo = st.text_input(
+            "Título *", key="wi_titulo", disabled=self.state.get('is_processing'),
+            help=(campo_titulo or {}).get("help_text") or None,
+        )
+        if titulo.strip():
+            valores["System.Title"] = titulo.strip()
+
+        if "System.Description" in por_ref:
+            desc_campo = por_ref["System.Description"]
+            label = "Descrição *" if desc_campo["always_required"] else "Descrição"
+            descricao = st.text_area(label, key="wi_descricao", height=140,
+                                      disabled=self.state.get('is_processing'),
+                                      placeholder="Descreva o item...")
+            if descricao.strip():
+                tipo_desc = (catalogo.get("System.Description") or {}).get("type", "html")
+                valores["System.Description"] = (
+                    html.escape(descricao).replace("\n", "<br>") if tipo_desc == "html" else descricao.strip()
+                )
+
+        # Obrigatórios do tipo que não têm widget dedicado (ex.: Value Area,
+        # campos customizados como Custom.Bloqueado) — precisam aparecer em
+        # destaque, senão a criação falha sem a pessoa entender por quê.
+        obrigatorios_extra = [
+            c for c in campos
+            if c["always_required"]
+            and c["reference_name"] not in AzureDevOpsClient.CAMPOS_COM_WIDGET_PROPRIO
+        ]
+        if obrigatorios_extra:
+            st.caption("Campos obrigatórios desse tipo de Work Item:")
+            for c in obrigatorios_extra:
+                tipo_dado = (catalogo.get(c["reference_name"]) or {}).get("type", "string")
+                valor = self._render_campo_wi(c, tipo_dado, f"wi_obrig_{c['reference_name']}")
+                if valor is not None:
+                    valores[c["reference_name"]] = valor
+
+        st.divider()
+        st.markdown("##### 🗂️ Organização")
+        area_path, iteration_path = self._wi_selecionar_area_e_iteration(ado_client, ado_project, "unico")
+        if area_path:
+            valores["System.AreaPath"] = area_path
+        if iteration_path:
+            valores["System.IterationPath"] = iteration_path
+
+        coluna_info = self._wi_render_coluna(ado_client, "unico", area_path, tipo_nome)
+        if coluna_info.get("coluna") and coluna_info.get("campo_coluna"):
+            valores[coluna_info["campo_coluna"]] = coluna_info["coluna"]
+
+        tags = self._wi_render_tags(ado_client, "unico")
+        if tags:
+            valores["System.Tags"] = self._tag_criado_por(tags)
+        else:
+            valores["System.Tags"] = self._tag_criado_por()
+
+        st.divider()
+        st.markdown("##### 👤 Responsável")
+        membros = self._wi_render_pessoas(ado_client, "unico")
+        if membros:
+            opcoes = ["(Ninguém)"] + [f"{m['display_name']} ({m['unique_name']})" for m in membros]
+            escolha = st.selectbox("Atribuir a", options=opcoes, index=0, key="wi_assigned_select",
+                                    disabled=self.state.get('is_processing'))
+            if escolha != "(Ninguém)":
+                valores["System.AssignedTo"] = membros[opcoes.index(escolha) - 1]["unique_name"]
+        elif membros is None:
+            st.caption("Busque as Pessoas acima se quiser já atribuir o item a alguém.")
+
+        st.divider()
+        st.markdown("##### 🔗 Vínculo com um pai (opcional)")
+        parent_id = self._wi_selecionar_pai(ado_client, ado_project, tipos, "unico")
+
+        # Demais campos do tipo, pra quem precisar de algo específico.
+        ja_tratados = set(AzureDevOpsClient.CAMPOS_COM_WIDGET_PROPRIO) | {
+            c["reference_name"] for c in obrigatorios_extra
+        }
+        restantes = [c for c in campos if c["reference_name"] not in ja_tratados]
+        destaque = [r for r in self._WI_CAMPOS_DESTAQUE if r in {c["reference_name"] for c in restantes}]
+        ordenados = (
+            [next(c for c in restantes if c["reference_name"] == ref) for ref in destaque]
+            + sorted(
+                (c for c in restantes if c["reference_name"] not in destaque),
+                key=lambda c: c["name"].lower(),
+            )
+        )
+        if ordenados:
+            st.divider()
+            with st.expander(f"➕ Outros campos de '{tipo_nome}' ({len(ordenados)} disponíveis)"):
+                st.caption(
+                    "Todos os campos editáveis desse tipo no processo do seu projeto. "
+                    "Deixe em branco o que não quiser preencher."
+                )
+                for c in ordenados:
+                    meta = catalogo.get(c["reference_name"]) or {}
+                    if meta.get("read_only") or meta.get("type") in ("history", "treePath"):
+                        continue
+                    valor = self._render_campo_wi(
+                        c, meta.get("type", "string"), f"wi_extra_{c['reference_name']}", membros
+                    )
+                    if valor is not None and valor != "":
+                        valores[c["reference_name"]] = valor
+
+        st.divider()
+        pode_criar = bool(titulo.strip()) and all(
+            c["reference_name"] in valores for c in obrigatorios_extra
+            if (catalogo.get(c["reference_name"]) or {}).get("type") != "boolean"
+        )
+        if st.button("🧱 Criar Work Item", type="primary", use_container_width=True,
+                      disabled=self.state.get('is_processing') or not pode_criar,
+                      key="btn_wi_criar"):
+            self.state.set('wi_snapshot', {
+                "tipo": tipo_nome, "campos": valores, "parent_id": parent_id,
+                "state": coluna_info.get("state"), "coluna": coluna_info.get("coluna"),
+            })
+            st.rerun()
+        if not pode_criar:
+            faltando = []
+            if not titulo.strip():
+                faltando.append("Título")
+            for c in obrigatorios_extra:
+                if c["reference_name"] not in valores and (catalogo.get(c["reference_name"]) or {}).get("type") != "boolean":
+                    faltando.append(c["name"])
+            if faltando:
+                st.caption(f"Preencha: {', '.join(faltando)}.")
+
+        self._wi_confirmar_e_criar(ado_client)
+
+    def _wi_selecionar_pai(self, ado_client, ado_project: str, tipos: list, key_prefix: str):
+        """
+        Escolha opcional de um Work Item pai. Retorna o id (int) ou None.
+        Tem dois caminhos: buscar por Area Path (lista pra escolher) ou
+        digitar o ID direto, pra quem já sabe qual é.
+        """
+        usar_pai = st.checkbox(
+            "Vincular este item como filho de outro Work Item",
+            key=f"wi_usar_pai_{key_prefix}",
+            disabled=self.state.get('is_processing'),
+            help="Cria o vínculo Parent/Child — é o que faz o item aparecer na lista de filhos do pai, no Azure DevOps.",
+        )
+        if not usar_pai:
+            return None
+
+        como = st.radio(
+            "Como escolher o pai?",
+            options=["🔎 Buscar no board", "#️⃣ Digitar o ID"],
+            index=0, horizontal=True, key=f"wi_como_pai_{key_prefix}",
+            disabled=self.state.get('is_processing'),
+        )
+        if como.startswith("#"):
+            id_txt = st.text_input("ID do Work Item pai", key=f"wi_pai_id_{key_prefix}",
+                                    disabled=self.state.get('is_processing'))
+            if id_txt.strip().isdigit():
+                return int(id_txt.strip())
+            if id_txt.strip():
+                st.caption("⚠️ Informe só o número do ID.")
+            return None
+
+        pais = self._wi_buscar_work_items(ado_client, ado_project, tipos, key_prefix)
+        if not pais:
+            return None
+        rotulos = {f"{p['id']} - {p['title']} ({p['type']}, {p['state']})": p for p in pais}
+        escolha = st.selectbox("Work Item pai", options=list(rotulos.keys()), index=None,
+                                placeholder="Escolha o pai...", key=f"wi_pai_select_{key_prefix}",
+                                disabled=self.state.get('is_processing'))
+        return rotulos[escolha]["id"] if escolha else None
+
+    def _wi_buscar_work_items(self, ado_client, ado_project: str, tipos: list, key_prefix: str):
+        """
+        Busca Work Items de um Area Path pra servir de pai. Mostra filtro
+        de tipo (padrão: User Story, que é o caso de uso do time). Retorna
+        a lista já filtrada, ou [] se ainda não buscou.
+        """
+        if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+            area_options = self.state.get('ado_available_area_paths') or []
+        else:
+            try:
+                area_options = ado_client.list_area_paths()
+                self.state.set('ado_available_area_paths', area_options)
+                self.state.set('ado_area_paths_project', ado_project)
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                return []
+
+        col_ap, col_tp = st.columns(2)
+        with col_ap:
+            area_busca = st.selectbox(
+                "Buscar em qual Area Path?", options=area_options, index=0 if area_options else None,
+                key=f"wi_pai_area_{key_prefix}", disabled=self.state.get('is_processing'),
+            )
+        with col_tp:
+            nomes_tipos = [t["name"] for t in tipos]
+            idx_padrao = nomes_tipos.index("User Story") if "User Story" in nomes_tipos else 0
+            tipos_filtro = st.multiselect(
+                "Filtrar por tipo", options=nomes_tipos, default=[nomes_tipos[idx_padrao]] if nomes_tipos else [],
+                key=f"wi_pai_tipos_{key_prefix}", disabled=self.state.get('is_processing'),
+            )
+
+        st.button(
+            "🔄 Buscar Work Items",
+            disabled=self.state.get('is_processing') or not area_busca,
+            key=f"btn_wi_fetch_pais_{key_prefix}",
+            on_click=self.trigger_action,
+            args=(f"wi_fetch_pais_{key_prefix}",),
+            use_container_width=True,
+        )
+        if self.state.get('current_action') == f'wi_fetch_pais_{key_prefix}' and not self.state.get('show_interrupt_modal'):
+            try:
+                with st.spinner("Buscando Work Items..."):
+                    # excluded_states=set() porque aqui a pessoa pode
+                    # querer pendurar filhos em item de qualquer estado —
+                    # diferente dos fluxos de geração de teste, que
+                    # ignoram "Finalizado"/"Backlog" de propósito.
+                    itens = ado_client.fetch_work_items_by_area_path(area_busca, excluded_states=set())
+                self.state.set(f'wi_pais_{key_prefix}', itens)
+                if not itens:
+                    self._flash_warning("Nenhum Work Item encontrado nessa Area Path.")
+            except Exception as error:
+                self._flash_error(f"Não foi possível buscar Work Items: {error}")
+                self.state.set(f'wi_pais_{key_prefix}', [])
+            self.clear_action()
+            st.rerun()
+
+        itens = self.state.get(f'wi_pais_{key_prefix}')
+        if itens is None:
+            st.caption("Busque os Work Items acima pra escolher o pai.")
+            return []
+        if tipos_filtro:
+            itens = [i for i in itens if i["type"] in tipos_filtro]
+        if not itens:
+            st.caption("Nenhum Work Item desse tipo nessa Area Path — troque o filtro ou a Area Path.")
+        return itens
+
+    def _wi_modo_filhos_em_lote(self, ado_client, ado_project: str, tipos: list, catalogo: dict):
+        """
+        Modo 'quebrar em Tasks': escolhe um Work Item pai (ex.: User Story),
+        lista vários filhos (título + descrição opcional), e cria todos de
+        uma vez já vinculados como filhos dele.
+        """
+        st.markdown("##### 1️⃣ Escolha o Work Item pai")
+        pais = self._wi_buscar_work_items(ado_client, ado_project, tipos, "lote")
+        if not pais:
+            return
+        rotulos = {f"{p['id']} - {p['title']} ({p['type']}, {p['state']})": p for p in pais}
+        escolha_pai = st.selectbox("Work Item pai *", options=list(rotulos.keys()), index=None,
+                                    placeholder="Escolha o pai...", key="wi_lote_pai_select",
+                                    disabled=self.state.get('is_processing'))
+        if not escolha_pai:
+            return
+        pai = rotulos[escolha_pai]
+
+        # Mostra a descrição do pai — é dela que a pessoa tira as tasks.
+        if self.state.get('wi_lote_pai_detalhe_id') != pai["id"]:
+            try:
+                with st.spinner("Carregando descrição do pai..."):
+                    detalhes = ado_client.get_work_items_full_details([pai["id"]])
+                self.state.set('wi_lote_pai_detalhe', detalhes[0] if detalhes else None)
+                self.state.set('wi_lote_pai_detalhe_id', pai["id"])
+            except Exception:
+                self.state.set('wi_lote_pai_detalhe', None)
+                self.state.set('wi_lote_pai_detalhe_id', pai["id"])
+        detalhe = self.state.get('wi_lote_pai_detalhe')
+        if detalhe and (detalhe.get("description") or detalhe.get("acceptance_criteria")):
+            with st.expander(f"📄 Contexto de '{pai['title']}'", expanded=True):
+                if detalhe.get("description"):
+                    st.markdown("**Descrição:**")
+                    st.write(detalhe["description"])
+                if detalhe.get("acceptance_criteria"):
+                    st.markdown("**Critérios de Aceite:**")
+                    st.write(detalhe["acceptance_criteria"])
+
+        st.divider()
+        st.markdown("##### 2️⃣ Configure os filhos")
+        nomes_tipos = [t["name"] for t in tipos]
+        idx_task = nomes_tipos.index("Task") if "Task" in nomes_tipos else 0
+        tipo_filho = st.selectbox("Tipo dos filhos *", options=nomes_tipos, index=idx_task,
+                                   key="wi_lote_tipo_filho", disabled=self.state.get('is_processing'))
+
+        area_path, iteration_path = self._wi_selecionar_area_e_iteration(ado_client, ado_project, "lote")
+        if not area_path:
+            st.caption(f"ℹ️ Sem Area Path escolhida, os filhos herdam a do pai: `{pai.get('area_path') or ado_project}`")
+
+        membros = None
+        with st.expander("👤 Atribuir todos a alguém (opcional)"):
+            membros = self._wi_render_pessoas(ado_client, "lote")
+        atribuir_a = None
+        if membros:
+            opcoes = ["(Ninguém)"] + [f"{m['display_name']} ({m['unique_name']})" for m in membros]
+            escolha = st.selectbox("Atribuir todos a", options=opcoes, index=0,
+                                    key="wi_lote_assigned", disabled=self.state.get('is_processing'))
+            if escolha != "(Ninguém)":
+                atribuir_a = membros[opcoes.index(escolha) - 1]["unique_name"]
+
+        tags = self._wi_render_tags(ado_client, "lote")
+
+        st.divider()
+        st.markdown(f"##### 3️⃣ Liste os(as) {tipo_filho}(s)")
+        filhos = self._wi_render_lista_filhos()
+
+        preenchidos = [f for f in filhos if f["titulo"].strip()]
+        st.divider()
+        if st.button(
+            f"🧩 Criar {len(preenchidos)} {tipo_filho}(s) dentro de '{pai['title']}'",
+            type="primary", use_container_width=True,
+            disabled=self.state.get('is_processing') or not preenchidos,
+            key="btn_wi_lote_criar",
+        ):
+            self.state.set('wi_lote_snapshot', {
+                "pai": pai, "tipo_filho": tipo_filho,
+                "area_path": area_path or pai.get("area_path"),
+                "iteration_path": iteration_path,
+                "atribuir_a": atribuir_a, "tags": tags,
+                "filhos": [{"titulo": f["titulo"].strip(), "descricao": f["descricao"].strip()} for f in preenchidos],
+            })
+            st.rerun()
+        if not preenchidos:
+            st.caption("Preencha ao menos um título de filho.")
+
+        self._wi_confirmar_e_criar_lote(ado_client, catalogo)
+
+    def _wi_render_lista_filhos(self) -> list:
+        """
+        Lista dinâmica de filhos (título + descrição) — mesmo padrão dos
+        Passos de Reprodução do Criar Bug: mínimo 1, adicionar/remover por
+        UUID (chave estável mesmo removendo item do meio).
+        """
+        chave = 'wi_lote_filhos'
+        if self.state.get(chave) is None:
+            self.state.set(chave, [{"uid": str(uuid.uuid4()), "titulo": "", "descricao": ""}])
+
+        lista = self.state.get(chave)
+        resultado = []
+        for i, item in enumerate(lista):
+            uid = item["uid"]
+            col_t, col_d, col_x = st.columns([5, 5, 1])
+            with col_t:
+                titulo = st.text_input(f"Título {i + 1} *", value=item.get("titulo", ""),
+                                        key=f"wi_filho_titulo_{uid}",
+                                        disabled=self.state.get('is_processing'))
+            with col_d:
+                descricao = st.text_input("Descrição (opcional)", value=item.get("descricao", ""),
+                                           key=f"wi_filho_desc_{uid}",
+                                           disabled=self.state.get('is_processing'))
+            with col_x:
+                st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+                if st.button("🗑️", key=f"wi_filho_del_{uid}",
+                              disabled=len(lista) <= 1 or self.state.get('is_processing')):
+                    self.state.set(chave, [p for p in lista if p["uid"] != uid])
+                    st.rerun()
+            resultado.append({"uid": uid, "titulo": titulo, "descricao": descricao})
+
+        self.state.set(chave, resultado)
+        if st.button("➕ Adicionar outro", key="wi_filho_add", disabled=self.state.get('is_processing')):
+            atual = self.state.get(chave)
+            atual.append({"uid": str(uuid.uuid4()), "titulo": "", "descricao": ""})
+            self.state.set(chave, atual)
+            st.rerun()
+        return resultado
+
+    def _wi_confirmar_e_criar(self, ado_client):
+        """Confirmação + criação de UM Work Item (modo único)."""
+        snapshot = self.state.get('wi_snapshot')
+        resultado_anterior = self.state.get('wi_ultimo_criado')
+        if resultado_anterior:
+            st.success(f"🎉 {resultado_anterior['tipo']} criado: **{resultado_anterior['titulo']}** (ID {resultado_anterior['id']})")
+            for linha in resultado_anterior.get("log", []):
+                st.markdown(linha)
+            if st.button("🧱 Criar outro", key="btn_wi_criar_outro", use_container_width=True):
+                self.state.set('wi_ultimo_criado', None)
+                self.state.set('wi_snapshot', None)
+                st.rerun()
+            return
+
+        if not snapshot:
+            return
+
+        if self.state.get('current_action') == 'wi_confirm_criar' and not self.state.get('show_interrupt_modal'):
+            try:
+                resultado = ado_client.create_work_item(
+                    snapshot["tipo"], snapshot["campos"],
+                    parent_id=snapshot.get("parent_id"), state=snapshot.get("state"),
+                )
+                log = []
+                if snapshot.get("parent_id"):
+                    log.append(f"↳ Vinculado como filho do Work Item {snapshot['parent_id']} (Parent/Child)")
+                if snapshot.get("coluna"):
+                    log.append(f"↳ Nasceu na coluna '{snapshot['coluna']}'")
+                if resultado.get("state_warning"):
+                    log.append(f"⚠️ {resultado['state_warning']}")
+                if resultado.get("url"):
+                    log.append(f"\n🔗 Abrir no Azure DevOps: {resultado['url']}")
+                self._log("Criar Work Item", "Criar Work Item",
+                          f"{snapshot['tipo']} #{resultado['id']} '{snapshot['campos'].get('System.Title', '')}'")
+                self.state.set('wi_ultimo_criado', {
+                    "id": resultado["id"], "tipo": snapshot["tipo"],
+                    "titulo": snapshot["campos"].get("System.Title", ""), "log": log,
+                })
+                self.state.set('wi_snapshot', None)
+            except Exception as error:
+                self._flash_error(f"Não foi possível criar o Work Item: {error}")
+            self.clear_action()
+            st.rerun()
+
+        st.warning(
+            f"Vai criar um **{snapshot['tipo']}** chamado **{snapshot['campos'].get('System.Title', '')}** "
+            f"com {len(snapshot['campos'])} campo(s) preenchido(s)"
+            + (f", como filho do Work Item {snapshot['parent_id']}" if snapshot.get("parent_id") else "")
+            + ". Isso cria um item real no Azure DevOps e **não pode ser desfeito pelo app**. Confirma?"
+        )
+        with st.expander("🔍 Ver exatamente o que vai ser enviado"):
+            for ref, valor in snapshot["campos"].items():
+                st.markdown(f"- `{ref}` = {valor}")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✅ Sim, criar", type="primary", use_container_width=True, key="btn_wi_confirm_sim"):
+                self.trigger_action('wi_confirm_criar')
+                st.rerun()
+        with c2:
+            if st.button("✖ Cancelar", use_container_width=True, key="btn_wi_confirm_nao"):
+                self.state.set('wi_snapshot', None)
+                st.rerun()
+
+    def _wi_confirmar_e_criar_lote(self, ado_client, catalogo: dict):
+        """Confirmação + criação em lote dos filhos de um pai."""
+        snapshot = self.state.get('wi_lote_snapshot')
+        resultado_anterior = self.state.get('wi_lote_ultimo')
+        if resultado_anterior:
+            st.success(resultado_anterior["resumo"])
+            for linha in resultado_anterior.get("log", []):
+                st.markdown(linha)
+            if st.button("🧩 Criar outro lote", key="btn_wi_lote_outro", use_container_width=True):
+                self.state.set('wi_lote_ultimo', None)
+                self.state.set('wi_lote_snapshot', None)
+                self.state.set('wi_lote_filhos', None)
+                st.rerun()
+            return
+
+        if not snapshot:
+            return
+
+        if self.state.get('current_action') == 'wi_lote_confirm' and not self.state.get('show_interrupt_modal'):
+            log = []
+            criados = 0
+            tipo_desc = (catalogo.get("System.Description") or {}).get("type", "html")
+            try:
+                for filho in snapshot["filhos"]:
+                    campos = {"System.Title": filho["titulo"]}
+                    if filho.get("descricao"):
+                        campos["System.Description"] = (
+                            html.escape(filho["descricao"]).replace("\n", "<br>")
+                            if tipo_desc == "html" else filho["descricao"]
+                        )
+                    if snapshot.get("area_path"):
+                        campos["System.AreaPath"] = snapshot["area_path"]
+                    if snapshot.get("iteration_path"):
+                        campos["System.IterationPath"] = snapshot["iteration_path"]
+                    if snapshot.get("atribuir_a"):
+                        campos["System.AssignedTo"] = snapshot["atribuir_a"]
+                    campos["System.Tags"] = self._tag_criado_por(snapshot.get("tags") or None)
+                    try:
+                        res = ado_client.create_work_item(
+                            snapshot["tipo_filho"], campos, parent_id=snapshot["pai"]["id"],
+                        )
+                        criados += 1
+                        link = f" — [abrir]({res['url']})" if res.get("url") else ""
+                        log.append(f"✅ {snapshot['tipo_filho']} {res['id']}: **{filho['titulo']}**{link}")
+                        if res.get("state_warning"):
+                            log.append(f"  ⚠️ {res['state_warning']}")
+                    except Exception as error:
+                        log.append(f"❌ Falhou '{filho['titulo']}': {error}")
+                resumo = (
+                    f"🎉 {criados} de {len(snapshot['filhos'])} {snapshot['tipo_filho']}(s) "
+                    f"criado(s) dentro de '{snapshot['pai']['title']}' (Work Item {snapshot['pai']['id']})"
+                )
+                self._log("Criar Work Item (lote)", "Criar Work Item",
+                          f"{criados} {snapshot['tipo_filho']}(s) sob o Work Item {snapshot['pai']['id']}")
+                self.state.set('wi_lote_ultimo', {"resumo": resumo, "log": log})
+                self.state.set('wi_lote_snapshot', None)
+            except Exception as error:
+                self._flash_error(f"Não foi possível criar os filhos: {error}")
+            self.clear_action()
+            st.rerun()
+
+        st.warning(
+            f"Vai criar **{len(snapshot['filhos'])} {snapshot['tipo_filho']}(s)** como filhos de "
+            f"**{snapshot['pai']['title']}** (Work Item {snapshot['pai']['id']}). "
+            "Isso cria itens reais no Azure DevOps e **não pode ser desfeito pelo app**. Confirma?"
+        )
+        with st.expander("🔍 Ver a lista", expanded=True):
+            for f in snapshot["filhos"]:
+                st.markdown(f"- **{f['titulo']}**" + (f" — {f['descricao']}" if f.get("descricao") else ""))
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✅ Sim, criar todos", type="primary", use_container_width=True, key="btn_wi_lote_sim"):
+                self.trigger_action('wi_lote_confirm')
+                st.rerun()
+        with c2:
+            if st.button("✖ Cancelar", use_container_width=True, key="btn_wi_lote_nao"):
+                self.state.set('wi_lote_snapshot', None)
+                st.rerun()
+
     def _bug_creation_page(self):
         self._processing_banner()
         st.markdown('<div id="bug-form-top-anchor"></div>', unsafe_allow_html=True)
@@ -8670,7 +9612,12 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "Passos de Reprodução pré-preenchidos) ou direto no Work Item principal, sem "
             "depender de nenhum Caso. Campos extras opcionais: System Info, Acceptance "
             "Criteria, Discussion, e evidências em imagem (sobem como anexo do Bug e ficam "
-            "também embutidas no System Info)"
+            "também embutidas no System Info)\n"
+            "- **🧱 Criar Work Item**: cria Work Items de qualquer tipo que o processo do "
+            "projeto permita (User Story, Epic, Feature, Task, Spike, tipos customizados...), "
+            "com o formulário montado a partir dos metadados do próprio projeto — campo "
+            "customizado aparece sozinho. Tem modo de criar **vários filhos de uma vez** sob "
+            "um pai (quebrar uma User Story em Tasks), e dá pra criar tag nova na hora"
         )
         st.caption(
             "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "
@@ -8949,6 +9896,10 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
         if self.state.get('show_bug_page'):
             self._bug_creation_page()
+            return
+
+        if self.state.get('show_work_item_page'):
+            self._work_item_creation_page()
             return
 
         self._progress()
