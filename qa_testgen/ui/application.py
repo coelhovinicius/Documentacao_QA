@@ -5304,9 +5304,11 @@ class UserInterface:
             return
 
         st.caption(
-            "Cria um Bug diretamente no Azure DevOps — livremente, ou a partir de um Caso de "
-            "Teste já vinculado a um Work Item específico (nesse caso, a maior parte das "
-            "informações já vem preenchida, e o Bug fica automaticamente vinculado de volta)."
+            "Cria um Bug diretamente no Azure DevOps — livremente, ou a partir de um Work Item "
+            "com Casos de Teste relacionados. Nesse segundo modo, dá pra vincular a um Caso de "
+            "Teste específico (título e Passos de Reprodução já vêm preenchidos, e o Bug fica "
+            "vinculado de volta a ele) ou abrir direto no Work Item principal, sem escolher um "
+            "Caso específico."
         )
 
         conn = self._setup_azure_devops_connection(show_area_path_picker=False)
@@ -5414,57 +5416,84 @@ class UserInterface:
             return
         work_item_escolhido = wi_labels[escolha_wi]
 
-        with st.container(key="azure_blue_btn_fetch_tc_bug"):
-            st.button(
-                "🔄 Buscar Casos de Teste vinculados a esse Work Item",
-                disabled=self.state.get('is_processing'),
-                key="btn_fetch_tc_bug",
-                on_click=self.trigger_action,
-                args=("fetch_tc_bug",),
-                use_container_width=True,
-            )
-        if self.state.get('current_action') == 'fetch_tc_bug' and not self.state.get('show_interrupt_modal'):
-            try:
-                with st.spinner("Buscando Casos de Teste vinculados..."):
-                    casos = ado_client.get_existing_test_cases_full(work_item_escolhido['id'])
-                self.state.set('bug_test_cases', casos)
-                if f'bug_caso_select_{versao}' in st.session_state:
-                    del st.session_state[f'bug_caso_select_{versao}']
-                if not casos:
-                    self._flash_warning("Esse Work Item não tem nenhum Caso de Teste vinculado no Azure DevOps.")
-            except Exception as error:
-                self._flash_error(f"Não foi possível buscar Casos de Teste: {error}")
-                self.state.set('bug_test_cases', [])
-            self.clear_action()
-            st.rerun()
-
-        casos = self.state.get('bug_test_cases') or []
-        if not casos:
-            st.caption("Busque os Casos de Teste vinculados acima pra continuar.")
-            return
-
-        caso_labels = {f"{c['id']} - {c['titulo']}": c for c in casos}
-        escolha_caso = st.selectbox(
-            "Caso de Teste de origem", options=list(caso_labels.keys()), index=None,
-            placeholder="Escolha um Caso de Teste...", key=f"bug_caso_select_{versao}",
+        vinculo_modo = st.radio(
+            "Vincular o Bug a...",
+            options=["🎯 Um Caso de Teste específico", "📌 Direto no Work Item (sem Caso específico)"],
+            index=0,
+            key=f"bug_vinculo_modo_{versao}",
+            horizontal=True,
             disabled=self.state.get('is_processing'),
+            help=(
+                "Escolha a segunda opção quando o problema não é de um Caso de Teste "
+                "específico, mas sim do Work Item principal como um todo (ex.: algo que "
+                "afeta vários Casos relacionados, ou que você percebeu sem estar "
+                "executando um Caso específico)."
+            ),
         )
-        if not escolha_caso:
-            return
-        caso_escolhido = caso_labels[escolha_caso]
 
-        if self.state.get('bug_de_caso_repro_prefilled_from') != caso_escolhido['id']:
-            passos_iniciais = self._montar_passos_repro_de_caso(caso_escolhido)
+        caso_escolhido = None
+        if vinculo_modo.startswith("🎯"):
+            with st.container(key="azure_blue_btn_fetch_tc_bug"):
+                st.button(
+                    "🔄 Buscar Casos de Teste vinculados a esse Work Item",
+                    disabled=self.state.get('is_processing'),
+                    key="btn_fetch_tc_bug",
+                    on_click=self.trigger_action,
+                    args=("fetch_tc_bug",),
+                    use_container_width=True,
+                )
+            if self.state.get('current_action') == 'fetch_tc_bug' and not self.state.get('show_interrupt_modal'):
+                try:
+                    with st.spinner("Buscando Casos de Teste vinculados..."):
+                        casos = ado_client.get_existing_test_cases_full(work_item_escolhido['id'])
+                    self.state.set('bug_test_cases', casos)
+                    if f'bug_caso_select_{versao}' in st.session_state:
+                        del st.session_state[f'bug_caso_select_{versao}']
+                    if not casos:
+                        self._flash_warning("Esse Work Item não tem nenhum Caso de Teste vinculado no Azure DevOps.")
+                except Exception as error:
+                    self._flash_error(f"Não foi possível buscar Casos de Teste: {error}")
+                    self.state.set('bug_test_cases', [])
+                self.clear_action()
+                st.rerun()
+
+            casos = self.state.get('bug_test_cases') or []
+            if not casos:
+                st.caption("Busque os Casos de Teste vinculados acima pra continuar.")
+                return
+
+            caso_labels = {f"{c['id']} - {c['titulo']}": c for c in casos}
+            escolha_caso = st.selectbox(
+                "Caso de Teste de origem", options=list(caso_labels.keys()), index=None,
+                placeholder="Escolha um Caso de Teste...", key=f"bug_caso_select_{versao}",
+                disabled=self.state.get('is_processing'),
+            )
+            if not escolha_caso:
+                return
+            caso_escolhido = caso_labels[escolha_caso]
+
+        # Chave usada só pra saber SE precisa reprefill os Passos de
+        # Reprodução (muda de Caso, ou alterna entre Caso/Work Item) — sem
+        # isso, qualquer rerun do Streamlit (ex.: digitar em outro campo)
+        # reapagaria o que a pessoa já tivesse editado manualmente.
+        chave_prefill_atual = caso_escolhido['id'] if caso_escolhido else '__sem_caso__'
+        if self.state.get('bug_de_caso_repro_prefilled_from') != chave_prefill_atual:
+            passos_iniciais = self._montar_passos_repro_de_caso(caso_escolhido) if caso_escolhido else [""]
             self.state.set('bug_de_caso_repro_steps_list', [
                 {"uid": str(uuid.uuid4()), "texto": t} for t in passos_iniciais
             ])
-            self.state.set('bug_de_caso_repro_prefilled_from', caso_escolhido['id'])
+            self.state.set('bug_de_caso_repro_prefilled_from', chave_prefill_atual)
 
         st.divider()
         st.markdown("##### 🐞 Detalhes do Bug")
-        st.caption("Título e Passos de Reprodução já vêm preenchidos a partir do Caso de Teste — ajuste se precisar.")
+        if caso_escolhido:
+            st.caption("Título e Passos de Reprodução já vêm preenchidos a partir do Caso de Teste — ajuste se precisar.")
+            titulo_padrao = f"Bug: {caso_escolhido['titulo']}"
+        else:
+            st.caption("Bug será aberto direto no Work Item principal, sem vincular a um Caso de Teste específico.")
+            titulo_padrao = f"Bug: {work_item_escolhido['title']}"
         titulo = st.text_input(
-            "Título *", value=f"Bug: {caso_escolhido['titulo']}", key=f"bug_titulo_de_caso_{versao}",
+            "Título *", value=titulo_padrao, key=f"bug_titulo_de_caso_{versao}",
             disabled=self.state.get('is_processing'),
         )
         descricao = st.text_area(
@@ -5509,7 +5538,7 @@ class UserInterface:
                     "system_info": extras['system_info'], "acceptance_criteria": extras['acceptance_criteria'],
                     "discussion": extras['discussion'], "imagens": extras['imagens'],
                     "vinculo": {
-                        "caso_id": caso_escolhido['id'], "caso_titulo": caso_escolhido['titulo'],
+                        **({"caso_id": caso_escolhido['id'], "caso_titulo": caso_escolhido['titulo']} if caso_escolhido else {}),
                         "wi_id": work_item_escolhido['id'], "wi_titulo": work_item_escolhido['title'],
                     },
                 })
@@ -5676,8 +5705,10 @@ class UserInterface:
 
         vinculo = dados.get('vinculo')
         if vinculo:
-            ado_client.link_bug_to_test_case(resultado['id'], vinculo['caso_id'])
-            ado_client.link_bug_to_related_work_item(resultado['id'], vinculo['wi_id'])
+            if vinculo.get('caso_id'):
+                ado_client.link_bug_to_test_case(resultado['id'], vinculo['caso_id'])
+            if vinculo.get('wi_id'):
+                ado_client.link_bug_to_related_work_item(resultado['id'], vinculo['wi_id'])
         return resultado, avisos
 
     def _iniciar_novo_bug(self, key_prefix: str):
@@ -5721,9 +5752,13 @@ class UserInterface:
                 for aviso in avisos:
                     log.append(aviso)
                 if vinculo:
-                    log.append(f"↳ Vinculado ao Caso de Teste '{vinculo['caso_titulo']}' (Caso {vinculo['caso_id']}) — Tested By")
+                    if vinculo.get('caso_id'):
+                        log.append(f"↳ Vinculado ao Caso de Teste '{vinculo['caso_titulo']}' (Caso {vinculo['caso_id']}) — Tested By")
                     log.append(f"↳ Vinculado ao Work Item '{vinculo['wi_titulo']}' (Work Item {vinculo['wi_id']}) — Related")
-                    detalhe_log += f" — a partir do Caso {vinculo['caso_id']} (Work Item {vinculo['wi_id']})"
+                    if vinculo.get('caso_id'):
+                        detalhe_log += f" — a partir do Caso {vinculo['caso_id']} (Work Item {vinculo['wi_id']})"
+                    else:
+                        detalhe_log += f" — direto no Work Item {vinculo['wi_id']} (sem Caso específico)"
                 else:
                     detalhe_log += " — modo livre"
                 if resultado.get('url'):
@@ -5829,10 +5864,15 @@ class UserInterface:
                         st.markdown(f"**Discussion:**\n\n{dados['discussion']}")
 
             vinculo = dados.get('vinculo')
-            if vinculo:
+            if vinculo and vinculo.get('caso_id'):
                 st.info(
                     f"Esse Bug será vinculado automaticamente ao Caso de Teste **{vinculo['caso_titulo']}** "
                     f"(Tested By) e ao Work Item **{vinculo['wi_titulo']}** (Related)."
+                )
+            elif vinculo:
+                st.info(
+                    f"Esse Bug será vinculado automaticamente ao Work Item **{vinculo['wi_titulo']}** "
+                    "(Related), sem um Caso de Teste específico."
                 )
 
             st.warning(
@@ -5904,7 +5944,7 @@ class UserInterface:
         # já aconteceu ao incrementar form_versao acima; isso aqui só evita
         # que session_state acumule lixo de reinícios anteriores.
         for k in list(st.session_state.keys()):
-            if k.startswith((f'bug_wi_select_', f'bug_caso_select_', f'bug_coluna_select_{key_prefix}',
+            if k.startswith((f'bug_wi_select_', f'bug_caso_select_', f'bug_vinculo_modo_', f'bug_coluna_select_{key_prefix}',
                               f'bug_tags_select_{key_prefix}', f'bug_membro_select_{key_prefix}',
                               f'bug_prioridade_{key_prefix}', f'bug_severidade_{key_prefix}',
                               f'bug_system_info_{key_prefix}', f'bug_acceptance_criteria_{key_prefix}',
@@ -8590,10 +8630,12 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "**excluir um grupo é exclusivo do dono do app**, mesmo pra quem tem a permissão\n"
             "- **🧠 Mapa Mental**: exporta em SVG ou PDF sempre com tudo expandido no arquivo, "
             "independente do que estiver aberto/fechado na tela\n"
-            "- **🐛 Criar Bug**: cria um Bug no Azure DevOps livremente, ou a partir de um Caso "
-            "de Teste já vinculado a um Work Item (título e Passos de Reprodução pré-preenchidos). "
-            "Campos extras opcionais: System Info, Acceptance Criteria, Discussion, e evidências "
-            "em imagem (sobem como anexo do Bug e ficam também embutidas no System Info)"
+            "- **🐛 Criar Bug**: cria um Bug no Azure DevOps livremente, ou a partir de um Work "
+            "Item com Casos de Teste relacionados — vinculando a um Caso específico (título e "
+            "Passos de Reprodução pré-preenchidos) ou direto no Work Item principal, sem "
+            "depender de nenhum Caso. Campos extras opcionais: System Info, Acceptance "
+            "Criteria, Discussion, e evidências em imagem (sobem como anexo do Bug e ficam "
+            "também embutidas no System Info)"
         )
         st.caption(
             "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "
