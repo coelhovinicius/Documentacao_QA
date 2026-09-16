@@ -5057,7 +5057,6 @@ class UserInterface:
                 with st.spinner("Buscando Colunas dos Boards que realmente incluem essa Area Path..."):
                     teams = ado_client.list_teams()
                     colunas_por_nome = {}
-                    equipes_no_escopo = []
                     algum_board_encontrado = False
                     for team in teams:
                         try:
@@ -5066,7 +5065,6 @@ class UserInterface:
                             continue
                         if not self._area_path_pertence_ao_team(area_path_escolhida, valores_time):
                             continue
-                        equipes_no_escopo.append(team)
                         try:
                             boards = ado_client.list_boards_for_team(team["id"])
                         except Exception:
@@ -5084,16 +5082,6 @@ class UserInterface:
                                         "state_bug": (c.get("state_mappings") or {}).get("Bug"),
                                     })
                 self.state.set(f'bug_colunas_combinadas_{key_prefix}', list(colunas_por_nome.values()))
-                # Guardado à parte da coluna escolhida — "Atribuir a" usa TODOS
-                # os Teams cujo escopo de Area Path bate (não só o Team "dono"
-                # da coluna escolhida). Sem isso, times "guarda-chuva" (o Team
-                # padrão do projeto, com escopo na raiz e geralmente só o
-                # dono do PAT como membro) "ganhavam" nomes de coluna
-                # genéricos (ex.: "New", "Closed") por pura ordem de
-                # iteração, e a lista de pessoas pra atribuir vinha vazia ou
-                # só com o dono do PAT, mesmo quando o Team de verdade daquela
-                # Area Path tinha gente de sobra.
-                self.state.set(f'bug_equipes_no_escopo_{key_prefix}', equipes_no_escopo)
                 if not algum_board_encontrado:
                     self._flash_error(
                         f"Nenhum Team com Board configurado inclui a Area Path '{area_path_escolhida}' no "
@@ -5174,17 +5162,33 @@ class UserInterface:
                     on_click=self.trigger_action,
                     args=(f"fetch_membros_{key_prefix}",),
                     use_container_width=True,
+                    help=(
+                        "Busca em todos os Times do projeto — não fica limitado ao Time "
+                        "da Area Path escolhida, já que o Azure DevOps permite atribuir "
+                        "qualquer Work Item a qualquer pessoa do projeto. Pode levar "
+                        "alguns segundos em projetos com muitos Times."
+                    ),
                 )
             if self.state.get('current_action') == f'fetch_membros_{key_prefix}' and not self.state.get('show_interrupt_modal'):
                 try:
-                    with st.spinner("Buscando Membros..."):
-                        # Une os membros de TODOS os Teams cujo escopo de Area
-                        # Path bate com a Area Path escolhida (não só o Team
-                        # dono da coluna selecionada) — ver comentário em
-                        # "fetch_colunas" sobre por que isso importa.
-                        equipes_no_escopo = self.state.get(f'bug_equipes_no_escopo_{key_prefix}') or []
+                    with st.spinner("Buscando pessoas em todos os Times do projeto..."):
+                        # Atribuição no Azure DevOps NÃO é restrita por Team/board
+                        # — qualquer pessoa com acesso ao projeto pode ser
+                        # "Assigned To" em qualquer Work Item, independente de
+                        # qual Team "dono" a Area Path escolhida tem. Por isso
+                        # aqui a busca é em TODOS os Teams do projeto (união dos
+                        # membros), não só nos que batem com a Area Path — ao
+                        # contrário da lógica de Coluna do Board acima, que
+                        # precisa mesmo ser restrita por escopo (um Work Item só
+                        # aparece num board se o Team dono "enxergar" a Area
+                        # Path). Escopar por Area Path aqui também deixava a
+                        # lista vazia/só-o-dono-do-PAT sempre que a Area Path
+                        # escolhida era a raiz do projeto (só o Team padrão,
+                        # criado automaticamente e raramente com mais gente
+                        # além de quem criou o projeto, bate na raiz).
+                        equipes = ado_client.list_teams()
                         membros_por_chave = {}
-                        for equipe in equipes_no_escopo:
+                        for equipe in equipes:
                             try:
                                 membros_equipe = ado_client.list_team_members(equipe["id"])
                             except Exception:
@@ -5197,9 +5201,9 @@ class UserInterface:
                     self.state.set(f'bug_membros_{key_prefix}', membros)
                     if not membros:
                         self._flash_warning(
-                            "Nenhuma pessoa encontrada nos Teams que incluem essa Area Path no escopo — "
-                            "confira no Azure DevOps (Configurações do Team → Membros) se algum Team "
-                            "realmente tem gente cadastrada."
+                            "Nenhuma pessoa encontrada em nenhum Team desse projeto — confira no Azure "
+                            "DevOps (Configurações do Team → Membros) se algum Team realmente tem gente "
+                            "cadastrada."
                         )
                 except Exception as error:
                     self._flash_error(f"Não foi possível buscar Membros: {error}")
@@ -5987,8 +5991,8 @@ class UserInterface:
                 for k in ('bug_board_items', 'bug_test_cases'):
                     self.state.set(k, [])
             for k in list(st.session_state.keys()):
-                if k.startswith((f'bug_colunas_combinadas_{key_prefix}', f'bug_equipes_no_escopo_{key_prefix}',
-                                  f'bug_tags_existentes_{key_prefix}', f'bug_membros_{key_prefix}')):
+                if k.startswith((f'bug_colunas_combinadas_{key_prefix}', f'bug_tags_existentes_{key_prefix}',
+                                  f'bug_membros_{key_prefix}')):
                     campos_limpar.append(k)
         for k in campos_limpar:
             if k in st.session_state:
