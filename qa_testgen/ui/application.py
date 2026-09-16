@@ -58,11 +58,12 @@ AZURE_DEVOPS_INTEGRATION_ENABLED = True
 
 # Liga/desliga TODOS os pontos de envio de documento do app (Passo 1,
 # complementares do fluxo de Work Items e Manual de Reprodução), sem remover a
-# funcionalidade — desativado de novo em pausa na investigação do
-# travamento/Test Plan vazio (rate limit de IA + descasamento de título
-# Plano↔Caso, já com correções aplicadas mas ainda em teste). Coloque True
-# quando formos retomar os testes dessa investigação.
-DOCUMENT_UPLOAD_ENABLED = False
+# funcionalidade — reativado apos corrigir as 4 causas raiz do travamento/
+# Test Plan vazio (chave de estado errada, rate limit de IA sem espera entre
+# lotes, descasamento de titulo Plano<->Caso, e checagem final de sucesso
+# baseada em planejamento em vez do resultado real da API). Coloque False de
+# novo se aparecer qualquer problema durante o reteste.
+DOCUMENT_UPLOAD_ENABLED = True
 DOCUMENT_UPLOAD_DISABLED_MSG = (
     "📄 O envio de documentos está temporariamente desativado enquanto corrigimos um "
     "problema no processamento. Use as outras origens de especificação (Work Items/Query "
@@ -1589,7 +1590,8 @@ class UserInterface:
                 if faltam > 0:
                     status.update(
                         label=f"Aguardando {int(faltam) + 1}s antes do lote {concluidos + 1} de {total} "
-                        "(dá tempo da cota da IA no n8n se recuperar)..."
+                        "(dá tempo da cota da IA no n8n se recuperar)...",
+                        state="complete",  # ver nota abaixo antes do 2º st.rerun() desta função
                     )
                     time.sleep(min(faltam, 2))
                     st.rerun()
@@ -1616,6 +1618,18 @@ class UserInterface:
 
             if novos_pendentes:
                 self.state.set(key_proxima_liberacao, time.time() + self._ESPERA_ENTRE_LOTES_SEGUNDOS)
+                # state="complete" aqui (e no rerun da espera acima) por um
+                # motivo puramente cosmético do Streamlit: st.rerun() levanta
+                # RerunException, que atravessa o "with st.status(...)" do
+                # chamador ANTES do rerun de fato acontecer — e o __exit__ do
+                # StatusContainer (streamlit/elements/lib/mutable_status_
+                # container.py) força state="error" pra QUALQUER exceção em
+                # trânsito enquanto o status ainda estiver "running", sem
+                # distinguir uma RerunException intencional de um erro de
+                # verdade. Sem isso, o card de status pisca vermelho a cada
+                # lote/espera, mesmo quando está tudo certo — confirmado lendo
+                # o código-fonte do Streamlit instalado no venv do projeto.
+                status.update(state="complete")
                 st.rerun()
                 return None
 
@@ -1670,25 +1684,60 @@ class UserInterface:
         real, nem normalizados (provavelmente a IA inventou/alucinou um
         título) — removidos das Suítes e reportados separadamente, pra
         não ficarem escondidos atrás de um "Test Plan vazio" silencioso.
+
+        CUIDADO com colisão de chave normalizada: se DOIS Casos de Teste
+        DIFERENTES normalizarem pra mesma chave (ex.: um só difere do
+        outro por acento/espaço/maiúscula — plausível, já que os Casos
+        também são gerados em lotes de IA), usar essa chave pra "corrigir"
+        um título vinculava silenciosamente o título de Suíte ao Caso
+        ERRADO, mesmo quando esse título já batia EXATO com o Caso
+        certo. Por isso: (1) título com correspondência EXATA nunca passa
+        pela normalização — sempre vence antes de qualquer "correção";
+        (2) uma chave normalizada que colide entre Casos DIFERENTES fica
+        marcada como ambígua e NUNCA é usada pra corrigir nada — vira
+        órfão (mais seguro reportar como "não bateu" do que arriscar
+        vincular ao Caso errado).
         """
+        titulos_reais_exatos = {tc.get('titulo', '') for tc in test_cases if tc.get('titulo')}
+
         titulo_real_por_chave = {}
+        chaves_ambiguas = set()
         for tc in test_cases:
             titulo_real = tc.get('titulo', '')
             chave = self._normalizar_titulo_caso(titulo_real)
-            if chave and chave not in titulo_real_por_chave:
+            if not chave:
+                continue
+            existente = titulo_real_por_chave.get(chave)
+            if existente is not None and existente != titulo_real:
+                chaves_ambiguas.add(chave)
+            else:
                 titulo_real_por_chave[chave] = titulo_real
 
         titulos_orfaos = set()
+        contador_suite_sem_nome = 0
         for plano in planos:
             for suite in plano.get('suites', []):
                 casos_corrigidos = []
                 for titulo in suite.get('casos', []):
-                    titulo_real = titulo_real_por_chave.get(self._normalizar_titulo_caso(titulo))
+                    if titulo in titulos_reais_exatos:
+                        casos_corrigidos.append(titulo)
+                        continue
+                    chave = self._normalizar_titulo_caso(titulo)
+                    titulo_real = None if chave in chaves_ambiguas else titulo_real_por_chave.get(chave)
                     if titulo_real:
                         casos_corrigidos.append(titulo_real)
                     else:
                         titulos_orfaos.add(titulo)
                 suite['casos'] = casos_corrigidos
+                # Suíte sem nome (raro, mas a IA já devolveu isso): o push
+                # pro Azure DevOps recusa criar uma Suíte sem nome — sem
+                # essa correção, o modal de confirmação prometia "criar
+                # essa Suíte" (só checa se tem Caso, não se tem nome), mas
+                # na hora H ela era pulada silenciosamente e os Casos
+                # ficavam órfãos, sem Suíte nenhuma, no Azure DevOps.
+                if not (suite.get('nome') or '').strip() and casos_corrigidos:
+                    contador_suite_sem_nome += 1
+                    suite['nome'] = f"Suíte sem nome ({contador_suite_sem_nome})"
         return planos, sorted(titulos_orfaos)
 
     def _gerar_planos_em_lotes(self, doc_text: str, matriz: list, test_cases: list, answers: dict,
@@ -2578,6 +2627,26 @@ class UserInterface:
             st.warning("Nenhum Plano de Teste gerado ainda — volte ao Passo 5 antes de usar este modo.")
             return
 
+        # Reconcilia de novo, contra os Casos ATUAIS, toda vez que essa tela
+        # é aberta — não só na hora da geração original. Sem isso, editar ou
+        # excluir um Caso no Passo 4 DEPOIS de já ter gerado os Planos no
+        # Passo 5 deixava as Suítes referenciando um título que não existe
+        # mais, silenciosamente (nenhum aviso em lugar nenhum até esse
+        # exato momento) — reproduzindo o mesmo "Test Plan sobe vazio" por
+        # um caminho diferente (edição manual, não drift da IA). Chamar de
+        # novo aqui é seguro/idempotente: em dado já reconciliado, não
+        # muda nada.
+        test_plans, titulos_orfaos_reedicao = self._reconciliar_titulos_planos(test_plans, test_cases)
+        self.state.set('test_plans', test_plans)
+        if titulos_orfaos_reedicao:
+            preview = ", ".join(titulos_orfaos_reedicao[:5]) + ("..." if len(titulos_orfaos_reedicao) > 5 else "")
+            st.warning(
+                f"⚠️ {len(titulos_orfaos_reedicao)} título(s) referenciado(s) pelos Planos não "
+                f"correspondem mais a nenhum Caso de Teste atual ({preview}) — provavelmente um Caso foi "
+                "editado ou excluído no Passo 4 depois dos Planos já terem sido gerados. Esses títulos "
+                "foram removidos das Suítes automaticamente. Revise o Passo 5 antes de integrar."
+            )
+
         st.markdown("### 📋 Test Plan (destino no Azure DevOps)")
         st.caption(
             f"Os **{len(test_plans)} Plano(s)** e suas Suítes, gerados no Passo 5, serão criados "
@@ -2667,14 +2736,27 @@ class UserInterface:
                 disabled=self.state.get('is_processing') or not plan_name.strip(),
                 key="btn_confirm_static_push",
             ):
+                # NÃO lê 'ado_excluded_case_titles' nem 'ado_duplicate_case_titles'
+                # aqui — as duas são chaves de session_state COMPARTILHADAS com o
+                # modo "Vincular a Work Items", que tem sua PRÓPRIA UI pra
+                # preenchê-las (exclusão manual, e detecção de duplicata via IA
+                # contra Work Items existentes — conceito que não existe nesse
+                # modo "Sem Work Items"). O modo "com Work Items" inclusive seta
+                # um valor padrão em 'ado_excluded_case_titles' sozinho, só de
+                # renderizar a tela dele (exclui todo Caso ainda sem Work Item
+                # vinculado) — se a pessoa só passar o olho por aquele modo
+                # dentro da MESMA sessão, esse valor "vaza" pra cá e fazia (bug
+                # real, confirmado consultando a API do Azure DevOps direto: Test
+                # Plan criado, ZERO Casos/Suítes de verdade) este modo achar que
+                # tudo já existia/estava excluído, pulando a criação inteira
+                # silenciosamente — sem disparar nenhuma das travas de segurança,
+                # já que 'titulos_necessarios' continuava não-vazio.
                 existing_case_ids = self.state.get('ado_test_case_ids') or {}
-                excluded_titles = set(self.state.get('ado_excluded_case_titles') or [])
-                duplicate_titles_now = set(self.state.get('ado_duplicate_case_titles') or [])
                 titulos_necessarios = set()
                 suites_display = []
                 for plan in test_plans:
                     for suite in plan.get('suites', []):
-                        casos_titulos = [t for t in suite.get('casos', []) if t not in excluded_titles]
+                        casos_titulos = list(suite.get('casos', []))
                         titulos_necessarios.update(casos_titulos)
                         if casos_titulos:
                             suites_display.append((suite.get('nome', ''), casos_titulos))
@@ -2682,7 +2764,6 @@ class UserInterface:
                     tc.get('titulo') for tc in test_cases
                     if tc.get('titulo') in titulos_necessarios
                     and tc.get('titulo') not in existing_case_ids
-                    and tc.get('titulo') not in duplicate_titles_now
                 ]
                 self.state.set('ado_static_confirm_modal_params', (cases_to_create_titles, suites_display, plan_name.strip(), bool(existing_plan_id)))
                 self.state.set('show_static_confirm_modal', True)
@@ -2712,9 +2793,11 @@ class UserInterface:
         """
         test_plans = self.state.get('test_plans') or []
         test_cases = self.state.get('test_cases') or []
+        # 'ado_excluded_case_titles'/'ado_duplicate_case_titles' PROPOSITALMENTE
+        # não são lidas aqui — ver comentário em _render_step7_static_suite_mode
+        # (o botão "Confirmar e Integrar") sobre por que consultá-las nesse modo
+        # causava Test Plan vazio.
         case_ids = dict(self.state.get('ado_test_case_ids') or {})
-        excluded_titles = set(self.state.get('ado_excluded_case_titles') or [])
-        duplicate_titles = set(self.state.get('ado_duplicate_case_titles') or [])
         titled = AzureCsvFormatter._titled(test_cases, self.state.get('ambiente_testes', ''))
         log = []
 
@@ -2795,15 +2878,15 @@ class UserInterface:
             return
 
         # 2) Garante que todos os Casos de Teste necessários existem no
-        # Azure DevOps (os já existentes/duplicados/excluídos são pulados —
-        # mesma regra do modo com Work Items). `titulos_necessarios` já foi
-        # calculado antes de criar o Test Plan (ver trava de segurança acima).
+        # Azure DevOps (os já criados nessa mesma sessão são pulados —
+        # `case_ids` vem de 'ado_test_case_ids', cache legítimo desta MESMA
+        # função pra não recriar em caso de retry). `titulos_necessarios`
+        # já foi calculado antes de criar o Test Plan (trava de segurança
+        # acima).
         cases_to_create = [
             tc for tc in test_cases
             if tc.get('titulo') in titulos_necessarios
             and tc.get('titulo') not in case_ids
-            and tc.get('titulo') not in duplicate_titles
-            and tc.get('titulo') not in excluded_titles
         ]
         if cases_to_create:
             total = len(cases_to_create)
@@ -2840,11 +2923,21 @@ class UserInterface:
         for plan in test_plans:
             for suite in plan.get('suites', []):
                 nome_suite = suite.get('nome', '')
-                casos_titulos = [t for t in suite.get('casos', []) if t not in excluded_titles]
+                casos_titulos = list(suite.get('casos', []))
                 case_id_list = [case_ids[t] for t in casos_titulos if t in case_ids]
                 if nome_suite and case_id_list:
                     suite_tasks.append((nome_suite, case_id_list))
 
+        # suite_tasks_ok guarda só as Suítes que REALMENTE tiveram sucesso
+        # na API (não suite_tasks, que é só o planejamento de ANTES de
+        # tentar) — sem isso, uma falha de API (outage, permissão,
+        # throttling) em create_test_suite/add_cases_to_suite não derrubava
+        # nenhuma exceção pro chamador, mas também não tirava a Suíte da
+        # contagem final: total_casos_vinculados continuava batendo com
+        # total_casos_esperados mesmo com a Suíte de verdade vazia no Azure
+        # DevOps, e nenhum aviso disparava — só uma linha de log solta,
+        # fácil de não notar no meio de várias linhas "✅".
+        suite_tasks_ok = []
         if suite_tasks:
             total_suites = len(suite_tasks)
             progress2 = st.progress(0, text=f"Criando/atualizando Suítes no Azure DevOps... (0/{total_suites})")
@@ -2859,6 +2952,7 @@ class UserInterface:
                         log.append(f"✅ Suíte criada: '{nome_suite}' (ID {suite_id})")
                     ado_client.add_cases_to_suite(plan_id, suite_id, case_id_list)
                     log.append(f"　　→ {len(case_id_list)} Caso(s) vinculado(s) à Suíte '{nome_suite}'.")
+                    suite_tasks_ok.append((nome_suite, case_id_list))
                 except AzureDevOpsError as error:
                     log.append(f"❌ Falha ao processar a Suíte '{nome_suite}': {error}")
                 except Exception as error:
@@ -2866,10 +2960,10 @@ class UserInterface:
                 progress2.progress(idx / total_suites, text=f"Criando/atualizando Suítes no Azure DevOps... ({idx}/{total_suites})")
 
         total_casos_esperados = sum(
-            len([t for t in suite.get('casos', []) if t not in excluded_titles])
+            len(suite.get('casos', []))
             for plan in test_plans for suite in plan.get('suites', [])
         )
-        total_casos_vinculados = sum(len(case_id_list) for _, case_id_list in suite_tasks)
+        total_casos_vinculados = sum(len(case_id_list) for _, case_id_list in suite_tasks_ok)
 
         if total_casos_esperados and not total_casos_vinculados:
             self._flash_error(
@@ -2958,7 +3052,28 @@ class UserInterface:
                     cid = point.get("case_id")
                     if cid and cid not in seen:
                         seen[cid] = point.get("case_title", f"Caso #{cid}")
-                old_cases = [{"id": cid, "titulo": titulo} for cid, titulo in seen.items()]
+                # 'rotulo' é o identificador usado em TODA a tela (opções do
+                # multiselect, payload pra IA, resolução final do vínculo) —
+                # não 'titulo' puro. Título de Test Case NÃO é único no Azure
+                # DevOps (comum repetir algo genérico tipo "Validar campo
+                # obrigatório" em Suítes diferentes do mesmo Test Plan); usar
+                # só o título como chave colapsava Casos diferentes com o
+                # mesmo texto num único ID (o último da lista "vencia"),
+                # podendo vincular ao Azure DevOps um Caso diferente do que a
+                # pessoa escolheu — sem erro, aviso ou log. Só acrescenta
+                # "(Caso #ID)" quando o título realmente se repete, pra não
+                # poluir a tela à toa quando não há ambiguidade nenhuma.
+                contagem_titulo = {}
+                for cid, titulo in seen.items():
+                    contagem_titulo[titulo] = contagem_titulo.get(titulo, 0) + 1
+                old_cases = [
+                    {
+                        "id": cid,
+                        "titulo": titulo,
+                        "rotulo": titulo if contagem_titulo[titulo] <= 1 else f"{titulo} (Caso #{cid})",
+                    }
+                    for cid, titulo in seen.items()
+                ]
                 self.state.set('ado_recon_old_plan_id', old_plan_id)
                 self.state.set('ado_recon_old_cases', old_cases)
                 if not old_cases:
@@ -3033,7 +3148,7 @@ class UserInterface:
             )
         if self.state.get('current_action') == 'suggest_recon_links' and not self.state.get('show_interrupt_modal'):
             try:
-                payload_cases = [{"titulo": c["titulo"]} for c in old_cases]
+                payload_cases = [{"titulo": c["rotulo"]} for c in old_cases]
                 with st.spinner("Consultando a IA para sugerir os vínculos..."):
                     result = self.client.trigger_matching(selected_items, payload_cases, self.state.get('project_name'))
                 links = {}
@@ -3043,7 +3158,7 @@ class UserInterface:
                 self.state.set('ado_recon_wi_case_links', links)
                 for item in selected_items:
                     widget_key = f"ado_recon_multiselect_{item['id']}"
-                    st.session_state[widget_key] = [c for c in links.get(str(item['id']), []) if c in [oc['titulo'] for oc in old_cases]]
+                    st.session_state[widget_key] = [c for c in links.get(str(item['id']), []) if c in [oc['rotulo'] for oc in old_cases]]
             except Exception as error:
                 self._flash_error(f"Não foi possível obter a sugestão da IA: {error}")
             self.clear_action()
@@ -3055,7 +3170,7 @@ class UserInterface:
         links = dict(self.state.get('ado_recon_wi_case_links') or {})
         ordered_wids = [str(item['id']) for item in selected_items]
         links = self._dedupe_case_assignments(links, ordered_wids)
-        case_titles = [c["titulo"] for c in old_cases]
+        case_titles = [c["rotulo"] for c in old_cases]
         claimed_so_far = set()
         for item in selected_items:
             wid_key = str(item['id'])
@@ -3109,8 +3224,15 @@ class UserInterface:
                 st.write(line)
 
     def _push_reconciliation(self, ado_client, old_plan_id: int, old_cases: list, links: dict):
-        """Cria (se preciso) a Requirement Suite de cada Work Item e vincula os Casos já existentes a ele."""
-        case_id_by_title = {c["titulo"]: c["id"] for c in old_cases}
+        """
+        Cria (se preciso) a Requirement Suite de cada Work Item e vincula os
+        Casos já existentes a ele. Resolve o vínculo por 'rotulo' (título +
+        ID quando o título se repete), não por título puro — título de Test
+        Case não é único no Azure DevOps; usar só o título colapsaria dois
+        Casos diferentes com o mesmo texto num único ID (o último da lista
+        "venceria"), arriscando vincular o Caso errado sem nenhum aviso.
+        """
+        case_id_by_rotulo = {c["rotulo"]: c["id"] for c in old_cases}
         log = []
         try:
             with st.spinner("Verificando Suítes já existentes neste Test Plan..."):
@@ -3135,15 +3257,15 @@ class UserInterface:
                     else:
                         suite_id = ado_client.create_requirement_based_suite(old_plan_id, root_suite_id, work_item_id)
                         log.append(f"✅ Suite criada para Work Item {work_item_id} (ID {suite_id}).")
-                    for titulo in titulos:
-                        case_id = case_id_by_title.get(titulo)
+                    for rotulo in titulos:
+                        case_id = case_id_by_rotulo.get(rotulo)
                         if not case_id:
                             continue
                         try:
                             ado_client.link_test_case_to_work_item(case_id, work_item_id)
-                            log.append(f"　　→ '{titulo}' vinculado ao Work Item {work_item_id}.")
+                            log.append(f"　　→ '{rotulo}' vinculado ao Work Item {work_item_id}.")
                         except AzureDevOpsError as error:
-                            log.append(f"　　❌ Falha ao vincular '{titulo}': {error}")
+                            log.append(f"　　❌ Falha ao vincular '{rotulo}': {error}")
                 except AzureDevOpsError as error:
                     log.append(f"❌ Falha no Work Item {work_item_id}: {error}")
                 except Exception as error:
@@ -4072,11 +4194,25 @@ class UserInterface:
                         else:
                             existing_case_ids = self.state.get('ado_test_case_ids') or {}
                             duplicate_titles_now = set(self.state.get('ado_duplicate_case_titles') or [])
+                            # A tela promete explicitamente que dá pra incluir
+                            # manualmente um Caso marcado como duplicata pela IA
+                            # "se discordar" (vinculando ele a um Work Item no
+                            # multiselect acima) — mas até aqui isso era ignorado:
+                            # duplicate_titles_now excluía o título de qualquer
+                            # jeito, mesmo já escolhido manualmente. Um título
+                            # presente em items_with_cases É a pessoa discordando
+                            # da IA na prática — conta como override explícito.
+                            titulos_vinculados_manualmente = {
+                                t for casos in items_with_cases.values() for t in casos
+                            }
                             cases_to_create_titles = [
                                 tc.get('titulo') for tc in test_cases
                                 if tc.get('titulo') not in excluded_titles
                                 and tc.get('titulo') not in existing_case_ids
-                                and tc.get('titulo') not in duplicate_titles_now
+                                and (
+                                    tc.get('titulo') not in duplicate_titles_now
+                                    or tc.get('titulo') in titulos_vinculados_manualmente
+                                )
                             ]
                             items_by_id_lookup = {item['id']: item for item in board_items}
                             items_display = []
@@ -8025,16 +8161,32 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         # são pulados — não sobem pro Azure.
         # As criações são independentes entre si, então rodam em paralelo.
         duplicate_titles = set(self.state.get('ado_duplicate_case_titles') or [])
-        skipped_as_duplicate = [tc.get('titulo') for tc in test_cases if tc.get('titulo') in duplicate_titles]
+        # Override manual: a tela (aviso logo acima do multiselect de
+        # vínculo) promete que dá pra incluir um Caso marcado como
+        # duplicata pela IA "se discordar" — vinculando ele manualmente a
+        # um Work Item. Um título presente em items_with_cases É a pessoa
+        # discordando na prática; sem essa checagem, o Caso nunca ganhava
+        # ID no Azure DevOps e o vínculo escolhido era descartado
+        # silenciosamente (só aparecia, indiretamente, num aviso agregado
+        # de "vínculos incompletos").
+        titulos_vinculados_manualmente = {t for casos in items_with_cases.values() for t in casos}
+        duplicate_titles_sem_override = duplicate_titles - titulos_vinculados_manualmente
+        skipped_as_duplicate = [tc.get('titulo') for tc in test_cases if tc.get('titulo') in duplicate_titles_sem_override]
         if skipped_as_duplicate:
             log.append(
                 f"🔁 {len(skipped_as_duplicate)} Caso(s) não foram criados por parecerem duplicados de "
                 f"algo já existente no Azure DevOps: {', '.join(skipped_as_duplicate)}"
             )
+        overrides_manuais = duplicate_titles & titulos_vinculados_manualmente
+        if overrides_manuais:
+            log.append(
+                f"↪️ {len(overrides_manuais)} Caso(s) marcados como duplicados pela IA foram criados mesmo "
+                f"assim, porque você os vinculou manualmente a um Work Item: {', '.join(overrides_manuais)}"
+            )
         cases_to_create = [
             tc for tc in test_cases
             if tc.get('titulo') not in case_ids
-            and tc.get('titulo') not in duplicate_titles
+            and tc.get('titulo') not in duplicate_titles_sem_override
             and tc.get('titulo') not in excluded_titles
         ]
         if cases_to_create:
@@ -8136,7 +8288,17 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         # em paralelo faz o Azure DevOps rejeitar com erro de concorrência
         # (TF26071: "changed by someone else since you opened it"), porque
         # múltiplas escritas concorrentes tentam atualizar o mesmo pai.
+        # suites_ok guarda os Work Items cuja Suite REALMENTE existe no
+        # Test Plan (já existia, ou foi criada agora com sucesso) — sem
+        # isso, uma falha de API aqui (outage, permissão, concorrência)
+        # não impedia o vínculo "Tests" do passo 3b de "dar certo" (são
+        # chamadas independentes), mas o Caso não aparece de verdade
+        # dentro da estrutura do Test Plan pra esse Work Item (não tem
+        # Suite pra ele "entrar"), e a checagem final abaixo não pegava
+        # isso — mesmo problema, mesma causa raiz do modo "sem Work
+        # Items" (_push_static_suites_azure_devops).
         suite_tasks = list(items_with_cases.items())  # [(work_item_id_str, [titulos]), ...]
+        suites_ok = set()
         if suite_tasks:
             total_suites = len(suite_tasks)
             progress2 = st.progress(0, text=f"Verificando/criando Suites no Azure DevOps... (0/{total_suites})")
@@ -8147,10 +8309,12 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                         f"♻️ Work Item {work_item_id} já tinha Suite neste Test Plan "
                         f"(Suite ID {existing_suite_by_wi[work_item_id]}) — Casos novos entram nela automaticamente."
                     )
+                    suites_ok.add(work_item_id)
                 else:
                     try:
                         suite_id = ado_client.create_requirement_based_suite(plan_id, root_suite_id, work_item_id)
                         log.append(f"✅ Suite criada para Work Item {work_item_id} (Suite ID {suite_id})")
+                        suites_ok.add(work_item_id)
                     except AzureDevOpsError as error:
                         log.append(f"❌ Falha ao criar Suite para Work Item {work_item_id}: {error}")
                     except Exception as error:
@@ -8231,7 +8395,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             1
             for wid_str, casos in items_with_cases.items()
             for titulo in casos
-            if int(wid_str) in case_links.get(titulo, [])
+            if int(wid_str) in case_links.get(titulo, []) and int(wid_str) in suites_ok
         )
         if total_vinculos_esperados and not total_vinculos_ok:
             self._flash_error(
