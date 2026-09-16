@@ -5057,6 +5057,7 @@ class UserInterface:
                 with st.spinner("Buscando Colunas dos Boards que realmente incluem essa Area Path..."):
                     teams = ado_client.list_teams()
                     colunas_por_nome = {}
+                    equipes_no_escopo = []
                     algum_board_encontrado = False
                     for team in teams:
                         try:
@@ -5065,6 +5066,7 @@ class UserInterface:
                             continue
                         if not self._area_path_pertence_ao_team(area_path_escolhida, valores_time):
                             continue
+                        equipes_no_escopo.append(team)
                         try:
                             boards = ado_client.list_boards_for_team(team["id"])
                         except Exception:
@@ -5082,6 +5084,16 @@ class UserInterface:
                                         "state_bug": (c.get("state_mappings") or {}).get("Bug"),
                                     })
                 self.state.set(f'bug_colunas_combinadas_{key_prefix}', list(colunas_por_nome.values()))
+                # Guardado à parte da coluna escolhida — "Atribuir a" usa TODOS
+                # os Teams cujo escopo de Area Path bate (não só o Team "dono"
+                # da coluna escolhida). Sem isso, times "guarda-chuva" (o Team
+                # padrão do projeto, com escopo na raiz e geralmente só o
+                # dono do PAT como membro) "ganhavam" nomes de coluna
+                # genéricos (ex.: "New", "Closed") por pura ordem de
+                # iteração, e a lista de pessoas pra atribuir vinha vazia ou
+                # só com o dono do PAT, mesmo quando o Team de verdade daquela
+                # Area Path tinha gente de sobra.
+                self.state.set(f'bug_equipes_no_escopo_{key_prefix}', equipes_no_escopo)
                 if not algum_board_encontrado:
                     self._flash_error(
                         f"Nenhum Team com Board configurado inclui a Area Path '{area_path_escolhida}' no "
@@ -5166,10 +5178,29 @@ class UserInterface:
             if self.state.get('current_action') == f'fetch_membros_{key_prefix}' and not self.state.get('show_interrupt_modal'):
                 try:
                     with st.spinner("Buscando Membros..."):
-                        membros = ado_client.list_team_members(resultado["team_id"])
+                        # Une os membros de TODOS os Teams cujo escopo de Area
+                        # Path bate com a Area Path escolhida (não só o Team
+                        # dono da coluna selecionada) — ver comentário em
+                        # "fetch_colunas" sobre por que isso importa.
+                        equipes_no_escopo = self.state.get(f'bug_equipes_no_escopo_{key_prefix}') or []
+                        membros_por_chave = {}
+                        for equipe in equipes_no_escopo:
+                            try:
+                                membros_equipe = ado_client.list_team_members(equipe["id"])
+                            except Exception:
+                                continue
+                            for m in membros_equipe:
+                                chave = m.get("unique_name") or m.get("display_name")
+                                if chave:
+                                    membros_por_chave.setdefault(chave, m)
+                        membros = sorted(membros_por_chave.values(), key=lambda m: m["display_name"].lower())
                     self.state.set(f'bug_membros_{key_prefix}', membros)
                     if not membros:
-                        self._flash_warning("Nenhuma pessoa encontrada pra esse Board.")
+                        self._flash_warning(
+                            "Nenhuma pessoa encontrada nos Teams que incluem essa Area Path no escopo — "
+                            "confira no Azure DevOps (Configurações do Team → Membros) se algum Team "
+                            "realmente tem gente cadastrada."
+                        )
                 except Exception as error:
                     self._flash_error(f"Não foi possível buscar Membros: {error}")
                 self.clear_action()
@@ -5956,8 +5987,8 @@ class UserInterface:
                 for k in ('bug_board_items', 'bug_test_cases'):
                     self.state.set(k, [])
             for k in list(st.session_state.keys()):
-                if k.startswith((f'bug_colunas_combinadas_{key_prefix}', f'bug_tags_existentes_{key_prefix}',
-                                  f'bug_membros_{key_prefix}')):
+                if k.startswith((f'bug_colunas_combinadas_{key_prefix}', f'bug_equipes_no_escopo_{key_prefix}',
+                                  f'bug_tags_existentes_{key_prefix}', f'bug_membros_{key_prefix}')):
                     campos_limpar.append(k)
         for k in campos_limpar:
             if k in st.session_state:
