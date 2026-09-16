@@ -5319,7 +5319,7 @@ class UserInterface:
         st.divider()
         modo = st.radio(
             "Como criar o Bug?",
-            options=["📝 Livre", "🔗 A partir de um Caso de Teste"],
+            options=["📝 Livre", "🔗 A partir de um Work Item"],
             index=0,
             key="bug_modo_radio",
             horizontal=True,
