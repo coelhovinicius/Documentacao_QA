@@ -1071,7 +1071,8 @@ class AzureDevOpsClient:
     def create_bug(self, titulo: str, area_path: str, descricao: str, repro_steps: str = "",
                     prioridade: int = None, severidade: str = None, atribuir_a: str = None,
                     tags: str = None, board_column: str = None, board_column_field: str = None,
-                    board_column_state: str = None) -> dict:
+                    board_column_state: str = None, system_info: str = "",
+                    acceptance_criteria: str = "") -> dict:
         """
         Cria um Work Item do tipo Bug. area_path é obrigatório (o "board").
         prioridade: 1-4 (1 = mais urgente). severidade: string exata do
@@ -1092,6 +1093,11 @@ class AzureDevOpsClient:
         coluna; sem setar isso, o Bug nasce no State inicial padrão
         ("New") e aparece na coluna correspondente a ele, ignorando a
         coluna escolhida.
+
+        system_info/acceptance_criteria: campos opcionais de texto rico
+        (HTML) do Bug — quem chama já manda o valor pronto (inclusive com
+        <img> embutida, se houver evidência em imagem — ver
+        upload_attachment/attach_file_to_work_item).
         Retorna {'id': int, 'url': str}.
         """
         body = [
@@ -1113,11 +1119,68 @@ class AzureDevOpsClient:
             body.append({"op": "add", "path": "/fields/System.State", "value": board_column_state})
         if board_column and board_column_field:
             body.append({"op": "add", "path": f"/fields/{board_column_field}", "value": board_column})
+        if system_info:
+            body.append({"op": "add", "path": "/fields/Microsoft.VSTS.TCM.SystemInfo", "value": system_info})
+        if acceptance_criteria:
+            body.append({
+                "op": "add", "path": "/fields/Microsoft.VSTS.Common.AcceptanceCriteria",
+                "value": acceptance_criteria,
+            })
 
         url = f"{self._base_url()}/wit/workitems/$Bug?api-version={API_VERSION}"
         response = self.session.post(url, json=body, headers=self.headers_json_patch, timeout=60)
         data = self._handle_response(response, f"Criar Bug '{titulo}'")
         return {"id": data["id"], "url": data.get("_links", {}).get("html", {}).get("href", "")}
+
+    def upload_attachment(self, file_bytes: bytes, filename: str) -> dict:
+        """
+        Sobe um arquivo (ex.: print de tela usado como evidência de Bug)
+        como anexo "solto" do projeto — ainda sem vínculo com nenhum Work
+        Item. Retorna {'url': str, 'id': ...}; a URL serve tanto pra
+        embutir num campo rich-text (<img src="...">) quanto pra vincular
+        de verdade ao Work Item depois via attach_file_to_work_item.
+        """
+        url = f"{self._base_url()}/wit/attachments?fileName={quote(filename, safe='')}&api-version={API_VERSION}"
+        headers = {"Authorization": self.headers_json["Authorization"], "Content-Type": "application/octet-stream"}
+        response = self.session.post(url, data=file_bytes, headers=headers, timeout=60)
+        data = self._handle_response(response, f"Enviar anexo '{filename}'")
+        return {"url": data.get("url", ""), "id": data.get("id")}
+
+    def attach_file_to_work_item(self, work_item_id: int, attachment_url: str, comment: str = "") -> None:
+        """
+        Vincula de verdade um anexo já enviado (upload_attachment) a um
+        Work Item — faz ele aparecer na aba "Attachments" do item, além de
+        eventualmente já estar embutido como <img> em algum campo
+        rich-text. A Microsoft recomenda sempre criar essa relação (não só
+        embutir a URL solta num campo), pra garantir que o anexo continue
+        acessível/visível pra quem tem permissão no Work Item.
+        """
+        body = [{
+            "op": "add",
+            "path": "/relations/-",
+            "value": {"rel": "AttachedFile", "url": attachment_url, "attributes": {"comment": comment} if comment else {}},
+        }]
+        url = f"{self._base_url()}/wit/workitems/{work_item_id}?api-version={API_VERSION}"
+        response = self.session.patch(url, json=body, headers=self.headers_json_patch, timeout=60)
+        self._handle_response(response, f"Anexar arquivo ao Work Item {work_item_id}")
+
+    def add_work_item_comment(self, work_item_id: int, text_html: str) -> None:
+        """
+        Adiciona um comentário na aba "Discussion" do Work Item. Ao
+        contrário de System Info/Acceptance Criteria, "Discussion" no
+        Azure DevOps NÃO é um campo comum do work item — é sempre baseado
+        em comentários (API de Comments, separada da API de Fields) —
+        por isso precisa de uma chamada à parte, feita DEPOIS do Work
+        Item já existir.
+
+        Usa "{API_VERSION}-preview" (não API_VERSION puro) — essa API
+        específica (Add a comment) ainda exige a flag -preview mesmo na
+        versão 7.1, confirmado por um erro real do Azure DevOps
+        (VssInvalidPreviewVersionException) numa tentativa sem ela.
+        """
+        url = f"{self._base_url()}/wit/workItems/{work_item_id}/comments?api-version={API_VERSION}-preview"
+        response = self.session.post(url, json={"text": text_html}, headers=self.headers_json, timeout=60)
+        self._handle_response(response, f"Adicionar comentário (Discussion) ao Work Item {work_item_id}")
 
     def link_bug_to_test_case(self, bug_id: int, test_case_id: int,
                                comment: str = "Bug encontrado ao executar este Caso — via QA TestGen") -> None:

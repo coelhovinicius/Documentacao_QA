@@ -58,11 +58,11 @@ AZURE_DEVOPS_INTEGRATION_ENABLED = True
 
 # Liga/desliga TODOS os pontos de envio de documento do app (Passo 1,
 # complementares do fluxo de Work Items e Manual de Reprodução), sem remover a
-# funcionalidade — reativado pra testar em produção (com os Logs do Streamlit
-# Community Cloud abertos) se o travamento/processamento parcial na geração de
-# Casos de Teste ainda ocorre depois das correções de estado já aplicadas.
-# Coloque False de novo se precisar voltar a desativar durante a investigação.
-DOCUMENT_UPLOAD_ENABLED = True
+# funcionalidade — desativado de novo em pausa na investigação do
+# travamento/Test Plan vazio (rate limit de IA + descasamento de título
+# Plano↔Caso, já com correções aplicadas mas ainda em teste). Coloque True
+# quando formos retomar os testes dessa investigação.
+DOCUMENT_UPLOAD_ENABLED = False
 DOCUMENT_UPLOAD_DISABLED_MSG = (
     "📄 O envio de documentos está temporariamente desativado enquanto corrigimos um "
     "problema no processamento. Use as outras origens de especificação (Work Items/Query "
@@ -5060,6 +5060,62 @@ class UserInterface:
 
         return [p['texto'] for p in resultado]
 
+    def _render_bug_extra_fields(self, key_prefix: str) -> dict:
+        """
+        Campos extras OPCIONAIS na criação de Bug — System Info,
+        Acceptance Criteria, Discussion, e evidência em imagem —
+        compartilhados pelos 2 modos (Livre / A partir de Caso de Teste).
+
+        As imagens sobem como anexo de verdade no Work Item (aparecem na
+        aba "Attachments") E ficam embutidas como <img> dentro do campo
+        "System Info" — escolhido em vez de "Discussion" porque é um
+        campo comum do Bug (aparece na aba principal, junto com o resto
+        dos dados, sem precisar abrir a aba de comentários) e existe
+        desde a criação. "Discussion" no Azure DevOps não é um campo
+        comum — é sempre baseado em comentários (API separada); o texto
+        digitado aqui vira o PRIMEIRO comentário do Bug, postado logo
+        depois dele ser criado.
+
+        Mesma chave versionada "_{key_prefix}_{versao}" dos outros campos
+        do formulário — garante que "Criar outro Bug" reseta esses campos
+        também (ver docstring de _limpar_estado_bug).
+
+        Retorna {'system_info', 'acceptance_criteria', 'discussion',
+        'imagens'} — 'imagens' já como [(nome_arquivo, bytes), ...], lido
+        na hora (o objeto do widget de upload não sobrevive a reruns de
+        forma confiável pra guardar só a referência).
+        """
+        versao = self.state.get(f'bug_{key_prefix}_form_versao') or 0
+        with st.expander("➕ Detalhes adicionais (opcional)", expanded=True):
+            system_info = st.text_area(
+                "System Info", key=f"bug_system_info_{key_prefix}_{versao}",
+                placeholder="Navegador, sistema operacional, ambiente (HML/PROD), versão, etc.",
+                disabled=self.state.get('is_processing'),
+            )
+            acceptance_criteria = st.text_area(
+                "Acceptance Criteria", key=f"bug_acceptance_criteria_{key_prefix}_{versao}",
+                placeholder="Condições que precisam ser atendidas pra considerar o Bug corrigido.",
+                disabled=self.state.get('is_processing'),
+            )
+            discussion = st.text_area(
+                "Discussion", key=f"bug_discussion_{key_prefix}_{versao}",
+                placeholder="Vira o primeiro comentário do Bug, na aba Discussion, criado após ele.",
+                disabled=self.state.get('is_processing'),
+            )
+            uploaded = st.file_uploader(
+                "Evidências (imagens)", type=["png", "jpg", "jpeg"], accept_multiple_files=True,
+                key=f"bug_evidencias_{key_prefix}_{versao}",
+                disabled=self.state.get('is_processing'),
+                help="Sobem como anexo do Bug e ficam também embutidas no campo System Info.",
+            )
+        imagens = [(f.name, f.getvalue()) for f in (uploaded or [])]
+        return {
+            "system_info": system_info.strip(),
+            "acceptance_criteria": acceptance_criteria.strip(),
+            "discussion": discussion.strip(),
+            "imagens": imagens,
+        }
+
     def _bug_creation_page(self):
         self._processing_banner()
         st.markdown('<div id="bug-form-top-anchor"></div>', unsafe_allow_html=True)
@@ -5244,6 +5300,7 @@ class UserInterface:
         )
         st.markdown("**Passos de Reprodução ***")
         passos = self._render_repro_steps_editor("bug_de_caso")
+        extras = self._render_bug_extra_fields("de_caso")
 
         col_p, col_s = st.columns(2)
         with col_p:
@@ -5275,6 +5332,8 @@ class UserInterface:
                     "coluna_team_id": metadata['team_id'], "coluna_board_id": metadata.get('coluna_board_id'),
                     "coluna_state": metadata.get('coluna_state'),
                     "tags": metadata['tags'], "atribuir_a": metadata['atribuir_a'],
+                    "system_info": extras['system_info'], "acceptance_criteria": extras['acceptance_criteria'],
+                    "discussion": extras['discussion'], "imagens": extras['imagens'],
                     "vinculo": {
                         "caso_id": caso_escolhido['id'], "caso_titulo": caso_escolhido['titulo'],
                         "wi_id": work_item_escolhido['id'], "wi_titulo": work_item_escolhido['title'],
@@ -5309,6 +5368,7 @@ class UserInterface:
         )
         st.markdown("**Passos de Reprodução ***")
         passos = self._render_repro_steps_editor("bug_livre")
+        extras = self._render_bug_extra_fields("livre")
 
         col_p, col_s = st.columns(2)
         with col_p:
@@ -5340,6 +5400,8 @@ class UserInterface:
                     "coluna_team_id": metadata['team_id'], "coluna_board_id": metadata.get('coluna_board_id'),
                     "coluna_state": metadata.get('coluna_state'),
                     "tags": metadata['tags'], "atribuir_a": metadata['atribuir_a'],
+                    "system_info": extras['system_info'], "acceptance_criteria": extras['acceptance_criteria'],
+                    "discussion": extras['discussion'], "imagens": extras['imagens'],
                 })
                 self.state.set('bug_confirm_key_prefix', 'livre')
                 self.state.set('show_bug_confirm_modal', True)
@@ -5368,6 +5430,23 @@ class UserInterface:
         app — o que dá de graça o overlay global "Processamento em
         andamento" (_processing_banner), incluindo bloqueio de clique
         na tela inteira e o botão real de Cancelar.
+
+        Evidências em imagem (dados['imagens']) sobem ANTES do Bug
+        existir (upload_attachment não depende de nenhum Work Item) —
+        assim já dá pra embutir a URL de cada uma como <img> dentro do
+        campo System Info na MESMA chamada que cria o Bug. Só depois,
+        com o Bug já criado, cada anexo é formalmente vinculado a ele
+        (attach_file_to_work_item) — best-effort, uma falha aqui não
+        desfaz o Bug já criado, só vira aviso.
+
+        Discussion não é um campo comum do Work Item (ver docstring de
+        add_work_item_comment) — só dá pra postar DEPOIS do Bug existir,
+        como o primeiro comentário dele.
+
+        Retorna (resultado, avisos) — avisos é uma lista de strings pra
+        problemas não-fatais que não impediram o Bug de ser criado (ex.:
+        uma evidência específica falhou ao subir, ou o comentário de
+        Discussion não pôde ser postado).
         """
         passos_html = [html.escape(p).replace("\n", "<br>") for p in dados['passos']]
         repro_texto = "<br>".join(f"{i}. {p}" for i, p in enumerate(passos_html, start=1))
@@ -5376,17 +5455,56 @@ class UserInterface:
             campo_coluna = ado_client.get_board_column_field_name(
                 dados['coluna_team_id'], dados['coluna_board_id']
             )
+
+        avisos = []
+        anexos_urls = []
+        for nome, conteudo in (dados.get('imagens') or []):
+            try:
+                anexo = ado_client.upload_attachment(conteudo, nome)
+                if anexo.get('url'):
+                    anexos_urls.append(anexo['url'])
+            except Exception as error:
+                avisos.append(f"⚠️ Falha ao enviar a evidência '{nome}': {error}")
+
+        system_info_texto = dados.get('system_info', '')
+        system_info_html = html.escape(system_info_texto).replace("\n", "<br>") if system_info_texto else ""
+        if anexos_urls:
+            imgs_html = "".join(f'<div><img src="{u}" style="max-width:100%" /></div>' for u in anexos_urls)
+            system_info_html = f"{system_info_html}<br><br>{imgs_html}" if system_info_html else imgs_html
+
+        acceptance_criteria_texto = dados.get('acceptance_criteria', '')
+        acceptance_criteria_html = (
+            html.escape(acceptance_criteria_texto).replace("\n", "<br>") if acceptance_criteria_texto else ""
+        )
+
         resultado = ado_client.create_bug(
             dados['titulo'], dados['board'], dados['descricao'], repro_texto,
             dados['prioridade'], dados['severidade'], dados['atribuir_a'],
             self._tag_criado_por("; ".join(dados['tags']) if dados['tags'] else None),
             dados['coluna'], campo_coluna, dados.get('coluna_state'),
+            system_info_html, acceptance_criteria_html,
         )
+
+        for url in anexos_urls:
+            try:
+                ado_client.attach_file_to_work_item(resultado['id'], url, comment="Evidência anexada via QA TestGen")
+            except Exception as error:
+                avisos.append(f"⚠️ Bug criado, mas falha ao vincular uma evidência como anexo formal: {error}")
+
+        discussion_texto = dados.get('discussion', '')
+        if discussion_texto:
+            try:
+                ado_client.add_work_item_comment(
+                    resultado['id'], html.escape(discussion_texto).replace("\n", "<br>")
+                )
+            except Exception as error:
+                avisos.append(f"⚠️ Bug criado, mas falha ao postar o comentário de Discussion: {error}")
+
         vinculo = dados.get('vinculo')
         if vinculo:
             ado_client.link_bug_to_test_case(resultado['id'], vinculo['caso_id'])
             ado_client.link_bug_to_related_work_item(resultado['id'], vinculo['wi_id'])
-        return resultado
+        return resultado, avisos
 
     def _iniciar_novo_bug(self, key_prefix: str):
         self.state.set(f'bug_ultimo_criado_{key_prefix}', None)
@@ -5419,9 +5537,15 @@ class UserInterface:
             try:
                 if not dados:
                     raise ValueError("Os dados do Bug foram perdidos antes de confirmar — tenta preencher de novo.")
-                resultado = self._criar_bug_via_azure(ado_client, dados)
+                resultado, avisos = self._criar_bug_via_azure(ado_client, dados)
                 detalhe_log = f"Bug #{resultado['id']} '{dados['titulo']}' — coluna '{dados['coluna']}'"
                 log = [f"✅ Bug criado: **{dados['titulo']}** (ID {resultado['id']})"]
+                if dados.get('imagens'):
+                    log.append(f"↳ {len(dados['imagens'])} evidência(s) em imagem anexada(s) e embutida(s) no System Info")
+                if dados.get('discussion'):
+                    log.append("↳ Comentário postado na aba Discussion")
+                for aviso in avisos:
+                    log.append(aviso)
                 if vinculo:
                     log.append(f"↳ Vinculado ao Caso de Teste '{vinculo['caso_titulo']}' (Caso {vinculo['caso_id']}) — Tested By")
                     log.append(f"↳ Vinculado ao Work Item '{vinculo['wi_titulo']}' (Work Item {vinculo['wi_id']}) — Related")
@@ -5519,6 +5643,17 @@ class UserInterface:
                 for i, p in enumerate(dados['passos'], start=1):
                     st.write(f"{i}. {p}")
 
+            if dados.get('system_info') or dados.get('acceptance_criteria') or dados.get('discussion') or dados.get('imagens'):
+                with st.expander("➕ Detalhes adicionais"):
+                    if dados.get('system_info'):
+                        st.markdown(f"**System Info:**\n\n{dados['system_info']}")
+                    if dados.get('imagens'):
+                        st.markdown(f"**Evidências:** {len(dados['imagens'])} imagem(ns) — entram anexadas e embutidas no System Info")
+                    if dados.get('acceptance_criteria'):
+                        st.markdown(f"**Acceptance Criteria:**\n\n{dados['acceptance_criteria']}")
+                    if dados.get('discussion'):
+                        st.markdown(f"**Discussion:**\n\n{dados['discussion']}")
+
             vinculo = dados.get('vinculo')
             if vinculo:
                 st.info(
@@ -5597,7 +5732,9 @@ class UserInterface:
         for k in list(st.session_state.keys()):
             if k.startswith((f'bug_wi_select_', f'bug_caso_select_', f'bug_coluna_select_{key_prefix}',
                               f'bug_tags_select_{key_prefix}', f'bug_membro_select_{key_prefix}',
-                              f'bug_prioridade_{key_prefix}', f'bug_severidade_{key_prefix}')):
+                              f'bug_prioridade_{key_prefix}', f'bug_severidade_{key_prefix}',
+                              f'bug_system_info_{key_prefix}', f'bug_acceptance_criteria_{key_prefix}',
+                              f'bug_discussion_{key_prefix}', f'bug_evidencias_{key_prefix}')):
                 campos_limpar.append(k)
 
         if limpar_metadados:
