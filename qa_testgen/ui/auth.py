@@ -6,7 +6,7 @@ import bcrypt
 import streamlit as st
 import streamlit.components.v1 as components
 
-from qa_testgen.infrastructure.access_control_client import AccessControlClient
+from qa_testgen.infrastructure.access_control_client import AccessControlClient, AccessControlError
 
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
@@ -246,13 +246,17 @@ def _render_user_management_section(config, client, current_username: str):
     Cada usuário tem um formulário único (nome, e-mail, nick de login,
     senha, modo de acesso, status de aprovador, e todas as permissões)
     — um só botão salva tudo de uma vez, com confirmação antes de
-    gravar. Nome, e-mail, usuário e senha são SEMPRE obrigatórios,
-    tanto pra criar quanto pra editar.
+    gravar.
+
+    Na CRIAÇÃO, senha é obrigatória. Na EDIÇÃO, não: em branco significa
+    "mantém a senha atual" (o hash existente é lido e regravado igual),
+    pra não obrigar o admin a redefinir a senha de alguém só pra mexer
+    numa permissão ou no e-mail.
     """
     st.subheader("👤 Usuários")
     st.caption(
         "Cria e edita usuários que podem fazer login no app — sem precisar editar o "
-        "secrets.toml. Nome, e-mail, usuário e senha são sempre obrigatórios."
+        "secrets.toml. Ao editar, a senha só muda se você preencher o campo de senha."
     )
 
     try:
@@ -294,8 +298,13 @@ def _render_user_management_section(config, client, current_username: str):
                 novo_email = st.text_input("E-mail *", value=email_atual, key=f"edit_email_{uname}")
                 novo_nick = st.text_input("Usuário de login (nick) *", value=uname, key=f"edit_nick_{uname}")
                 nova_senha = st.text_input(
-                    "Senha *", type="password", key=f"edit_senha_{uname}",
-                    help="Sempre obrigatório digitar aqui pra salvar — repita a senha atual se não quiser trocá-la.",
+                    "Nova senha (opcional)", type="password", key=f"edit_senha_{uname}",
+                    placeholder="Deixe em branco para manter a senha atual",
+                    help=(
+                        "Só preencha se quiser TROCAR a senha desta pessoa. Em branco, a senha "
+                        "atual dela é mantida — dá pra mexer em permissões, e-mail ou modo de "
+                        "acesso sem precisar saber (nem redefinir) a senha de ninguém."
+                    ),
                 )
 
                 opcoes_acesso = ["Precisa de aprovação do admin", "Acesso direto (sem aprovação)"]
@@ -324,8 +333,8 @@ def _render_user_management_section(config, client, current_username: str):
                 st.divider()
                 pending_key = f"_pending_save_{uname}"
                 if st.button("💾 Salvar Alterações", key=f"btn_save_{uname}", type="primary", use_container_width=True):
-                    if not novo_nome.strip() or not novo_email.strip() or not novo_nick.strip() or not nova_senha:
-                        st.error("❌ Nome, e-mail, usuário e senha são todos obrigatórios.")
+                    if not novo_nome.strip() or not novo_email.strip() or not novo_nick.strip():
+                        st.error("❌ Nome, e-mail e usuário são obrigatórios.")
                     else:
                         st.session_state[pending_key] = {
                             "new_username": novo_nick.strip(), "email": novo_email.strip(), "nome": novo_nome.strip(),
@@ -341,13 +350,32 @@ def _render_user_management_section(config, client, current_username: str):
                         f"Usuário: **{pendente['new_username']}** | Acesso: "
                         f"**{'Direto' if pendente['acesso_direto'] else 'Precisa de aprovação'}** | "
                         f"Aprovador: **{'Sim' if pendente['is_approver'] else 'Não'}** | "
+                        f"Senha: **{'TROCA para a nova' if pendente['senha'] else 'mantém a atual'}** | "
                         f"Permissões: **{', '.join(pendente['permissions']) or 'nenhuma'}**"
                     )
                     ccs1, ccs2 = st.columns(2)
                     with ccs1:
                         if st.button("✅ Confirmar e salvar", key=f"confirm_save_{uname}", type="primary", use_container_width=True):
                             try:
-                                novo_hash = bcrypt.hashpw(pendente["senha"].encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                                if pendente["senha"]:
+                                    novo_hash = bcrypt.hashpw(
+                                        pendente["senha"].encode("utf-8"), bcrypt.gensalt()
+                                    ).decode("utf-8")
+                                else:
+                                    # Senha em branco = manter a atual. update_user_full
+                                    # sempre grava o hash que recebe, então aqui a gente
+                                    # lê o hash que já existe e devolve ele igual — em vez
+                                    # de obrigar o admin a redefinir (ou saber) a senha da
+                                    # pessoa só pra mexer numa permissão.
+                                    novo_hash = client.get_user_login_info(uname).get("password_hash") or ""
+                                    if not novo_hash:
+                                        # Nunca gravar hash vazio: isso deixaria a pessoa
+                                        # sem conseguir logar. Melhor recusar e explicar.
+                                        raise AccessControlError(
+                                            "Não foi possível recuperar a senha atual desta pessoa, "
+                                            "então salvar agora a deixaria sem acesso. Informe uma "
+                                            "nova senha no campo acima pra prosseguir."
+                                        )
                                 username_final = client.update_user_full(
                                     uname, pendente["new_username"], pendente["email"], pendente["nome"],
                                     novo_hash, pendente["acesso_direto"], pendente["is_approver"], pendente["permissions"],
