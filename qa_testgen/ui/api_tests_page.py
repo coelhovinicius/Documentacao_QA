@@ -156,7 +156,16 @@ class ApiTestsPageMixin:
                 col_file = st.file_uploader("Collection (*.postman_collection.json) *", type=["json"], key="apiw_col_file")
             with ce:
                 env_file = st.file_uploader("Environment (*.postman_environment.json) — opcional", type=["json"], key="apiw_env_file")
-            substituir = st.checkbox("Substituir os casos já existentes (desmarcado = acrescenta)", value=True, key="apiw_col_replace")
+            casos_atuais = len(self.state.get('api_casos') or [])
+            substituir = st.checkbox(
+                "Começar do zero: apagar os casos já listados e ficar só com os desta collection",
+                value=True, key="apiw_col_replace",
+                help="Desmarque para ADICIONAR os casos desta collection ao fim da lista atual "
+                     "(ex.: juntar Login + Cadastro numa mesma bateria).",
+                disabled=casos_atuais == 0,
+            )
+            if casos_atuais:
+                st.caption(f"Há {casos_atuais} caso(s) na lista agora.")
             if st.button("📥 Importar", key="btn_api_import", disabled=col_file is None, type="primary"):
                 self._api_importar_postman(col_file, env_file, substituir)
                 st.rerun()
