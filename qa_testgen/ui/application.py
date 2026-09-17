@@ -9821,7 +9821,16 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "com o formulário montado a partir dos metadados do próprio projeto — campo "
             "customizado aparece sozinho. Aceita evidências em imagem (anexo + embutidas na "
             "Descrição), tem modo de criar **vários filhos de uma vez** sob um pai (quebrar "
-            "uma User Story em Tasks), e dá pra criar tag nova na hora"
+            "uma User Story em Tasks), e dá pra criar tag nova na hora\n"
+            "- **🔌 Testes de API**: executa testes de API direto do app, em Python (sem Node/Newman). "
+            "Os casos vêm de uma collection do Postman (v2.1, com environment opcional — os `pm.test` "
+            "mais comuns viram asserções automaticamente), de uma definição salva pelo próprio módulo, "
+            "ou são criados na tela. Variáveis `{{nome}}`, segredos só em sessão (mascarados em toda "
+            "evidência), encadeamento de valores extraídos da resposta (token do login → rota "
+            "protegida). Evidências: RELATORIO.md, RELATORIO.pdf no padrão QA TestGen e .zip com uma "
+            "pasta por caso (request, response, resultado e prints), com opção de guardar em "
+            "Documentos Armazenados. Não depende do Azure DevOps — o vínculo com Test Cases e o "
+            "registro de resultado lá é a próxima fase"
         )
         st.caption(
             "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "
@@ -9851,8 +9860,8 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "interno do app de qualquer forma\n"
             "- **Permissões granulares**: acesso à Integração com Azure DevOps, ao Relatório de "
             "Testes, ao modo \"Gerar a partir de uma Query\", ao Manual de Testes, aos "
-            "Documentos Armazenados, ao Mapa Mental e ao Criar Bug são liberados "
-            "individualmente — quem não tem permissão nem vê a opção\n"
+            "Documentos Armazenados, ao Mapa Mental, ao Criar Bug, ao Criar Work Item e aos "
+            "Testes de API são liberados individualmente — quem não tem permissão nem vê a opção\n"
             "- **Logs de auditoria**: os últimos 500 eventos do app (login, aprovações, "
             "integrações, relatórios gerados, sessões revogadas) ficam visíveis só pro dono, em "
             "Administração"
@@ -9979,14 +9988,16 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
         return f"""
         <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
-        <svg width="100%" viewBox="0 0 460 285" style="max-width:460px;display:block;margin:0 auto;">
+        <svg width="100%" viewBox="0 0 460 360" style="max-width:460px;display:block;margin:0 auto;">
             {node(20, 15, 200, "🔎 Criar Query com IA", "WIQL por descrição")}
             {node(240, 15, 200, "📘 Manual de Testes", "Reprodução em UAT")}
             {node(20, 90, 200, "🗄️ Documentos Armazenados", "Excluir é só do dono")}
             {node(240, 90, 200, "🧠 Mapa Mental", "Árvore navegável")}
             {node(20, 165, 200, "📊 Relatório de Testes", "Status real do board")}
             {node(240, 165, 200, "🐛 Criar Bug", "Com evidências em imagem")}
-            {node(130, 240, 200, "🛡️ Administração", "Permissões e Logs")}
+            {node(20, 240, 200, "🧱 Criar Work Item", "Qualquer tipo, campos dinâmicos")}
+            {node(240, 240, 200, "🔌 Testes de API", "Postman → execução → evidências")}
+            {node(130, 315, 200, "🛡️ Administração", "Permissões e Logs")}
         </svg>
         </div>
         """

@@ -44,6 +44,7 @@ API_TESTS_STATE_DEFAULTS = {
     'api_pdf': None,
     'api_zip': None,
     'api_flash': None,
+    'api_etapa_pendente': None,
 }
 
 _ETAPAS = ['1. Definição', '2. Execução', '3. Evidências']
@@ -102,16 +103,29 @@ class ApiTestsPageMixin:
             "relatório em Markdown e PDF no padrão QA TestGen, e pacote .zip pra arquivar. "
             "Integração com o Azure DevOps (vincular a Test Cases e registrar resultado) vem na próxima fase."
         )
+        self._api_render_ajuda()
 
         flash = self.state.get('api_flash')
         if flash:
             getattr(st, flash[0])(flash[1])
             self.state.set('api_flash', None)
 
+        # Troca de etapa pedida por um botão "Próxima etapa": o rádio já foi
+        # instanciado na passada anterior, então o valor é aplicado aqui, antes
+        # de renderizá-lo de novo (o Streamlit proíbe mexer na chave depois).
+        pendente = self.state.get('api_etapa_pendente')
+        if pendente in _ETAPAS:
+            st.session_state['apiw_etapa'] = pendente
+            self.state.set('api_etapa', pendente)
+            self.state.set('api_etapa_pendente', None)
+
+        st.markdown("**Etapas** — use o seletor abaixo (ou os botões \"Próxima etapa\" no fim de cada tela):")
         col_e, col_n = st.columns([4, 1])
         with col_e:
-            etapa = st.radio("Etapa", _ETAPAS, index=_ETAPAS.index(self.state.get('api_etapa') or _ETAPAS[0]),
-                             horizontal=True, key="apiw_etapa", label_visibility="collapsed")
+            # `index` só na primeira renderização: depois disso o valor vive
+            # em st.session_state['apiw_etapa'] e passar os dois gera conflito.
+            extra = {} if 'apiw_etapa' in st.session_state else {'index': _ETAPAS.index(self.state.get('api_etapa') or _ETAPAS[0])}
+            etapa = st.radio("Etapa", _ETAPAS, horizontal=True, key="apiw_etapa", label_visibility="collapsed", **extra)
             self.state.set('api_etapa', etapa)
         with col_n:
             if st.button("🔄 Nova execução", key="btn_api_reset", use_container_width=True):
@@ -125,6 +139,46 @@ class ApiTestsPageMixin:
             self._api_render_execucao()
         else:
             self._api_render_evidencias()
+
+    def _api_botao_proxima_etapa(self, destino: str, rotulo: str, key: str):
+        st.divider()
+        if st.button(rotulo, key=key, type="primary", use_container_width=True):
+            self.state.set('api_etapa_pendente', destino)
+            st.rerun()
+
+    def _api_render_ajuda(self):
+        with st.expander("ℹ️ O que é e como usar esta área"):
+            st.markdown(
+                "**O que é:** um executor de testes de API dentro do app. Você descreve as requisições "
+                "(método, URL, headers, body) e o que a resposta precisa ter (status, campos, valores), o app "
+                "chama a API de verdade, confere cada regra e monta a evidência — sem precisar do Postman "
+                "aberto nem de Node/Newman.\n\n"
+                "**As 3 etapas** (seletor logo abaixo):\n"
+                "1. **Definição** — nome, ambiente, Base URL, de onde vêm os casos, variáveis e (opcional) contexto.\n"
+                "2. **Execução** — roda os casos habilitados, na ordem, e mostra o resultado de cada asserção.\n"
+                "3. **Evidências** — é aqui que ficam os **botões de download**: `RELATORIO.md`, `RELATORIO.pdf` "
+                "(padrão QA TestGen), `.zip` com uma pasta por caso (request, response, resultado e seus prints) e "
+                "a definição `.json` para repetir a bateria depois.\n\n"
+                "**De onde vêm os casos** (etapa 1, \"Origem dos testes\"):\n"
+                "- 📮 **Collection do Postman** — no Postman: clique nos três pontos da collection → **Export** → "
+                "formato *Collection v2.1* → salva um `*.postman_collection.json`. O **environment** é opcional: "
+                "aba *Environments* → três pontos → **Export** → `*.postman_environment.json` (traz as variáveis). "
+                "Os `pm.test` mais comuns são convertidos em asserções automaticamente; o que não der vira um aviso "
+                "amarelo no caso, pra você completar na tela.\n"
+                "- 🧩 **Definição salva** — o `.json` que a etapa 3 exporta. Serve pra repetir a mesma bateria "
+                "amanhã sem depender do Postman.\n"
+                "- ✍️ **Criar manualmente** — monta cada caso do zero na própria tela.\n\n"
+                "**Variáveis:** qualquer `{{nome}}` em URL, headers ou body é substituído pelo valor da tabela. "
+                "`{{base_url}}` é sempre o campo Base URL. Variáveis **secretas** (senhas, tokens) são pedidas em campo "
+                "de senha, ficam só nesta sessão e saem **mascaradas** de toda evidência. Um caso pode **extrair** "
+                "um valor da resposta pra uma variável (ex.: `data.token` → `auth_token`) e os casos seguintes usam "
+                "`{{auth_token}}` — por isso a ordem importa.\n\n"
+                "**Contexto (opcional):** texto livre e documentos de apoio que entram no relatório como seção "
+                "\"Contexto\" — ex.: qual User Story está sendo testada, que credenciais/perfil foram usados, o que "
+                "se espera. Não altera a execução; é só documentação.\n\n"
+                "**Regras:** um caso sem asserção é reprovado (o mínimo é o status HTTP esperado); casos "
+                "desabilitados não rodam e aparecem como \"Não Executado\"; nada é enviado ao Azure DevOps nesta versão."
+            )
 
     # ------------------------------------------------------------ 1. Definição
     def _api_render_definicao(self):
@@ -199,11 +253,15 @@ class ApiTestsPageMixin:
                 self.state.set('api_docs_texto', texto or "")
             st.caption("✅ " + ", ".join(self.state.get('api_docs_nomes') or []))
         self.state.set('api_contexto', st.text_area(
-            "Contexto da execução", value=self.state.get('api_contexto') or '', height=90,
-            placeholder="Ex.: prévia da API em HML, User Story de Login, credenciais de colaborador...", key="apiw_contexto"))
+            "Contexto da execução (texto livre — vira a seção \"Contexto\" do relatório; não altera a execução)",
+            value=self.state.get('api_contexto') or '', height=90,
+            placeholder="Ex.: Testes da User Story de Login (POST /api/v1/auth/login) na prévia de HML, com credenciais de colaborador. Objetivo: validar 200/401/422 e o token.",
+            help="Use para quem for ler o relatório entender o que estava sendo testado, por quê, com qual perfil/credencial e em que situação do projeto.",
+            key="apiw_contexto"))
 
         st.divider()
         self._api_render_casos()
+        self._api_botao_proxima_etapa(_ETAPAS[1], "➡️ Próxima etapa: 2. Execução", "btn_api_next_1")
 
     def _api_render_variaveis(self):
         st.markdown("##### 🔤 Variáveis (`{{nome}}` em URL, headers e body)")
@@ -232,11 +290,33 @@ class ApiTestsPageMixin:
         secretas = [v['nome'] for v in novas if v['secreto']]
         segredos = dict(self.state.get('api_segredos') or {})
         if secretas:
+            usados, extraidos = self._api_uso_de_variaveis()
+            st.caption("Valores das variáveis secretas (só nesta sessão):")
             cols = st.columns(min(3, len(secretas)))
             for i, nome in enumerate(secretas):
+                # Deixa explícito o que é obrigatório e o que não é: variável
+                # que um caso extrai da resposta (ex.: auth_token) ou que nenhum
+                # caso habilitado usa (ex.: senha de um caso desmarcado) é opcional.
+                if nome in extraidos:
+                    rotulo, ajuda = f"🔒 {nome} — opcional", "Preenchida automaticamente por um caso que extrai esse valor da resposta. Deixe em branco."
+                elif nome not in usados:
+                    rotulo, ajuda = f"🔒 {nome} — opcional", "Nenhum caso habilitado usa esta variável no momento."
+                else:
+                    rotulo, ajuda = f"🔒 {nome} — obrigatória", "Usada por pelo menos um caso habilitado."
                 with cols[i % len(cols)]:
-                    segredos[nome] = st.text_input(f"🔒 {nome}", value=segredos.get(nome, ""), type="password", key=f"apiw_secret_{nome}")
+                    segredos[nome] = st.text_input(rotulo, value=segredos.get(nome, ""), type="password",
+                                                   key=f"apiw_secret_{nome}", help=ajuda)
         self.state.set('api_segredos', {k: v for k, v in segredos.items() if k in secretas})
+
+    def _api_uso_de_variaveis(self):
+        """(variáveis usadas por casos habilitados, variáveis produzidas por extração)."""
+        casos = [c for c in (self.state.get('api_casos') or []) if c.get('habilitado', True)]
+        usados = set()
+        for c in casos:
+            texto = " ".join([c.get('url') or '', c.get('body') or ''] + list((c.get('headers') or {}).values()))
+            usados.update(ApiTestRunner._RE_VAR.findall(texto))
+        extraidos = {e.get('nome') for c in casos for e in (c.get('extrair') or [])}
+        return usados, extraidos
 
     def _api_render_casos(self):
         casos = self.state.get('api_casos') or []
@@ -450,11 +530,7 @@ class ApiTestsPageMixin:
                 erros.append(f"Caso '{c.get('nome')}': sem asserções.")
         # Só cobra segredo que algum caso habilitado realmente usa e que
         # nenhum caso produz por extração (ex.: auth_token vem do login).
-        usados = set()
-        for c in casos:
-            texto = " ".join([c.get('url') or '', c.get('body') or ''] + list((c.get('headers') or {}).values()))
-            usados.update(ApiTestRunner._RE_VAR.findall(texto))
-        extraidos = {e.get('nome') for c in casos for e in (c.get('extrair') or [])}
+        usados, extraidos = self._api_uso_de_variaveis()
         secretas_vazias = [
             v['nome'] for v in (self.state.get('api_variaveis') or [])
             if v['secreto'] and v['nome'] in usados and v['nome'] not in extraidos
@@ -505,7 +581,7 @@ class ApiTestsPageMixin:
                         st.code(ApiEvidenceBuilder.texto_request(r, segredos), language="http")
                     with t2:
                         st.code(ApiEvidenceBuilder.texto_response(r, segredos), language="http")
-        st.info("➡️ Vá para a etapa **3. Evidências** para gerar o relatório (.md/.pdf), anexar imagens e baixar o pacote.")
+        self._api_botao_proxima_etapa(_ETAPAS[2], "➡️ Próxima etapa: 3. Evidências (gerar e baixar relatórios)", "btn_api_next_2")
 
     def _api_executar(self):
         casos = [ApiTestCase.from_dict(c) for c in (self.state.get('api_casos') or [])]
@@ -534,6 +610,7 @@ class ApiTestsPageMixin:
         resultados = self.state.get('api_resultados')
         if not resultados:
             st.info("Execute os testes na etapa **2. Execução** antes de gerar as evidências.")
+            self._api_botao_proxima_etapa(_ETAPAS[1], "⬅️ Ir para 2. Execução", "btn_api_goto_2")
             return
         st.markdown("##### 🖼️ Imagens complementares por caso (opcional)")
         st.caption("Prints seus (Postman, tela do sistema, etc.) que entram no PDF e no .zip junto do caso.")

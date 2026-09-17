@@ -15,6 +15,7 @@ O **QA Automation – Azure DevOps** é uma aplicação web interna que usa Inte
 3. Permite revisão e edição manual de tudo antes de finalizar (CRUD completo em cada etapa)
 4. Exporta CSV e PDF prontos para uso
 5. Integra diretamente com o **Azure DevOps** via API — cria Test Cases, Test Plans, Requirement-based Suites, e vincula tudo automaticamente (com sugestão de vínculos via IA)
+6. Executa **testes de API** (módulo Testes de API): importa collections do Postman ou casos criados na tela, roda em Python puro e gera evidências (.md, .pdf, .zip) — sem depender do n8n nem do Azure DevOps
 
 A aplicação é usada publicamente via navegador, protegida por login.
 
@@ -233,6 +234,7 @@ projeto/
 │   │   └── session.py                  # wrapper do st.session_state
 │   ├── domain/
 │   │   ├── models/                     # MatrixRow, TestCase, TestPlan, TestStep
+│   │   ├── models/api_test.py          # modelos do módulo Testes de API (caso, asserção, resultado)
 │   │   └── validators/                 # validação de campos obrigatórios
 │   ├── infrastructure/
 │   │   ├── webhook_client.py           # chamadas aos 11 webhooks do n8n
@@ -242,7 +244,10 @@ projeto/
 │   │   ├── document_processor.py       # extração de texto (PDF/DOCX/TXT)
 │   │   ├── document_store.py           # Documentos Armazenados (Turso/libsql)
 │   │   ├── pdf_report.py               # PDF (Documentação QA e Relatório de Testes)
-│   │   └── manual_pdf.py               # PDF do Manual de Testes (UAT)
+│   │   ├── manual_pdf.py               # PDF do Manual de Testes (UAT)
+│   │   ├── postman_importer.py         # Postman v2.1 (collection/environment) -> casos de Testes de API
+│   │   ├── api_test_runner.py          # executor dos Testes de API (requests; variáveis; asserções)
+│   │   └── api_evidence.py             # evidências dos Testes de API (mascaramento, RELATORIO.md, .zip)
 │   └── (scripts auxiliares de teste/diagnóstico, fora do fluxo principal do app)
 └── docs/
     ├── documentacao_tecnica.md         # este documento
@@ -300,6 +305,28 @@ Não existe mais `cookie_secret` — a sessão não usa assinatura local, valida
 | 5 | Planos | Planos/Suites de Teste gerados por IA; CRUD completo |
 | 6 | Download | Exporta CSV (Casos / Planos+Suites+Casos) e PDF completo |
 | 7 | Azure DevOps | Configuração dinâmica (Org/Projeto/Area) → Work Items → sugestão de vínculos por IA → revisão manual → integração real |
+
+---
+
+## 9.1 Módulo Testes de API (fora dos 7 passos)
+
+Área da barra lateral (permissão `testes_api`), implementada em `qa_testgen/ui/api_tests_page.py` como mixin de `UserInterface`; estado em chaves `api_*` do `SessionState`.
+
+| Etapa | O que acontece |
+|---|---|
+| 1. Definição | Nome, Ambiente, Base URL (`{{base_url}}`), origem dos casos (collection Postman + environment opcional; definição `.json` do próprio módulo; criação manual), variáveis (secretas só em sessão), documentos de contexto opcionais, editor por caso (método, URL, headers, body, asserções declarativas, extração de variáveis) |
+| 2. Execução | `ApiTestRunner` roda os casos habilitados em ordem com `requests` (uma `Session` por execução, certificados do sistema operacional), resolve `{{variáveis}}`, avalia as asserções e propaga valores extraídos (ex.: token) |
+| 3. Evidências | `ApiEvidenceBuilder` gera `RELATORIO.md` e `.zip` (pasta por caso: `1_request.txt`, `2_response.txt`, `3_resultado.txt` + imagens); `PdfReportGenerator.generate_api_test_report` gera o PDF no padrão do app; opção de salvar no Documentos Armazenados (tipos `pdf`, `md`, `zip`) |
+
+**Decisões técnicas:**
+- Python puro, sem Node/Newman: o app roda no Streamlit Community Cloud. Os scripts JavaScript do Postman **não são executados** — `PostmanImporter.convert_test_script` converte por padrão de texto os `pm.test` mais comuns (`to.have.status`, `to.have.property`, `to.not.have.property`, `to.eql`, `to.be.a/an`, `.not.empty`, `collectionVariables.set`, comparação com variável lida via `.get`, aliases como `const d = pm.response.json().data`); o restante vira aviso no caso.
+- Tipos de asserção (`ASSERTION_TYPES` em `domain/models/api_test.py`): `status`, `json_exists`, `json_absent`, `json_equals`, `json_not_empty`, `json_type`, `json_contains`, `json_equals_var`, `header_contains`, `body_contains`, `body_not_contains`, `response_time_max`. Caminho JSON simples: `data.user.email`, `errors.email[0]`.
+- Caso sem asserção é reprovado explicitamente; caso desabilitado aparece como "Não Executado".
+- Segurança: valores de variáveis secretas, tokens Bearer, JWTs e campos `password`/`token`/`secret` em JSON saem mascarados (`***MASCARADO***`) de todas as evidências; a definição `.json` exportada nunca inclui valores secretos.
+- Disco do Streamlit Cloud é efêmero: evidências existem para download ou para o Documentos Armazenados (Turso).
+- Testes unitários em `tests/test_api_tests_module.py` (importador, runner com servidor HTTP local, mascaramento/zip).
+
+**Próximas fases (não implementadas):** vínculo dos casos a Test Cases do Azure DevOps (existentes ou novos, com Projeto/Area Path/Tags/Atribuído a/Plano/Suíte) e registro de Test Runs com evidência anexada; interpretação de texto livre por IA (n8n) com campos mínimos obrigatórios.
 
 ---
 

@@ -261,7 +261,7 @@ Streamlit Community Cloud com auto-deploy a partir do `main` — Secrets configu
 
 **PAT pessoal** — Work Items (Read & Write) + Test Management (Read & Write). Nunca salvo em disco.
 
-**Permissões granulares** — `assistente_qa` (o assistente de QA, Passos 1–6), `azure_devops` (Passo 7, Criar Query com IA), `execution_report` (Relatório de Testes), `azure_query` (Passo 1 — Gerar a partir de uma Query), `manual_testes` (Manual de Testes), `documentos_armazenados` (salvar/ver Documentos Armazenados — excluir continua exclusivo do dono, mesmo com a permissão), `mapa_mental` (Mapa Mental), `criar_bug` (Criar Bug), e `criar_work_item` (Criar Work Item), concedidas individualmente — tudo num único cadastro por usuário, na aba "Usuários" da Administração.
+**Permissões granulares** — `assistente_qa` (o assistente de QA, Passos 1–6), `azure_devops` (Passo 7, Criar Query com IA), `execution_report` (Relatório de Testes), `azure_query` (Passo 1 — Gerar a partir de uma Query), `manual_testes` (Manual de Testes), `documentos_armazenados` (salvar/ver Documentos Armazenados — excluir continua exclusivo do dono, mesmo com a permissão), `mapa_mental` (Mapa Mental), `criar_bug` (Criar Bug), `criar_work_item` (Criar Work Item) e `testes_api` (Testes de API), concedidas individualmente — tudo num único cadastro por usuário, na aba "Usuários" da Administração.
 
 > ⚠️ **Nenhuma funcionalidade é liberada só por logar.** Sem `assistente_qa`, a pessoa não vê os Passos 1–6: ao entrar, vai direto pra área que tem permissão (ou pra uma tela de atalhos, se tiver mais de uma). O dono do app (`APP_OWNER_USERNAME`) sempre tem tudo, independente de cadastro.
 
