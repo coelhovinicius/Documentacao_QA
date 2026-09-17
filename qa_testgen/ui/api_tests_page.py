@@ -44,6 +44,8 @@ API_TESTS_STATE_DEFAULTS = {
     'api_md': None,
     'api_pdf': None,
     'api_zip': None,
+    'api_ia_especificacao': '',
+    'api_ia_observacoes': '',
     'api_baixado': False,       # algum download/salvamento já foi feito nesta geração
     'show_new_api_run_modal': False,
     'show_leave_api_modal': False,
@@ -178,6 +180,10 @@ class ApiTestsPageMixin:
                 "(padrão QA TestGen), `.zip` com uma pasta por caso (request, response, resultado e seus prints) e "
                 "a definição `.json` para repetir a bateria depois.\n\n"
                 "**De onde vêm os casos** (etapa 1, \"Origem dos testes\"):\n"
+                "- 🤖 **Gerar com IA** — cole a User Story / descrição do Work Item (ou anexe documentos em Contexto), "
+                "informe a Base URL e clique em *Gerar casos com IA*: a bateria inteira (sucesso, validações, credenciais "
+                "inválidas, regras de negócio, token) aparece pronta no editor. Senhas nunca vão pra IA — ela só declara "
+                "as variáveis e você preenche.\n"
                 "- 📮 **Collection do Postman** — no Postman: clique nos três pontos da collection → **Export** → "
                 "formato *Collection v2.1* → salva um `*.postman_collection.json`. O **environment** é opcional: "
                 "aba *Environments* → três pontos → **Export** → `*.postman_environment.json` (traz as variáveis). "
@@ -220,9 +226,12 @@ class ApiTestsPageMixin:
         st.divider()
         st.markdown("##### 📥 Origem dos testes")
         origem = st.radio("Como definir os casos?",
-                          ["📮 Importar collection do Postman", "🧩 Importar definição salva (.json deste módulo)", "✍️ Criar manualmente"],
+                          ["🤖 Gerar com IA (User Story / Work Item / documento)", "📮 Importar collection do Postman",
+                           "🧩 Importar definição salva (.json deste módulo)", "✍️ Criar manualmente"],
                           horizontal=True, key="apiw_origem", label_visibility="collapsed")
-        if origem.startswith("📮"):
+        if origem.startswith("🤖"):
+            self._api_render_geracao_ia()
+        elif origem.startswith("📮"):
             cc, ce = st.columns(2)
             with cc:
                 col_file = st.file_uploader("Collection (*.postman_collection.json) *", type=["json"], key="apiw_col_file")
@@ -282,6 +291,123 @@ class ApiTestsPageMixin:
         st.divider()
         self._api_render_casos()
         self._api_botao_proxima_etapa(_ETAPAS[1], "➡️ Próxima etapa: 2. Execução", "btn_api_next_1")
+
+    def _api_render_geracao_ia(self):
+        """
+        Gera a bateria a partir de uma especificação (texto colado e/ou
+        documentos de contexto) + o mínimo obrigatório. A IA devolve casos
+        no formato do módulo; segredos ficam pra pessoa preencher.
+        """
+        st.caption(
+            "Cole a User Story / descrição do Work Item (ou anexe documentos em \"Contexto\", mais abaixo). "
+            "Obrigatório: **Base URL** (acima) e a **especificação**. A IA monta os casos (sucesso, validações, "
+            "credenciais inválidas, regras de negócio, uso do token) e você só revisa e executa."
+        )
+        self.state.set('api_ia_especificacao', st.text_area(
+            "Especificação (User Story, critérios de aceite, descrição do endpoint) *",
+            value=self.state.get('api_ia_especificacao') or '', height=220, key="apiw_ia_spec",
+            placeholder="Ex.: User Story — Login. Endpoint POST /api/auth/login. Dados: email (obrigatório, formato válido), "
+                        "password (obrigatório). Retorno 200: { data: { token, token_type, user } } ... 422 ... 401 ... 403 ...",
+        ))
+        self.state.set('api_ia_observacoes', st.text_area(
+            "Observações / dicas pra IA (opcional)",
+            value=self.state.get('api_ia_observacoes') or '', height=80, key="apiw_ia_obs",
+            placeholder="Ex.: a rota real em HML é /api/v1/auth/login; existe usuário inativo de teste; não testar logout.",
+        ))
+        docs_txt = self.state.get('api_docs_texto') or ''
+        if docs_txt:
+            st.caption(f"📄 {len(self.state.get('api_docs_nomes') or [])} documento(s) de contexto também serão enviados à IA ({len(docs_txt)} caracteres).")
+        substituir = st.checkbox("Começar do zero: apagar os casos já listados e ficar só com os gerados", value=True,
+                                 key="apiw_ia_replace", disabled=not (self.state.get('api_casos') or []))
+        pronto = bool((self.state.get('api_ia_especificacao') or '').strip() or docs_txt) and \
+            (self.state.get('api_base_url') or '').startswith(('http://', 'https://'))
+        if not pronto:
+            st.info("Preencha a Base URL e a especificação (ou anexe documentos) pra habilitar a geração.")
+        with st.container(key="azure_blue_btn_api_gen_ia"):
+            st.button("🤖 Gerar casos com IA", key="btn_api_gen_ia", width="stretch",
+                      disabled=(not pronto) or self.state.get('is_processing'),
+                      on_click=self.trigger_action, args=("api_generate_ai",))
+        if self.state.get('current_action') == 'api_generate_ai' and not self.state.get('show_interrupt_modal'):
+            try:
+                especificacao = (self.state.get('api_ia_especificacao') or '').strip()
+                if docs_txt:
+                    especificacao += "\n\n=== DOCUMENTOS DE CONTEXTO ===\n" + docs_txt[:20000]
+                with st.spinner("A IA está montando a bateria de testes (isso pode levar até um minuto)..."):
+                    resp = self.client.trigger_api_test_generation(
+                        especificacao, self.state.get('api_base_url'), self.state.get('api_ambiente'),
+                        self.state.get('api_ia_observacoes') or '', self.state.get('api_variaveis') or [],
+                    )
+                self._api_aplicar_geracao_ia(resp, substituir)
+            except Exception as error:
+                self._flash_error(f"Não foi possível gerar os casos com IA: {error}")
+            self.clear_action()
+            st.rerun()
+
+    def _api_aplicar_geracao_ia(self, resp: dict, substituir: bool):
+        """Converte a resposta da IA em casos do módulo e mescla variáveis."""
+        novos, invalidos = [], 0
+        for c in resp.get('casos') or []:
+            metodo = str(c.get('metodo', 'GET')).upper()
+            if metodo not in HTTP_METHODS or not str(c.get('url') or '').strip():
+                invalidos += 1
+                continue
+            headers = {}
+            for h in c.get('headers') or []:
+                if isinstance(h, dict) and h.get('chave'):
+                    headers[str(h['chave']).strip()] = str(h.get('valor', '') or '')
+            assercoes = [
+                {"tipo": str(a.get('tipo')), "alvo": str(a.get('alvo') or ''), "valor": str(a.get('valor') if a.get('valor') is not None else ''), "descricao": str(a.get('descricao') or '')}
+                for a in (c.get('assercoes') or []) if isinstance(a, dict) and a.get('tipo') in ASSERTION_TYPES
+            ]
+            if not any(a['tipo'] == 'status' for a in assercoes):
+                assercoes.insert(0, {"tipo": "status", "alvo": "", "valor": "200", "descricao": "Status esperado (revise)"})
+            caso = ApiTestCase(
+                id=str(uuid.uuid4()), nome=str(c.get('nome') or f"Caso {len(novos) + 1}"), metodo=metodo,
+                url=str(c.get('url')).strip(), headers=headers, body=str(c.get('body') or ''),
+                descricao=str(c.get('descricao') or ''),
+            ).to_dict()
+            caso['assercoes'] = assercoes
+            caso['extrair'] = [
+                {"nome": str(e.get('nome')).strip(), "caminho": str(e.get('caminho') or '').strip()}
+                for e in (c.get('extrair') or []) if isinstance(e, dict) and e.get('nome')
+            ]
+            novos.append(caso)
+        if not novos:
+            self._flash_error("A IA não devolveu nenhum caso válido. Revise a especificação e tente de novo.")
+            return
+
+        por_nome = {v['nome']: v for v in (self.state.get('api_variaveis') or [])}
+        usadas = set()
+        for c in novos:
+            texto = " ".join([c['url'], c['body']] + list(c['headers'].values()))
+            usadas.update(ApiTestRunner._RE_VAR.findall(texto))
+        for v in resp.get('variaveis') or []:
+            nome = str(v.get('nome') or '').strip()
+            if not nome or nome == 'base_url':
+                continue
+            atual = por_nome.get(nome, {"nome": nome, "valor": "", "secreto": False})
+            atual['secreto'] = bool(atual['secreto'] or v.get('secreto'))
+            por_nome[nome] = atual
+        extraidas = {e['nome'] for c in novos for e in c['extrair']}
+        for nome in usadas - set(por_nome) - extraidas - {'base_url'}:
+            por_nome[nome] = {"nome": nome, "valor": "", "secreto": any(t in nome.lower() for t in ('password', 'senha', 'token', 'secret'))}
+        self.state.set('api_variaveis', list(por_nome.values()))
+        if not self.state.get('api_projeto') and resp.get('nome_sugerido'):
+            self.state.set('api_projeto', resp['nome_sugerido'])
+            # o text_input guarda o valor vazio dele; sem isso, sobrescreve o nome no próximo render
+            st.session_state.pop('apiw_projeto', None)
+        self.state.set('api_casos', novos if substituir else (self.state.get('api_casos') or []) + novos)
+        self.state.set('api_resultados', None)
+        self._api_invalidar_evidencias()
+        msg = f"{len(novos)} caso(s) gerado(s) pela IA. Revise as asserções e preencha as variáveis secretas."
+        if invalidos:
+            msg += f" {invalidos} caso(s) vieram inválidos e foram descartados."
+        if resp.get('observacoes'):
+            msg += f" Observações da IA: {resp['observacoes']}"
+        self._flash_success(msg)
+        for k in list(st.session_state.keys()):
+            if isinstance(k, str) and k.startswith('apiw_') and k not in ('apiw_projeto', 'apiw_base_url', 'apiw_ambiente', 'apiw_timeout', 'apiw_origem', 'apiw_ia_spec', 'apiw_ia_obs', 'apiw_ia_replace', 'apiw_docs'):
+                del st.session_state[k]
 
     def _api_render_variaveis(self):
         st.markdown("##### 🔤 Variáveis (`{{nome}}` em URL, headers e body)")
@@ -459,6 +585,7 @@ class ApiTestsPageMixin:
             return
         if not self.state.get('api_projeto'):
             self.state.set('api_projeto', col['nome'])
+            st.session_state.pop('apiw_projeto', None)
         # variáveis: environment sobrescreve collection
         por_nome = {v['nome']: v for v in (self.state.get('api_variaveis') or [])}
         for v in col['variaveis'] + env:

@@ -97,6 +97,7 @@ O app depende de **11 workflows** publicados e **ativos** no n8n:
 | `Doc_QA_Image_Interpretation` | `/webhook/qa-testgen-image-interpretation` | Interpreta (descreve em texto) uma imagem extraída de um documento ou de um Work Item |
 | `Doc_QA_Execution_Report_Narrative` | `/webhook/qa-testgen-execution-report-narrative` | Sugere os textos narrativos (Contexto, Escopo, Conclusão, Próximos Passos) do Relatório de Testes |
 | `Doc_QA_WIQL_Generation` | `/webhook/qa-testgen-wiql-generation` | Traduz uma descrição em linguagem natural pra uma query WIQL válida do Azure DevOps |
+| `Doc_QA_ApiTest_Generation` | `/webhook/qa-testgen-apitest-generation` | Monta a bateria de Testes de API (casos com método/URL/headers/body, asserções declarativas, extração de variáveis) a partir de especificação + Base URL; mesmo encadeamento de 5 provedores |
 | `Doc_QA_Manual_Generation` | `/webhook/qa-testgen-manual-generation` | Gera o Manual de Testes (UAT) em linguagem simples, sugerindo quais imagens disponíveis combinam com cada passo |
 | `Doc_QA_Duplicate_Comparison` | `/webhook/qa-testgen-duplicate-comparison` | Compara o CONTEÚDO (pré-condições/passos) de um par Caso novo × Caso já existente que pareceu duplicado por título, decidindo se são de fato o mesmo teste |
 
@@ -270,6 +271,7 @@ N8N_WEBHOOK_URL_ACCESS_CONTROL = "http://seu-n8n/webhook/qa-testgen-access-contr
 N8N_WEBHOOK_URL_IMAGE_INTERPRETATION = "http://seu-n8n/webhook/qa-testgen-image-interpretation"
 N8N_WEBHOOK_URL_EXECUTION_REPORT_NARRATIVE = "http://seu-n8n/webhook/qa-testgen-execution-report-narrative"
 N8N_WEBHOOK_URL_WIQL_GENERATION = "http://seu-n8n/webhook/qa-testgen-wiql-generation"
+N8N_WEBHOOK_URL_APITEST_GENERATION = "http://seu-n8n/webhook/qa-testgen-apitest-generation"
 N8N_WEBHOOK_URL_MANUAL_GENERATION = "http://seu-n8n/webhook/qa-testgen-manual-generation"
 N8N_WEBHOOK_URL_DUPLICATE_COMPARISON = "http://seu-n8n/webhook/qa-testgen-duplicate-comparison"
 N8N_API_KEY = "..."
@@ -314,7 +316,7 @@ Não existe mais `cookie_secret` — a sessão não usa assinatura local, valida
 
 | Etapa | O que acontece |
 |---|---|
-| 1. Definição | Nome, Ambiente, Base URL (`{{base_url}}`), origem dos casos (collection Postman + environment opcional; definição `.json` do próprio módulo; criação manual), variáveis (secretas só em sessão), documentos de contexto opcionais, editor por caso (método, URL, headers, body, asserções declarativas, extração de variáveis) |
+| 1. Definição | Nome, Ambiente, Base URL (`{{base_url}}`), origem dos casos (geração por IA via `Doc_QA_ApiTest_Generation` a partir de especificação/documentos; collection Postman + environment opcional; definição `.json` do próprio módulo; criação manual), variáveis (secretas só em sessão), documentos de contexto opcionais, editor por caso (método, URL, headers, body, asserções declarativas, extração de variáveis) |
 | 2. Execução | `ApiTestRunner` roda os casos habilitados em ordem com `requests` (uma `Session` por execução, certificados do sistema operacional), resolve `{{variáveis}}`, avalia as asserções e propaga valores extraídos (ex.: token) |
 | 3. Evidências | `ApiEvidenceBuilder` gera `RELATORIO.md` e `.zip` (pasta por caso: `1_request.txt`, `2_response.txt`, `3_resultado.txt` + imagens); `PdfReportGenerator.generate_api_test_report` gera o PDF no padrão do app; opção de salvar no Documentos Armazenados (tipos `pdf`, `md`, `zip`) |
 
@@ -326,7 +328,7 @@ Não existe mais `cookie_secret` — a sessão não usa assinatura local, valida
 - Disco do Streamlit Cloud é efêmero: evidências existem para download ou para o Documentos Armazenados (Turso).
 - Testes unitários em `tests/test_api_tests_module.py` (importador, runner com servidor HTTP local, mascaramento/zip).
 
-**Próximas fases (não implementadas):** vínculo dos casos a Test Cases do Azure DevOps (existentes ou novos, com Projeto/Area Path/Tags/Atribuído a/Plano/Suíte) e registro de Test Runs com evidência anexada; interpretação de texto livre por IA (n8n) com campos mínimos obrigatórios.
+**Próximas fases (não implementadas):** vínculo dos casos a Test Cases do Azure DevOps (existentes ou novos, com Projeto/Area Path/Tags/Atribuído a/Plano/Suíte) e registro de Test Runs com evidência anexada; geração determinística a partir de Swagger/OpenAPI.
 
 ---
 

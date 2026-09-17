@@ -50,6 +50,10 @@ class AppConfiguration:
             'N8N_WEBHOOK_URL_DUPLICATE_COMPARISON',
             'http://localhost:5678/webhook/qa-testgen-duplicate-comparison'
         )
+        self.webhook_apitest_generation = self._get(
+            'N8N_WEBHOOK_URL_APITEST_GENERATION',
+            'http://localhost:5678/webhook/qa-testgen-apitest-generation'
+        )
         self.api_key = self._get('N8N_API_KEY', '')
 
         self.turso_database_url = self._get('TURSO_DATABASE_URL', '')

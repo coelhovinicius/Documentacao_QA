@@ -40,7 +40,7 @@ class WebhookClient:
     # é o formato de erro comum a todos eles ({"error": "Todos os
     # provedores de IA falharam...", "detalhe": ...}), não uma resposta
     # de sucesso com formato inesperado. Ver _parse.
-    _CHAVES_DE_SUCESSO = ("casos_de_teste", "matriz", "duvidas", "planos_de_teste", "vinculos")
+    _CHAVES_DE_SUCESSO = ("casos_de_teste", "matriz", "duvidas", "planos_de_teste", "vinculos", "casos")
 
     def _parse(self, response: requests.Response) -> dict:
         raw = response.text.strip()
@@ -333,6 +333,40 @@ class WebhookClient:
             "escopo_proposito": data.get("escopo_proposito", ""),
             "conclusao": data.get("conclusao", ""),
             "proximos_passos": data.get("proximos_passos", ""),
+        }
+
+    def trigger_api_test_generation(self, especificacao: str, base_url: str, ambiente: str,
+                                    observacoes: str, variaveis_existentes: list) -> dict:
+        """
+        Pede pra IA montar uma bateria de Testes de API no formato declarativo
+        do módulo (casos com método/URL/headers/body/asserções/extração), a
+        partir de uma User Story/Work Item/documento + o mínimo obrigatório
+        (Base URL, ambiente). Segredos NUNCA vão pra IA: ela só declara as
+        variáveis (nome + secreto) e a pessoa preenche na tela.
+
+        Retorna {"nome_sugerido", "casos": [...], "variaveis": [...], "observacoes"}.
+        """
+        response = requests.post(
+            self.config.webhook_apitest_generation,
+            json={
+                "especificacao": especificacao,
+                "base_url": base_url,
+                "ambiente": ambiente,
+                "observacoes": observacoes or "",
+                "variaveis_existentes": "\n".join(
+                    f"- {v['nome']} | {'secreta' if v.get('secreto') else 'normal'}" for v in (variaveis_existentes or [])
+                ) or "(nenhuma)",
+            },
+            headers=self.headers,
+            timeout=300,
+        )
+        self._levantar_erro_com_detalhe(response)
+        data = self._parse(response)
+        return {
+            "nome_sugerido": data.get("nome_sugerido", ""),
+            "casos": data.get("casos") or [],
+            "variaveis": data.get("variaveis") or [],
+            "observacoes": data.get("observacoes", ""),
         }
 
     def trigger_wiql_generation(self, descricao: str, nome_projeto: str) -> dict:
