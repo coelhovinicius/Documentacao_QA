@@ -220,6 +220,24 @@ def render_pending_approvals_panel(config):
                         st.error(f"❌ {error}")
 
 
+def _render_grade_permissoes(key_fn, marcadas: set, por_linha: int = 3) -> list:
+    """
+    Desenha os checkboxes de permissão numa grade de `por_linha` colunas
+    (em vez de uma coluna por permissão): com 9 permissões lado a lado os
+    rótulos ficavam espremidos e quebrando no meio da palavra.
+    key_fn(perm_key) -> key do widget. Retorna a lista de chaves marcadas.
+    """
+    marcadas_agora = []
+    for inicio in range(0, len(_PERMISSOES_CONHECIDAS), por_linha):
+        linha = _PERMISSOES_CONHECIDAS[inicio:inicio + por_linha]
+        cols = st.columns(por_linha)
+        for col, (perm_key, perm_label) in zip(cols, linha):
+            with col:
+                if st.checkbox(perm_label, value=perm_key in marcadas, key=key_fn(perm_key)):
+                    marcadas_agora.append(perm_key)
+    return marcadas_agora
+
+
 _PERMISSOES_CONHECIDAS = [
     # O assistente de QA (Passos 1 a 6) também é permissão, não um "piso"
     # liberado pra todo mundo que loga: assim dá pra ter um usuário que só
@@ -342,12 +360,9 @@ def _render_user_management_section(config, client, current_username: str):
                 )
 
                 st.write("**Permissões:**")
-                novas_permissoes = []
-                cols_perm = st.columns(len(_PERMISSOES_CONHECIDAS))
-                for i, (perm_key, perm_label) in enumerate(_PERMISSOES_CONHECIDAS):
-                    with cols_perm[i]:
-                        if st.checkbox(perm_label, value=perm_key in permissoes_atuais, key=f"edit_perm_{perm_key}_{uname}"):
-                            novas_permissoes.append(perm_key)
+                novas_permissoes = _render_grade_permissoes(
+                    lambda perm_key: f"edit_perm_{perm_key}_{uname}", permissoes_atuais,
+                )
 
                 if st.button("⭐ Conceder tudo (acesso direto + aprovador + todas as permissões)", key=f"btn_grant_all_{uname}"):
                     st.session_state[grant_all_key] = True
@@ -467,12 +482,7 @@ def _render_user_management_section(config, client, current_username: str):
             ) == "Acesso direto (sem aprovação)"
             is_approver_criar = st.checkbox("É aprovador (pode aprovar/negar acesso de outros usuários)")
             st.write("**Permissões:**")
-            permissoes_criar = []
-            cols_criar = st.columns(len(_PERMISSOES_CONHECIDAS))
-            for i, (perm_key, perm_label) in enumerate(_PERMISSOES_CONHECIDAS):
-                with cols_criar[i]:
-                    if st.checkbox(perm_label, key=f"criar_perm_{perm_key}"):
-                        permissoes_criar.append(perm_key)
+            permissoes_criar = _render_grade_permissoes(lambda perm_key: f"criar_perm_{perm_key}", set())
 
             submitted = st.form_submit_button("➕ Criar Usuário", type="primary")
             if submitted:
