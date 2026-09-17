@@ -351,19 +351,33 @@ class ApiTestsPageMixin:
             if metodo not in HTTP_METHODS or not str(c.get('url') or '').strip():
                 invalidos += 1
                 continue
+            # A IA às vezes devolve headers como objeto {"Accept": "..."} em vez
+            # de lista de {chave, valor}, e body como objeto em vez de string.
             headers = {}
-            for h in c.get('headers') or []:
-                if isinstance(h, dict) and h.get('chave'):
-                    headers[str(h['chave']).strip()] = str(h.get('valor', '') or '')
+            raw_headers = c.get('headers') or []
+            if isinstance(raw_headers, dict):
+                headers = {str(k).strip(): str(v or '') for k, v in raw_headers.items() if str(k).strip()}
+            else:
+                for h in raw_headers:
+                    if isinstance(h, dict):
+                        chave = h.get('chave') or h.get('key') or h.get('nome') or h.get('name')
+                        if chave:
+                            headers[str(chave).strip()] = str(h.get('valor', h.get('value', '')) or '')
+            body = c.get('body')
+            if isinstance(body, (dict, list)):
+                body = json.dumps(body, ensure_ascii=False)
+            body = str(body or '')
             assercoes = [
                 {"tipo": str(a.get('tipo')), "alvo": str(a.get('alvo') or ''), "valor": str(a.get('valor') if a.get('valor') is not None else ''), "descricao": str(a.get('descricao') or '')}
-                for a in (c.get('assercoes') or []) if isinstance(a, dict) and a.get('tipo') in ASSERTION_TYPES
+                for a in (c.get('assercoes') or []) if isinstance(a, dict) and str(a.get('tipo', '')).strip().lower() in ASSERTION_TYPES
             ]
+            for a in assercoes:
+                a['tipo'] = a['tipo'].strip().lower()
             if not any(a['tipo'] == 'status' for a in assercoes):
                 assercoes.insert(0, {"tipo": "status", "alvo": "", "valor": "200", "descricao": "Status esperado (revise)"})
             caso = ApiTestCase(
                 id=str(uuid.uuid4()), nome=str(c.get('nome') or f"Caso {len(novos) + 1}"), metodo=metodo,
-                url=str(c.get('url')).strip(), headers=headers, body=str(c.get('body') or ''),
+                url=str(c.get('url')).strip(), headers=headers, body=body,
                 descricao=str(c.get('descricao') or ''),
             ).to_dict()
             caso['assercoes'] = assercoes
