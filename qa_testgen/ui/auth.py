@@ -221,6 +221,10 @@ def render_pending_approvals_panel(config):
 
 
 _PERMISSOES_CONHECIDAS = [
+    # O assistente de QA (Passos 1 a 6) também é permissão, não um "piso"
+    # liberado pra todo mundo que loga: assim dá pra ter um usuário que só
+    # abre Bug, ou só cria Work Item, e não vê o fluxo de documentação.
+    ("assistente_qa", "🧪 Assistente de QA (Passos 1–6)"),
     ("azure_devops", "🔗 Azure DevOps (Passo 7)"),
     ("execution_report", "📊 Relatório de Testes (Passo 8)"),
     ("azure_query", "🔎 Gerar a partir de Query do Azure DevOps"),

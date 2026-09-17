@@ -478,6 +478,37 @@ class UserInterface:
             self.state.set('show_bug_confirm_modal', False)
             st.rerun()
 
+    # Todas as áreas do app que dependem de permissão, na ordem em que
+    # aparecem na barra lateral: (chave de estado da página, permissão,
+    # rótulo). Fonte única usada tanto pra decidir o que mostrar na
+    # sidebar quanto pra saber pra onde levar quem NÃO tem o assistente
+    # de QA — sem isso, quem só tem "Criar Bug" logava e caía no fluxo de
+    # documentação (Passos 1–6), que não deveria nem existir pra ela.
+    _AREAS_COM_PERMISSAO = [
+        ('show_manual_page', 'manual_testes', '📘 Manual de Testes (UAT)'),
+        ('show_document_store_page', 'documentos_armazenados', '🗄️ Documentos Armazenados'),
+        ('show_mindmap_page', 'mapa_mental', '🧠 Mapa Mental'),
+        ('show_bug_page', 'criar_bug', '🐛 Criar Bug'),
+        ('show_work_item_page', 'criar_work_item', '🧱 Criar Work Item'),
+        ('show_wiql_generation_page', 'azure_devops', '🔎 Criar Query com IA'),
+        ('show_execution_report_page', 'execution_report', '📊 Relatório de Testes'),
+    ]
+
+    def _areas_liberadas(self) -> list:
+        """Áreas (fora do assistente de QA) que o usuário atual pode acessar."""
+        return [
+            (chave, perm, rotulo)
+            for chave, perm, rotulo in self._AREAS_COM_PERMISSAO
+            if self._get_permission_cached(perm)
+        ]
+
+    def _pagina_ativa(self) -> str:
+        """Chave da página de área aberta agora, ou '' se está no assistente."""
+        for chave, _perm, _rotulo in self._AREAS_COM_PERMISSAO:
+            if self.state.get(chave):
+                return chave
+        return ''
+
     def _get_permission_cached(self, permission: str) -> bool:
         """
         Checa uma permissão granular (ex.: 'azure_devops', 'execution_report')
@@ -707,11 +738,16 @@ class UserInterface:
                     self.state.set('show_interrupt_modal', True)
                     st.rerun()
             
-            if st.button("🔄 Nova Análise", use_container_width=True, type="primary", key="btn_new_sidebar"):
+            # "Nova Análise" e "Início" só fazem sentido pra quem tem o
+            # assistente de QA — as duas navegam pra dentro do fluxo de
+            # Passos 1–6.
+            tem_assistente = self._get_permission_cached("assistente_qa")
+
+            if tem_assistente and st.button("🔄 Nova Análise", use_container_width=True, type="primary", key="btn_new_sidebar"):
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
-            if st.button("🏠 Início", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_home_sidebar"):
+            if tem_assistente and st.button("🏠 Início", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_home_sidebar"):
                 # Diferente de "Nova Análise": só navega pro Passo 1, sem
                 # apagar nada — tudo que já foi preenchido continua lá, e
                 # dá pra voltar a qualquer passo já feito normalmente.
@@ -5666,6 +5702,45 @@ class UserInterface:
                 st.caption("⚠️ Essa coluna não tem um State mapeado pra esse tipo — pode nascer na coluna padrão.")
             return {"coluna": info["name"], "campo_coluna": campo_coluna, "state": info.get("state")}
 
+    def _render_sem_assistente(self):
+        """
+        Tela para quem NÃO tem a permissão do assistente de QA (Passos
+        1–6). Se a pessoa tem alguma outra área liberada, leva direto pra
+        ela (logar já cai no lugar certo, sem passar por um fluxo que ela
+        não pode usar). Se tem mais de uma, mostra os atalhos. Se não tem
+        nenhuma, explica em vez de deixar uma tela vazia/quebrada.
+        """
+        areas = self._areas_liberadas()
+
+        # Leva direto pra área quando ela é a única — mas só na primeira
+        # vez na sessão. Se redirecionasse sempre, o "← Voltar" de dentro
+        # da área voltaria pra cá e seria reenviado pra lá na hora,
+        # parecendo um botão quebrado.
+        if len(areas) == 1 and not self.state.get('_area_unica_ja_aberta'):
+            chave, _perm, _rotulo = areas[0]
+            self.state.set('_area_unica_ja_aberta', True)
+            self.state.set(chave, True)
+            st.rerun()
+
+        if not areas:
+            st.info(
+                "👋 Seu acesso ao app está ativo, mas nenhuma funcionalidade foi liberada "
+                "para o seu usuário ainda."
+            )
+            st.caption(
+                "Um administrador precisa liberar ao menos uma funcionalidade no cadastro do "
+                "seu usuário (Administração → Usuários → Permissões). Enquanto isso, você "
+                "ainda pode consultar o \"Sobre o app\" na barra lateral."
+            )
+            return
+
+        st.subheader("👋 Bem-vindo")
+        st.caption("Escolha por onde começar — essas são as áreas liberadas para o seu usuário.")
+        for chave, _perm, rotulo in areas:
+            if st.button(rotulo, use_container_width=True, key=f"btn_home_area_{chave}"):
+                self.state.set(chave, True)
+                st.rerun()
+
     def _work_item_creation_page(self):
         self._processing_banner()
         st.subheader("🧱 Criar Work Item")
@@ -9900,6 +9975,13 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
         if self.state.get('show_work_item_page'):
             self._work_item_creation_page()
+            return
+
+        # Daqui pra baixo é o assistente de QA (Passos 1–6). Quem não tem
+        # essa permissão nunca deve cair aqui: vai direto pra área que
+        # tem, ou vê uma tela explicando que não tem acesso a nada.
+        if not self._get_permission_cached("assistente_qa"):
+            self._render_sem_assistente()
             return
 
         self._progress()

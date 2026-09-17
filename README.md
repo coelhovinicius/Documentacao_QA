@@ -112,7 +112,7 @@ Escolhidos na tela, com sugestão automática baseada no Tipo de Documento do Pa
 - **Login com aprovação**: só o dono entra direto; demais usuários precisam de aprovação a cada sessão.
 - **Sessão via ID opaco**: a URL não revela usuário nem senha — o dado fica no n8n, revogável a qualquer momento (a própria sessão, ou a de outra pessoa).
 - **PAT do Azure DevOps**: por padrão, cada usuário informa o próprio — nunca salvo em disco, só na memória da sessão. Opcionalmente, o dono pode configurar `AZURE_DEVOPS_PAT` nos Secrets pra usar um PAT compartilhado (ninguém mais digita token; a rastreabilidade de quem fez o quê passa a vir da tag automática `criado-por:<usuário>` em cada Bug/Test Case criado).
-- **Permissões granulares**: acesso à Integração com Azure DevOps, ao Relatório de Testes, ao modo "Gerar a partir de uma Query", ao Manual de Testes, aos Documentos Armazenados, ao Mapa Mental, ao Criar Bug e ao Criar Work Item — liberados individualmente, então dá pra ter um usuário que **só** cria Work Items, por exemplo (lista completa em [Conceitos importantes](#conceitos-importantes)).
+- **Permissões granulares cobrindo TODAS as funcionalidades** — inclusive o próprio assistente de QA (Passos 1–6), que **não** é um piso liberado pra quem loga: é a permissão `assistente_qa`. Logo, dá pra ter um usuário que **só** abre Bug (ou só cria Work Item) — ele loga e cai direto naquela área, sem ver o fluxo de documentação. Quem não tem nenhuma funcionalidade liberada vê uma tela explicando isso, em vez de um app pela metade. Lista completa em [Conceitos importantes](#conceitos-importantes).
 - **Logs de auditoria**: últimos 500 eventos, visíveis só ao dono.
 
 ---
@@ -256,7 +256,9 @@ Streamlit Community Cloud com auto-deploy a partir do `main` — Secrets configu
 
 **PAT pessoal** — Work Items (Read & Write) + Test Management (Read & Write). Nunca salvo em disco.
 
-**Permissões granulares** — `azure_devops` (Passo 7, Criar Query com IA), `execution_report` (Relatório de Testes), `azure_query` (Passo 1 — Gerar a partir de uma Query), `manual_testes` (Manual de Testes), `documentos_armazenados` (salvar/ver Documentos Armazenados — excluir continua exclusivo do dono, mesmo com a permissão), `mapa_mental` (Mapa Mental), `criar_bug` (Criar Bug), e `criar_work_item` (Criar Work Item), concedidas individualmente — tudo num único cadastro por usuário, na aba "Usuários" da Administração. "Gerar a partir de Work Items" (Passo 1) não exige nenhuma dessas — disponível pra qualquer pessoa logada, usa o PAT pessoal.
+**Permissões granulares** — `assistente_qa` (o assistente de QA, Passos 1–6), `azure_devops` (Passo 7, Criar Query com IA), `execution_report` (Relatório de Testes), `azure_query` (Passo 1 — Gerar a partir de uma Query), `manual_testes` (Manual de Testes), `documentos_armazenados` (salvar/ver Documentos Armazenados — excluir continua exclusivo do dono, mesmo com a permissão), `mapa_mental` (Mapa Mental), `criar_bug` (Criar Bug), e `criar_work_item` (Criar Work Item), concedidas individualmente — tudo num único cadastro por usuário, na aba "Usuários" da Administração.
+
+> ⚠️ **Nenhuma funcionalidade é liberada só por logar.** Sem `assistente_qa`, a pessoa não vê os Passos 1–6: ao entrar, vai direto pra área que tem permissão (ou pra uma tela de atalhos, se tiver mais de uma). O dono do app (`APP_OWNER_USERNAME`) sempre tem tudo, independente de cadastro.
 
 **Status de QA via coluna do board** — no Relatório de Testes, vem da coluna do Kanban do Work Item vinculado, não do outcome do Test Point:
 
