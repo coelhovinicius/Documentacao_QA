@@ -5179,7 +5179,7 @@ class UserInterface:
                 )
 
         # --- Tags ---
-        with st.expander("🏷️ Tags (opcional)"):
+        with st.expander("🏷️ Tags (opcional)", key=f"bug_exp_tags_{key_prefix}", on_change="rerun"):
             with st.container(key=f"azure_blue_btn_fetch_tags_{key_prefix}"):
                 st.button(
                     "🔄 Buscar Tags existentes no Projeto",
@@ -5211,7 +5211,7 @@ class UserInterface:
                 )
 
         # --- Atribuir a ---
-        with st.expander("👤 Atribuir a (opcional)"):
+        with st.expander("👤 Atribuir a (opcional)", key=f"bug_exp_membros_{key_prefix}", on_change="rerun"):
             with st.container(key=f"azure_blue_btn_fetch_membros_{key_prefix}"):
                 st.button(
                     "🔄 Buscar Pessoas pra Atribuir",
@@ -5559,7 +5559,7 @@ class UserInterface:
         sozinho quando o Work Item nasce com ela em System.Tags.
         Retorna a string no formato que a API espera ("tag1; tag2") ou "".
         """
-        with st.expander("🏷️ Tags (opcional)"):
+        with st.expander("🏷️ Tags (opcional)", key=f"wi_exp_tags_{key_prefix}", on_change="rerun"):
             st.button(
                 "🔄 Buscar Tags existentes no Projeto",
                 disabled=self.state.get('is_processing'),
@@ -5653,7 +5653,7 @@ class UserInterface:
         escolhido/não aplicável.
         """
         vazio = {"coluna": None, "campo_coluna": None, "state": None}
-        with st.expander("📋 Coluna do Board (opcional)"):
+        with st.expander("📋 Coluna do Board (opcional)", key=f"wi_exp_coluna_{key_prefix}", on_change="rerun"):
             if not area_path:
                 st.caption("Escolha uma Area Path acima pra poder posicionar o item numa coluna de board.")
                 return vazio
@@ -6190,7 +6190,7 @@ class UserInterface:
             st.caption(f"ℹ️ Sem Area Path escolhida, os filhos herdam a do pai: `{pai.get('area_path') or ado_project}`")
 
         membros = None
-        with st.expander("👤 Atribuir todos a alguém (opcional)"):
+        with st.expander("👤 Atribuir todos a alguém (opcional)", key="wi_exp_membros_lote", on_change="rerun"):
             membros = self._wi_render_pessoas(ado_client, "lote")
         atribuir_a = None
         if membros:
@@ -7686,7 +7686,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 pass
             total_kb = sum(a['tamanho_bytes'] for a in grupo['arquivos']) / 1024
             titulo_grupo = f"📁 {grupo['nome_projeto'] or '(sem nome)'} — {grupo['fluxo_origem']} — {criado_em_fmt} ({total_kb:.0f} KB)"
-            with st.expander(titulo_grupo):
+            with st.expander(titulo_grupo, key=f"docstore_grupo_{grupo['grupo_id']}", on_change="rerun"):
                 st.caption(f"Armazenado por: {grupo['criado_por'] or 'desconhecido'}")
                 for arq in grupo['arquivos']:
                     col_info, col_btn = st.columns([3, 1])
