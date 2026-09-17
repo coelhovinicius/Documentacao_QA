@@ -40,7 +40,7 @@ def confirm_matriz_deletion_modal(index: int):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary"):
+        if st.button("🗑️ Sim, Excluir", width="stretch", type="primary"):
             matriz = st.session_state['matriz']
             matriz.pop(index)
             # Renumera todos os IDs sequencialmente preservando o prefixo MC-
@@ -50,7 +50,7 @@ def confirm_matriz_deletion_modal(index: int):
             clear_widget_states()
             st.rerun()
     with c2:
-        if st.button("❌ Cancelar", use_container_width=True):
+        if st.button("❌ Cancelar", width="stretch"):
             st.rerun()
 
 
@@ -62,12 +62,12 @@ def confirm_deletion_modal(list_key: str, index: int):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary"):
+        if st.button("🗑️ Sim, Excluir", width="stretch", type="primary"):
             st.session_state[list_key].pop(index)
             clear_widget_states()
             st.rerun()
     with c2:
-        if st.button("❌ Cancelar", use_container_width=True):
+        if st.button("❌ Cancelar", width="stretch"):
             st.rerun()
 
 
@@ -79,13 +79,13 @@ def confirm_step_deletion_modal(steps_state_key: str, step_uid: str):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary", key="confirm_del_step"):
+        if st.button("🗑️ Sim, Excluir", width="stretch", type="primary", key="confirm_del_step"):
             st.session_state[steps_state_key] = [
                 s for s in st.session_state[steps_state_key] if s["uid"] != step_uid
             ]
             st.rerun()
     with c2:
-        if st.button("❌ Cancelar", use_container_width=True, key="cancel_del_step"):
+        if st.button("❌ Cancelar", width="stretch", key="cancel_del_step"):
             st.rerun()
 
 
@@ -97,13 +97,13 @@ def confirm_suite_deletion_modal(suites_state_key: str, suite_uid: str):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🗑️ Sim, Excluir", use_container_width=True, type="primary", key="confirm_del_suite"):
+        if st.button("🗑️ Sim, Excluir", width="stretch", type="primary", key="confirm_del_suite"):
             st.session_state[suites_state_key] = [
                 s for s in st.session_state[suites_state_key] if s["uid"] != suite_uid
             ]
             st.rerun()
     with c2:
-        if st.button("❌ Cancelar", use_container_width=True, key="cancel_del_suite"):
+        if st.button("❌ Cancelar", width="stretch", key="cancel_del_suite"):
             st.rerun()
 
 
@@ -116,12 +116,12 @@ def confirm_navigate_away_modal(target_step: int):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚪 Sim, Sair sem Salvar", use_container_width=True, type="primary", key="confirm_navigate"):
+        if st.button("🚪 Sim, Sair sem Salvar", width="stretch", type="primary", key="confirm_navigate"):
             clear_widget_states()
             st.session_state['step'] = target_step
             st.rerun()
     with c2:
-        if st.button("✖ Voltar a Editar", use_container_width=True, key="cancel_navigate"):
+        if st.button("✖ Voltar a Editar", width="stretch", key="cancel_navigate"):
             st.rerun()
 
 
@@ -134,12 +134,12 @@ def confirm_discard_new_modal(discard_flag_key: str):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🗑️ Sim, Descartar", use_container_width=True, type="primary", key="confirm_discard"):
+        if st.button("🗑️ Sim, Descartar", width="stretch", type="primary", key="confirm_discard"):
             st.session_state[discard_flag_key] = False
             clear_widget_states()
             st.rerun()
     with c2:
-        if st.button("❌ Voltar a Editar", use_container_width=True, key="cancel_discard"):
+        if st.button("❌ Voltar a Editar", width="stretch", key="cancel_discard"):
             st.rerun()
 
 
@@ -192,13 +192,13 @@ def confirm_azure_devops_full_push_modal(cases_to_create: list, items_display: l
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="azure_blue_btn_modal_confirm"):
+        if st.button("🚀 Sim, Integrar", width="stretch", type="primary", key="azure_blue_btn_modal_confirm"):
             st.session_state['show_ado_confirm_modal'] = False
             st.session_state['current_action'] = 'push_azure_devops_full'
             st.session_state['is_processing'] = True
             st.rerun()
     with c2:
-        if st.button("❌ Cancelar", use_container_width=True, key="cancel_ado_full_push"):
+        if st.button("❌ Cancelar", width="stretch", key="cancel_ado_full_push"):
             st.session_state['show_ado_confirm_modal'] = False
             st.rerun()
 
@@ -233,13 +233,13 @@ def confirm_static_suites_push_modal(cases_to_create: list, suites_display: list
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚀 Sim, Integrar", use_container_width=True, type="primary", key="static_blue_btn_modal_confirm"):
+        if st.button("🚀 Sim, Integrar", width="stretch", type="primary", key="static_blue_btn_modal_confirm"):
             st.session_state['show_static_confirm_modal'] = False
             st.session_state['current_action'] = 'push_static_suites'
             st.session_state['is_processing'] = True
             st.rerun()
     with c2:
-        if st.button("❌ Cancelar", use_container_width=True, key="cancel_static_push"):
+        if st.button("❌ Cancelar", width="stretch", key="cancel_static_push"):
             st.session_state['show_static_confirm_modal'] = False
             st.rerun()
 
@@ -262,13 +262,13 @@ def confirm_reconciliation_push_modal(items_display: list, plan_name: str):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚀 Sim, Vincular", use_container_width=True, type="primary", key="recon_blue_btn_modal_confirm"):
+        if st.button("🚀 Sim, Vincular", width="stretch", type="primary", key="recon_blue_btn_modal_confirm"):
             st.session_state['show_recon_confirm_modal'] = False
             st.session_state['current_action'] = 'push_reconciliation'
             st.session_state['is_processing'] = True
             st.rerun()
     with c2:
-        if st.button("❌ Cancelar", use_container_width=True, key="cancel_recon_push"):
+        if st.button("❌ Cancelar", width="stretch", key="cancel_recon_push"):
             st.session_state['show_recon_confirm_modal'] = False
             st.rerun()
 
@@ -292,10 +292,10 @@ def confirm_interrupt_modal():
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("⏹️ Sim, Interromper", use_container_width=True, type="primary", key="confirm_int_btn", on_click=_action_interrupt):
+        if st.button("⏹️ Sim, Interromper", width="stretch", type="primary", key="confirm_int_btn", on_click=_action_interrupt):
             st.rerun()
     with c2:
-        if st.button("Cancelar", use_container_width=True, key="cancel_int_btn", on_click=_action_cancel_interrupt):
+        if st.button("Cancelar", width="stretch", key="cancel_int_btn", on_click=_action_cancel_interrupt):
             st.rerun()
 
 
@@ -307,7 +307,7 @@ def confirm_new_analysis_modal(config=None):
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🔄 Sim, Iniciar", use_container_width=True, type="primary", key="confirm_new_btn"):
+        if st.button("🔄 Sim, Iniciar", width="stretch", type="primary", key="confirm_new_btn"):
             if config is not None:
                 username = st.session_state.get(SESSION_USER_KEY, "")
                 project = st.session_state.get('project_name', '') or "(sem projeto)"
@@ -317,7 +317,7 @@ def confirm_new_analysis_modal(config=None):
                     del st.session_state[key]
             st.rerun()
     with c2:
-        if st.button("Cancelar", use_container_width=True, key="cancel_new_btn"):
+        if st.button("Cancelar", width="stretch", key="cancel_new_btn"):
             st.session_state['show_new_analysis_modal'] = False
             st.rerun()
 
@@ -350,13 +350,55 @@ def confirm_new_report_modal():
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🔄 Sim, Novo Relatório", use_container_width=True, type="primary", key="confirm_new_report_btn"):
+        if st.button("🔄 Sim, Novo Relatório", width="stretch", type="primary", key="confirm_new_report_btn"):
             _clear_report_state()
             st.session_state['show_new_report_modal'] = False
             st.rerun()
     with c2:
-        if st.button("Cancelar", use_container_width=True, key="cancel_new_report_btn"):
+        if st.button("Cancelar", width="stretch", key="cancel_new_report_btn"):
             st.session_state['show_new_report_modal'] = False
+            st.rerun()
+
+
+@st.dialog("⚠️ Começar uma Nova Execução")
+def confirm_new_api_run_modal(reset_fn):
+    st.markdown(
+        "Isso vai limpar os casos, as variáveis, os resultados e os relatórios gerados na tela de "
+        "Testes de API. Essas informações serão **perdidas permanentemente** (baixe a definição "
+        ".json na etapa 3 se quiser repetir a bateria depois). Tem certeza?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔄 Sim, Nova Execução", width="stretch", type="primary", key="confirm_new_api_run_btn"):
+            reset_fn()
+            st.session_state['show_new_api_run_modal'] = False
+            st.rerun()
+    with c2:
+        if st.button("Cancelar", width="stretch", key="cancel_new_api_run_btn"):
+            st.session_state['show_new_api_run_modal'] = False
+            st.rerun()
+
+
+@st.dialog("⚠️ Sair dos Testes de API")
+def confirm_leave_api_tests_modal(reset_fn):
+    st.markdown(
+        "Você gerou relatórios de Testes de API e ainda não baixou nenhum arquivo. Se sair agora, "
+        "eles serão **perdidos** (não ficam salvos fora desta sessão). Deseja continuar mesmo assim?"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚪 Sair mesmo assim", width="stretch", type="primary", key="confirm_leave_api_btn"):
+            pending = st.session_state.get('_pending_navigation_after_api') or {}
+            reset_fn()
+            for key, value in pending.items():
+                st.session_state[key] = value
+            st.session_state['show_leave_api_modal'] = False
+            st.session_state.pop('_pending_navigation_after_api', None)
+            st.rerun()
+    with c2:
+        if st.button("✖ Continuar nos Testes de API", width="stretch", key="cancel_leave_api_btn"):
+            st.session_state['show_leave_api_modal'] = False
+            st.session_state.pop('_pending_navigation_after_api', None)
             st.rerun()
 
 
@@ -369,7 +411,7 @@ def confirm_leave_report_modal():
     )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚪 Sair mesmo assim", use_container_width=True, type="primary", key="confirm_leave_report_btn"):
+        if st.button("🚪 Sair mesmo assim", width="stretch", type="primary", key="confirm_leave_report_btn"):
             pending = st.session_state.get('_pending_navigation_after_report') or {}
             for key, value in pending.items():
                 st.session_state[key] = value
@@ -378,7 +420,7 @@ def confirm_leave_report_modal():
             st.session_state.pop('_pending_navigation_after_report', None)
             st.rerun()
     with c2:
-        if st.button("✖ Continuar no Relatório", use_container_width=True, key="cancel_leave_report_btn"):
+        if st.button("✖ Continuar no Relatório", width="stretch", key="cancel_leave_report_btn"):
             st.session_state['show_leave_report_modal'] = False
             st.session_state.pop('_pending_navigation_after_report', None)
             st.rerun()
@@ -398,25 +440,54 @@ def confirm_leave_report_modal():
 # nada de trabalho longo rodando logo depois do fechamento.
 
 
-@st.dialog("📢 Mudança no PAT do Azure DevOps")
-def aviso_pat_compartilhado_modal(marcar_nao_mostrar_fn):
+@st.dialog("📢 Novidades no app", width="large")
+def aviso_pat_compartilhado_modal(marcar_nao_mostrar_fn, tem_testes_api: bool = True):
     """
+    Aviso de novidades mostrado a quem não é o dono do app, uma vez por
+    versão do aviso (ver UserInterface._NOTICE_VERSION). Escrito pra quem
+    entende o negócio mas não o app: o que é, pra que serve e onde clicar.
+
     marcar_nao_mostrar_fn: callable() sem argumentos — grava que essa
-    pessoa não quer ver esse aviso de novo (chamado só se ela marcar a
-    caixinha e confirmar).
+    pessoa não quer ver esta versão do aviso de novo (chamado só se ela
+    marcar a caixinha e confirmar).
+    tem_testes_api: se a pessoa tem a permissão da área — muda só a
+    última frase (onde clicar vs. a quem pedir acesso).
     """
+    st.markdown("#### 🔌 Nova área: Testes de API")
     st.markdown(
-        "A partir de agora, o app usa um **PAT compartilhado**, configurado pelo "
-        "administrador — você não precisa mais informar nenhum token do Azure DevOps "
-        "em nenhuma tela."
+        "Agora dá pra **executar testes de API por dentro do app** e sair com a evidência "
+        "pronta — sem Newman, sem montar pasta de print na mão.\n\n"
+        "**Como funciona, em 3 etapas:**\n"
+        "1. **Definição** — você sobe a *collection* exportada do Postman (e o *environment*, "
+        "se tiver), ou monta os casos direto na tela. Informa a URL base da API e as senhas "
+        "num campo protegido (elas nunca aparecem nas evidências).\n"
+        "2. **Execução** — clica em *Executar testes*: o app chama a API de verdade, na ordem, "
+        "e mostra o que passou e o que falhou em cada caso.\n"
+        "3. **Evidências** — clica em *Gerar relatórios* e baixa o **PDF** (no padrão dos outros "
+        "relatórios do app), o **.md** e um **.zip** com uma pasta por caso (o que foi enviado, "
+        "o que voltou e o resultado). Dá pra anexar seus prints e guardar tudo em "
+        "*Documentos Armazenados*.\n\n"
+        "💡 Cada tela tem, no topo, um expansível **\"ℹ️ O que é e como usar esta área\"** — "
+        "inclusive com o passo a passo de como exportar a collection no Postman."
     )
+    if tem_testes_api:
+        st.markdown("**Onde:** botão **🔌 Testes de API** na barra lateral (menu à esquerda).")
+    else:
+        st.markdown(
+            "**Onde:** botão **🔌 Testes de API** na barra lateral — se ele não aparecer pra você, "
+            "peça ao administrador a permissão *Testes de API*."
+        )
+    st.divider()
+    st.markdown("#### 🔑 PAT compartilhado do Azure DevOps")
     st.markdown(
-        "Pra manter rastreabilidade de quem fez o quê, todo Bug e Test Case criado "
-        "recebe automaticamente a tag `criado-por:<seu usuário>` — visível direto no "
-        "próprio item, dentro do Azure DevOps."
+        "O app usa um **PAT compartilhado**, configurado pelo administrador — você não "
+        "precisa informar nenhum token do Azure DevOps em nenhuma tela. Pra manter a "
+        "rastreabilidade de quem fez o quê, todo Bug e Test Case criado recebe "
+        "automaticamente a tag `criado-por:<seu usuário>`, visível no próprio item dentro "
+        "do Azure DevOps."
     )
     nao_mostrar = st.checkbox("Não mostrar este aviso novamente", key="pat_notice_nao_mostrar_chk")
-    if st.button("Entendi", type="primary", use_container_width=True, key="pat_notice_ok_btn"):
+    if st.button("Entendi", type="primary", width="stretch", key="pat_notice_ok_btn"):
         if nao_mostrar:
             marcar_nao_mostrar_fn()
         st.session_state['_pat_notice_visto_nesta_sessao'] = True
