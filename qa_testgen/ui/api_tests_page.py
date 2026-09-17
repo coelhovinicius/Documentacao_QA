@@ -22,6 +22,7 @@ from qa_testgen.infrastructure.document_store import DocumentStore, DocumentStor
 from qa_testgen.infrastructure.pdf_report import PdfReportGenerator
 from qa_testgen.infrastructure.postman_importer import PostmanImporter, PostmanImportError
 from qa_testgen.ui.auth import SESSION_USER_KEY, log_action
+from qa_testgen.ui.dialogs import confirm_new_api_run_modal, confirm_leave_api_tests_modal
 
 
 API_TESTS_STATE_DEFAULTS = {
@@ -43,8 +44,9 @@ API_TESTS_STATE_DEFAULTS = {
     'api_md': None,
     'api_pdf': None,
     'api_zip': None,
-    'api_flash': None,
-    'api_etapa_pendente': None,
+    'api_baixado': False,       # algum download/salvamento já foi feito nesta geração
+    'show_new_api_run_modal': False,
+    'show_leave_api_modal': False,
 }
 
 _ETAPAS = ['1. Definição', '2. Execução', '3. Evidências']
@@ -82,7 +84,11 @@ class ApiTestsPageMixin:
                     segredos.append(v.split(' ', 1)[-1])
         return segredos
 
+    def _api_marcar_baixado(self):
+        self.state.set('api_baixado', True)
+
     def _api_invalidar_evidencias(self):
+        self.state.set('api_baixado', False)
         self.state.set('api_md', None)
         self.state.set('api_pdf', None)
         self.state.set('api_zip', None)
@@ -91,8 +97,9 @@ class ApiTestsPageMixin:
     def _api_tests_page(self):
         st.subheader("🔌 Testes de API")
         if st.button("← Voltar", key="btn_api_back"):
-            self.state.set('show_api_tests_page', False)
-            st.rerun()
+            # Mesmo guarda das outras telas: relatório gerado e não baixado
+            # pede confirmação antes de sair.
+            self._navigate_or_confirm({'show_api_tests_page': False})
         if not self._get_permission_cached("testes_api"):
             st.error("❌ Você não tem permissão pra acessar esta área.")
             return
@@ -105,34 +112,22 @@ class ApiTestsPageMixin:
         )
         self._api_render_ajuda()
 
-        flash = self.state.get('api_flash')
-        if flash:
-            getattr(st, flash[0])(flash[1])
-            self.state.set('api_flash', None)
+        if self.state.get('show_new_api_run_modal'):
+            confirm_new_api_run_modal(self._api_reset)
+        if self.state.get('show_leave_api_modal'):
+            confirm_leave_api_tests_modal(self._api_reset)
 
-        # Troca de etapa pedida por um botão "Próxima etapa": o rádio já foi
-        # instanciado na passada anterior, então o valor é aplicado aqui, antes
-        # de renderizá-lo de novo (o Streamlit proíbe mexer na chave depois).
-        pendente = self.state.get('api_etapa_pendente')
-        if pendente in _ETAPAS:
-            st.session_state['apiw_etapa'] = pendente
-            self.state.set('api_etapa', pendente)
-            self.state.set('api_etapa_pendente', None)
-
-        st.markdown("**Etapas** — use o seletor abaixo (ou os botões \"Próxima etapa\" no fim de cada tela):")
         col_e, col_n = st.columns([4, 1])
         with col_e:
-            # `index` só na primeira renderização: depois disso o valor vive
-            # em st.session_state['apiw_etapa'] e passar os dois gera conflito.
-            extra = {} if 'apiw_etapa' in st.session_state else {'index': _ETAPAS.index(self.state.get('api_etapa') or _ETAPAS[0])}
-            etapa = st.radio("Etapa", _ETAPAS, horizontal=True, key="apiw_etapa", label_visibility="collapsed", **extra)
-            self.state.set('api_etapa', etapa)
+            self._api_render_etapas()
         with col_n:
-            if st.button("🔄 Nova execução", key="btn_api_reset", use_container_width=True):
-                self._api_reset()
+            if st.button("🔄 Nova execução", key="btn_api_reset", width="stretch",
+                         disabled=not (self.state.get('api_casos') or self.state.get('api_resultados'))):
+                self.state.set('show_new_api_run_modal', True)
                 st.rerun()
 
         st.divider()
+        etapa = self.state.get('api_etapa') or _ETAPAS[0]
         if etapa == _ETAPAS[0]:
             self._api_render_definicao()
         elif etapa == _ETAPAS[1]:
@@ -140,10 +135,33 @@ class ApiTestsPageMixin:
         else:
             self._api_render_evidencias()
 
+    def _api_render_etapas(self):
+        """
+        Barra de etapas no mesmo visual da barra de progresso do assistente
+        (Passos 1–7): a etapa atual em destaque, as outras como botões.
+        """
+        atual = self.state.get('api_etapa') or _ETAPAS[0]
+        cols = st.columns(len(_ETAPAS))
+        for col, (rotulo, etapa) in zip(cols, zip(["🧾 1. Definição", "▶️ 2. Execução", "📦 3. Evidências"], _ETAPAS)):
+            with col:
+                if etapa == atual:
+                    st.markdown(
+                        f"<div style='padding:.45rem .5rem;border-radius:4px;background:#d0e8ff;"
+                        f"color:#0a4f8a;text-align:center;font-weight:700;border:1.5px solid #4A90D9'>"
+                        f"{rotulo}</div>",
+                        unsafe_allow_html=True,
+                    )
+                elif st.button(rotulo, key=f"api_nav_{etapa[0]}", width="stretch"):
+                    self.state.set('api_etapa', etapa)
+                    st.rerun()
+
+    def _api_tem_relatorio_nao_baixado(self) -> bool:
+        return bool(self.state.get('api_md')) and not self.state.get('api_baixado')
+
     def _api_botao_proxima_etapa(self, destino: str, rotulo: str, key: str):
         st.divider()
-        if st.button(rotulo, key=key, type="primary", use_container_width=True):
-            self.state.set('api_etapa_pendente', destino)
+        if st.button(rotulo, key=key, type="primary", width="stretch"):
+            self.state.set('api_etapa', destino)
             st.rerun()
 
     def _api_render_ajuda(self):
@@ -220,14 +238,16 @@ class ApiTestsPageMixin:
             )
             if casos_atuais:
                 st.caption(f"Há {casos_atuais} caso(s) na lista agora.")
-            if st.button("📥 Importar", key="btn_api_import", disabled=col_file is None, type="primary"):
-                self._api_importar_postman(col_file, env_file, substituir)
-                st.rerun()
+            with st.container(key="azure_blue_btn_api_import"):
+                if st.button("📥 Importar", key="btn_api_import", disabled=col_file is None, width="stretch"):
+                    self._api_importar_postman(col_file, env_file, substituir)
+                    st.rerun()
         elif origem.startswith("🧩"):
             def_file = st.file_uploader("Definição (.json exportado na etapa Evidências)", type=["json"], key="apiw_def_file")
-            if st.button("📥 Carregar definição", key="btn_api_import_def", disabled=def_file is None, type="primary"):
-                self._api_importar_definicao(def_file)
-                st.rerun()
+            with st.container(key="azure_blue_btn_api_import_def"):
+                if st.button("📥 Carregar definição", key="btn_api_import_def", disabled=def_file is None, width="stretch"):
+                    self._api_importar_definicao(def_file)
+                    st.rerun()
         else:
             if st.button("➕ Adicionar caso", key="btn_api_add_case_top"):
                 self._api_adicionar_caso()
@@ -270,7 +290,7 @@ class ApiTestsPageMixin:
         df = pd.DataFrame(variaveis or [{"nome": "", "valor": "", "secreto": False}], columns=["nome", "valor", "secreto"])
         df["valor"] = df.apply(lambda r: "" if r["secreto"] else r["valor"], axis=1)
         edit = st.data_editor(
-            df, num_rows="dynamic", use_container_width=True, hide_index=True, key="apiw_vars_editor",
+            df, num_rows="dynamic", width="stretch", hide_index=True, key="apiw_vars_editor",
             column_config={
                 "nome": st.column_config.TextColumn("Nome", required=True),
                 "valor": st.column_config.TextColumn("Valor (vazio se secreto)"),
@@ -359,7 +379,7 @@ class ApiTestsPageMixin:
                 df_a = pd.DataFrame(caso.get('assercoes') or [{"tipo": "status", "alvo": "", "valor": "200", "descricao": ""}],
                                     columns=["tipo", "alvo", "valor", "descricao"])
                 edit_a = st.data_editor(
-                    df_a, num_rows="dynamic", use_container_width=True, hide_index=True, key=f"apiw_asr_{cid}",
+                    df_a, num_rows="dynamic", width="stretch", hide_index=True, key=f"apiw_asr_{cid}",
                     column_config={
                         "tipo": st.column_config.SelectboxColumn("Tipo", options=ASSERTION_TYPES, required=True,
                                                                  help="; ".join(f"{k}: {v}" for k, v in ASSERTION_LABELS.items())),
@@ -376,7 +396,7 @@ class ApiTestsPageMixin:
                 st.markdown("**Extrair variáveis da resposta** (para usar nos próximos casos)")
                 df_e = pd.DataFrame(caso.get('extrair') or [], columns=["nome", "caminho"])
                 edit_e = st.data_editor(
-                    df_e, num_rows="dynamic", use_container_width=True, hide_index=True, key=f"apiw_ext_{cid}",
+                    df_e, num_rows="dynamic", width="stretch", hide_index=True, key=f"apiw_ext_{cid}",
                     column_config={
                         "nome": st.column_config.TextColumn("Variável"),
                         "caminho": st.column_config.TextColumn("Caminho JSON (ex.: data.token)"),
@@ -389,17 +409,17 @@ class ApiTestsPageMixin:
 
                 b1, b2, b3, b4 = st.columns(4)
                 with b1:
-                    if st.button("⬆️ Subir", key=f"apiw_up_{cid}", disabled=idx == 0, use_container_width=True):
+                    if st.button("⬆️ Subir", key=f"apiw_up_{cid}", disabled=idx == 0, width="stretch"):
                         casos[idx - 1], casos[idx] = casos[idx], casos[idx - 1]
                         self.state.set('api_casos', casos)
                         st.rerun()
                 with b2:
-                    if st.button("⬇️ Descer", key=f"apiw_down_{cid}", disabled=idx == len(casos) - 1, use_container_width=True):
+                    if st.button("⬇️ Descer", key=f"apiw_down_{cid}", disabled=idx == len(casos) - 1, width="stretch"):
                         casos[idx + 1], casos[idx] = casos[idx], casos[idx + 1]
                         self.state.set('api_casos', casos)
                         st.rerun()
                 with b3:
-                    if st.button("📋 Duplicar", key=f"apiw_dup_{cid}", use_container_width=True):
+                    if st.button("📋 Duplicar", key=f"apiw_dup_{cid}", width="stretch"):
                         novo = json.loads(json.dumps(caso))
                         novo['id'] = str(uuid.uuid4())
                         novo['nome'] = f"{caso.get('nome', '')} (cópia)"
@@ -407,7 +427,7 @@ class ApiTestsPageMixin:
                         self.state.set('api_casos', casos)
                         st.rerun()
                 with b4:
-                    if st.button("🗑️ Excluir", key=f"apiw_del_{cid}", use_container_width=True):
+                    if st.button("🗑️ Excluir", key=f"apiw_del_{cid}", width="stretch"):
                         casos.pop(idx)
                         self.state.set('api_casos', casos)
                         st.rerun()
@@ -435,7 +455,7 @@ class ApiTestsPageMixin:
             col = PostmanImporter.parse_collection(col_file.getvalue())
             env = PostmanImporter.parse_environment(env_file.getvalue()) if env_file is not None else []
         except PostmanImportError as error:
-            self.state.set('api_flash', ('error', f"❌ {error}"))
+            self._flash_error(str(error))
             return
         if not self.state.get('api_projeto'):
             self.state.set('api_projeto', col['nome'])
@@ -465,12 +485,12 @@ class ApiTestsPageMixin:
         self._api_invalidar_evidencias()
         self.state.set('api_resultados', None)
         avisos = sum(len(c.get('avisos') or []) for c in novos)
-        msg = f"✅ {len(novos)} caso(s) importado(s) de '{col['nome']}'."
+        msg = f"{len(novos)} caso(s) importado(s) de '{col['nome']}'."
         if avisos:
             msg += f" {avisos} aviso(s) de conversão — abra os casos marcados e revise as asserções."
-        self.state.set('api_flash', ('success' if not avisos else 'warning', msg))
+        (self._flash_success if not avisos else self._flash_warning)(msg)
         for k in list(st.session_state.keys()):
-            if isinstance(k, str) and k.startswith('apiw_') and k not in ('apiw_etapa', 'apiw_projeto', 'apiw_base_url', 'apiw_ambiente', 'apiw_timeout'):
+            if isinstance(k, str) and k.startswith('apiw_') and k not in ('apiw_projeto', 'apiw_base_url', 'apiw_ambiente', 'apiw_timeout'):
                 del st.session_state[k]
 
     def _api_exportar_definicao(self) -> str:
@@ -492,7 +512,7 @@ class ApiTestsPageMixin:
             data = json.loads(def_file.getvalue().decode("utf-8-sig"))
             assert data.get("formato") == "qa_testgen.api_tests.v1"
         except Exception:
-            self.state.set('api_flash', ('error', "❌ Arquivo não é uma definição exportada por este módulo."))
+            self._flash_error("Arquivo não é uma definição exportada por este módulo.")
             return
         self.state.set('api_projeto', data.get('projeto') or self.state.get('api_projeto'))
         if data.get('ambiente') in _AMBIENTES:
@@ -508,9 +528,9 @@ class ApiTestsPageMixin:
         self.state.set('api_casos', casos)
         self.state.set('api_resultados', None)
         self._api_invalidar_evidencias()
-        self.state.set('api_flash', ('success', f"✅ Definição carregada: {len(casos)} caso(s)."))
+        self._flash_success(f"Definição carregada: {len(casos)} caso(s).")
         for k in list(st.session_state.keys()):
-            if isinstance(k, str) and k.startswith('apiw_') and k != 'apiw_etapa':
+            if isinstance(k, str) and k.startswith('apiw_'):
                 del st.session_state[k]
 
     # ------------------------------------------------------------ 2. Execução
@@ -550,21 +570,23 @@ class ApiTestsPageMixin:
         for e in erros:
             st.warning(f"⚠️ {e}")
 
-        if st.button("▶️ Executar testes", type="primary", key="btn_api_run", disabled=bool(erros)):
-            self._api_executar()
-            st.rerun()
+        with st.container(key="azure_blue_btn_api_run"):
+            if st.button("▶️ Executar testes", key="btn_api_run", disabled=bool(erros), width="stretch"):
+                self._api_executar()
+                st.rerun()
 
         resultados = self.state.get('api_resultados')
         if not resultados:
             return
         resumo = ApiEvidenceBuilder.resumo(resultados)
         st.divider()
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Status geral", resumo['status_geral'])
-        m2.metric("Aprovados", resumo['aprovados'])
-        m3.metric("Reprovados", resumo['reprovados'] + resumo['erros'])
-        m4.metric("Asserções OK", f"{resumo['assercoes_ok']}/{resumo['assercoes']}")
-        m5.metric("Tempo médio", f"{resumo['tempo_medio_ms']} ms")
+        icone = "✅" if resumo['status_geral'] == 'Aprovado' else "❌"
+        st.markdown(
+            f"{icone} **Status geral: {resumo['status_geral']}** — "
+            f"**{resumo['aprovados']}** aprovado(s) · **{resumo['reprovados'] + resumo['erros']}** reprovado(s)/erro(s)"
+            + (f" · {resumo['pulados']} não executado(s)" if resumo['pulados'] else "")
+            + f" · asserções **{resumo['assercoes_ok']}/{resumo['assercoes']}** · tempo médio **{resumo['tempo_medio_ms']} ms**"
+        )
 
         segredos = self._api_lista_segredos()
         for idx, r in enumerate(resultados, start=1):
@@ -576,10 +598,9 @@ class ApiTestsPageMixin:
                 if r.erro:
                     st.error(r.erro)
                 if not r.pulado:
-                    t1, t2 = st.tabs(["Request", "Response"])
-                    with t1:
+                    with st.expander("📤 Request enviado"):
                         st.code(ApiEvidenceBuilder.texto_request(r, segredos), language="http")
-                    with t2:
+                    with st.expander("📥 Response recebido"):
                         st.code(ApiEvidenceBuilder.texto_response(r, segredos), language="http")
         self._api_botao_proxima_etapa(_ETAPAS[2], "➡️ Próxima etapa: 3. Evidências (gerar e baixar relatórios)", "btn_api_next_2")
 
@@ -602,8 +623,8 @@ class ApiTestsPageMixin:
                        "Testes de API", f"{self.state.get('api_projeto')} — {resumo['aprovados']}/{resumo['total'] - resumo['pulados']} aprovados")
         except Exception:
             pass
-        self.state.set('api_flash', ('success' if resumo['status_geral'] == 'Aprovado' else 'warning',
-                                     f"Execução concluída: {resumo['aprovados']} aprovado(s), {resumo['reprovados'] + resumo['erros']} reprovado(s)/erro(s)."))
+        (self._flash_success if resumo['status_geral'] == 'Aprovado' else self._flash_warning)(
+            f"Execução concluída: {resumo['aprovados']} aprovado(s), {resumo['reprovados'] + resumo['erros']} reprovado(s)/erro(s).")
 
     # ---------------------------------------------------------- 3. Evidências
     def _api_render_evidencias(self):
@@ -628,22 +649,23 @@ class ApiTestsPageMixin:
             "Observações / divergências / próximos passos (entram no relatório)",
             value=self.state.get('api_observacoes') or '', height=120, key="apiw_obs"))
 
-        if st.button("📝 Gerar relatórios (.md + .pdf + .zip)", type="primary", key="btn_api_gen"):
-            self._api_gerar_relatorios()
-            st.rerun()
+        with st.container(key="azure_blue_btn_api_gen"):
+            if st.button("📝 Gerar relatórios (.md + .pdf + .zip)", key="btn_api_gen", width="stretch"):
+                self._api_gerar_relatorios()
+                st.rerun()
 
         if self.state.get('api_md'):
             st.success("Relatórios gerados. Senhas, tokens e headers sensíveis saem mascarados.")
             slug = ApiEvidenceBuilder.slug(self.state.get('api_projeto') or 'testes-api', 40)
             d1, d2, d3, d4 = st.columns(4)
             with d1:
-                st.download_button("⬇️ RELATORIO.md", self.state.get('api_md').encode('utf-8'), file_name=f"{slug}_RELATORIO.md", mime="text/markdown", use_container_width=True, key="dl_api_md")
+                st.download_button("⬇️ RELATORIO.md", self.state.get('api_md').encode('utf-8'), file_name=f"{slug}_RELATORIO.md", mime="text/markdown", width="stretch", key="dl_api_md", on_click=self._api_marcar_baixado)
             with d2:
-                st.download_button("⬇️ RELATORIO.pdf", self.state.get('api_pdf'), file_name=f"{slug}_RELATORIO.pdf", mime="application/pdf", use_container_width=True, key="dl_api_pdf")
+                st.download_button("⬇️ RELATORIO.pdf", self.state.get('api_pdf'), file_name=f"{slug}_RELATORIO.pdf", mime="application/pdf", width="stretch", key="dl_api_pdf", on_click=self._api_marcar_baixado)
             with d3:
-                st.download_button("⬇️ Evidências .zip", self.state.get('api_zip'), file_name=f"{slug}_evidencias.zip", mime="application/zip", use_container_width=True, key="dl_api_zip")
+                st.download_button("⬇️ Evidências .zip", self.state.get('api_zip'), file_name=f"{slug}_evidencias.zip", mime="application/zip", width="stretch", key="dl_api_zip", on_click=self._api_marcar_baixado)
             with d4:
-                st.download_button("⬇️ Definição .json", self._api_exportar_definicao().encode('utf-8'), file_name=f"{slug}_definicao.json", mime="application/json", use_container_width=True, key="dl_api_def",
+                st.download_button("⬇️ Definição .json", self._api_exportar_definicao().encode('utf-8'), file_name=f"{slug}_definicao.json", mime="application/json", width="stretch", key="dl_api_def", on_click=self._api_marcar_baixado,
                                    help="Reimporte na etapa Definição pra repetir esta bateria depois (senhas não são salvas).")
 
             if self.config.turso_database_url and self._get_permission_cached("documentos_armazenados"):
@@ -671,7 +693,7 @@ class ApiTestsPageMixin:
                 projeto, self.state.get('api_ambiente'), self.state.get('api_base_url'), resultados,
                 E.resumo(resultados), textos, author_name=autor, **comuns)
         except Exception as error:
-            self.state.set('api_flash', ('error', f"❌ Falha ao gerar o PDF: {error}"))
+            self._flash_error(f"Falha ao gerar o PDF: {error}")
             return
         z = E.gerar_zip(projeto, resultados, md, pdf, segredos=segredos, imagens_por_caso=imagens,
                         definicao_json=self._api_exportar_definicao())
@@ -697,6 +719,7 @@ class ApiTestsPageMixin:
                 ],
                 criado_por=st.session_state.get(SESSION_USER_KEY, ""),
             )
+            self.state.set('api_baixado', True)
             st.success("✅ Salvo em Documentos Armazenados (grupo 'Testes de API').")
         except DocumentStoreError as error:
             st.error(f"❌ {error}")

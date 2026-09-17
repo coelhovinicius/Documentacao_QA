@@ -201,7 +201,7 @@ def render_pending_approvals_panel(config):
             st.write(f"**{req_user}** — solicitado em {requested_at}")
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✅ Aprovar", key=f"approve_{req_user}", use_container_width=True, type="primary"):
+                if st.button("✅ Aprovar", key=f"approve_{req_user}", width="stretch", type="primary"):
                     try:
                         client.decide(req_user, True, username)
                         log_action(config, username, "Aprovar Acesso", "Solicitações Pendentes", f"Aprovou o acesso de {req_user}")
@@ -210,7 +210,7 @@ def render_pending_approvals_panel(config):
                     except Exception as error:
                         st.error(f"❌ {error}")
             with c2:
-                if st.button("🚫 Negar", key=f"deny_{req_user}", use_container_width=True):
+                if st.button("🚫 Negar", key=f"deny_{req_user}", width="stretch"):
                     try:
                         client.decide(req_user, False, username)
                         log_action(config, username, "Negar Acesso", "Solicitações Pendentes", f"Negou o acesso de {req_user}")
@@ -371,7 +371,7 @@ def _render_user_management_section(config, client, current_username: str):
 
                 st.divider()
                 pending_key = f"_pending_save_{uname}"
-                if st.button("💾 Salvar Alterações", key=f"btn_save_{uname}", type="primary", use_container_width=True):
+                if st.button("💾 Salvar Alterações", key=f"btn_save_{uname}", type="primary", width="stretch"):
                     if not novo_nome.strip() or not novo_email.strip() or not novo_nick.strip():
                         st.error("❌ Nome, e-mail e usuário são obrigatórios.")
                     else:
@@ -394,7 +394,7 @@ def _render_user_management_section(config, client, current_username: str):
                     )
                     ccs1, ccs2 = st.columns(2)
                     with ccs1:
-                        if st.button("✅ Confirmar e salvar", key=f"confirm_save_{uname}", type="primary", use_container_width=True):
+                        if st.button("✅ Confirmar e salvar", key=f"confirm_save_{uname}", type="primary", width="stretch"):
                             try:
                                 if pendente["senha"]:
                                     novo_hash = bcrypt.hashpw(
@@ -436,7 +436,7 @@ def _render_user_management_section(config, client, current_username: str):
                             except Exception as error:
                                 st.error(f"❌ {error}")
                     with ccs2:
-                        if st.button("✖ Cancelar", key=f"cancel_save_{uname}", use_container_width=True):
+                        if st.button("✖ Cancelar", key=f"cancel_save_{uname}", width="stretch"):
                             st.session_state[pending_key] = None
                             st.rerun()
 
@@ -450,7 +450,7 @@ def _render_user_management_section(config, client, current_username: str):
                     st.warning(f"Excluir **{uname}**? Remove login, aprovações e permissões dele. Não pode ser desfeito.")
                     cc1, cc2 = st.columns(2)
                     with cc1:
-                        if st.button("✅ Sim, excluir", key=f"confirm_del_{uname}", type="primary", use_container_width=True):
+                        if st.button("✅ Sim, excluir", key=f"confirm_del_{uname}", type="primary", width="stretch"):
                             try:
                                 client.delete_user(uname)
                                 log_action(config, current_username, "Excluir Usuário", "Administração", f"Excluiu o usuário {uname}")
@@ -460,7 +460,7 @@ def _render_user_management_section(config, client, current_username: str):
                             st.session_state[delete_flag_key] = False
                             st.rerun()
                     with cc2:
-                        if st.button("✖ Cancelar", key=f"cancel_del_{uname}", use_container_width=True):
+                        if st.button("✖ Cancelar", key=f"cancel_del_{uname}", width="stretch"):
                             st.session_state[delete_flag_key] = False
                             st.rerun()
     else:
@@ -534,6 +534,21 @@ def render_admin_panel(config):
     """
     username = st.session_state.get(SESSION_USER_KEY, "")
 
+    with st.expander("ℹ️ O que é e como usar esta área"):
+        st.markdown(
+            "**O que é:** a área de governança do app.\n\n"
+            "**Solicitações Pendentes** (qualquer aprovador): aprove ou negue quem pediu acesso — a pessoa "
+            "fica numa tela de espera até alguém decidir.\n\n"
+            "**Só o dono do app vê as abas abaixo:**\n"
+            "- **👤 Usuários** — cadastro completo por pessoa: dados de login, se é aprovador e as "
+            "**permissões** (cada área da barra lateral é liberada individualmente; quem não tem a "
+            "permissão nem vê o botão). \"⭐ Conceder tudo\" marca todas de uma vez.\n"
+            "- **🖥️ Sessões Ativas** — quem está logado agora; dá pra revogar uma sessão na hora.\n"
+            "- **📜 Logs de Auditoria** — os últimos eventos do app (logins, aprovações, integrações, "
+            "relatórios gerados).\n\n"
+            "💡 Um usuário sem nenhuma permissão consegue logar, mas vê uma tela avisando que nada foi "
+            "liberado pra ele."
+        )
     render_pending_approvals_panel(config)
 
     if username != config.owner_username:
@@ -645,7 +660,7 @@ def _render_audit_logs(config, client):
             "Local": log.get("location", ""),
             "Detalhes": log.get("details", ""),
         })
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -714,7 +729,7 @@ def _render_login_form(config):
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Usuário")
             password = st.text_input("Senha", type="password")
-            submitted = st.form_submit_button("Entrar", use_container_width=True, type="primary")
+            submitted = st.form_submit_button("Entrar", width="stretch", type="primary")
 
         # Coloca o cursor automaticamente no campo "Usuário" assim que a
         # tela de login aparece — sem precisar clicar antes de digitar.
@@ -788,7 +803,7 @@ def _render_waiting_screen(config, username: str):
         )
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 Verificar novamente", use_container_width=True, type="primary"):
+            if st.button("🔄 Verificar novamente", width="stretch", type="primary"):
                 try:
                     client = AccessControlClient(config)
                     status = client.check_status(username)
@@ -803,7 +818,7 @@ def _render_waiting_screen(config, username: str):
                 except Exception as error:
                     st.error(f"❌ Erro ao verificar status: {error}")
         with c2:
-            if st.button("← Cancelar", use_container_width=True):
+            if st.button("← Cancelar", width="stretch"):
                 st.session_state.pop(PENDING_USERNAME_KEY, None)
                 st.rerun()
 
@@ -848,7 +863,7 @@ def render_logout_control(config=None):
         with st.container(key="sidebar_logout_box"):
             if user:
                 st.caption(f"👤 Logado como **{user}**")
-            if st.button("🚪 Sair", use_container_width=True, key="btn_logout",
+            if st.button("🚪 Sair", width="stretch", key="btn_logout",
                          help="Encerra e revoga esta sessão — o link deixa de funcionar, mesmo se alguém tiver uma cópia dele."):
                 st.session_state['_show_logout_confirm'] = True
                 st.rerun()
@@ -875,10 +890,10 @@ def _confirm_logout_modal(config=None):
         )
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚪 Sair", use_container_width=True, type="primary", key="confirm_logout_btn"):
+        if st.button("🚪 Sair", width="stretch", type="primary", key="confirm_logout_btn"):
             st.session_state.pop('_show_logout_confirm', None)
             logout(config)
     with c2:
-        if st.button("✖ Continuar Logado", use_container_width=True, key="cancel_logout_btn"):
+        if st.button("✖ Continuar Logado", width="stretch", key="cancel_logout_btn"):
             st.session_state['_show_logout_confirm'] = False
             st.rerun()

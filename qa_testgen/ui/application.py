@@ -53,6 +53,119 @@ from qa_testgen.ui.auth import (
     render_admin_panel, log_action, SESSION_USER_KEY,
 )
 
+# Textos do expander "ℹ️ O que é e como usar esta área", um por área. Escritos
+# pra quem entende o negócio mas não o app: o que é, quando usar, passo a
+# passo e onde clicar. Mesmo formato em todas as telas.
+AREA_HELP = {
+    "assistente": (
+        "**O que é:** o fluxo principal do app. Transforma uma especificação (documento, Work Items "
+        "ou uma query do Azure DevOps) em **Matriz de Cobertura → Casos de Teste → Planos de Teste**, "
+        "com IA gerando o conteúdo e você revisando cada etapa.\n\n"
+        "**Quando usar:** sempre que precisar documentar testes de uma funcionalidade nova ou de um "
+        "conjunto de Work Items.\n\n"
+        "**Passo a passo:**\n"
+        "1. **Upload** — escolha a origem (documento, Work Items do board ou query salva), o Ambiente "
+        "e o Tipo de Documento (calibra o nível de detalhe da IA).\n"
+        "2. **Dúvidas** — a IA pergunta o que ficou ambíguo; responda o que fizer sentido.\n"
+        "3. **Matriz** → 4. **Casos** → 5. **Planos** — gerados pela IA, editáveis (adicionar, "
+        "alterar, excluir).\n"
+        "6. **Download** — CSV e PDF \"Documentação QA\".\n"
+        "7. **Azure DevOps** (quem tem permissão) — envia tudo pro Azure: vinculando a Work Items, "
+        "sem Work Items (suítes estáticas) ou reconciliando um Test Plan anterior.\n\n"
+        "💡 A barra no topo mostra em que passo você está; passos já concluídos podem ser reabertos. "
+        "\"🔄 Nova Análise\" (barra lateral) recomeça do zero — pede confirmação antes."
+    ),
+    "relatorio": (
+        "**O que é:** um relatório em PDF do que foi **executado** no Azure DevOps (diferente do PDF "
+        "do Passo 6, que documenta o que foi *planejado*).\n\n"
+        "**Quando usar:** ao fechar um ciclo de testes, pra entregar o status real ao time/gestão.\n\n"
+        "**Passo a passo:**\n"
+        "1. Conecte ao Azure DevOps (Organização, Projeto e, se quiser, Area Path).\n"
+        "2. Escolha um ou mais Test Plans e clique em **Buscar Resultados**.\n"
+        "3. O status de cada caso vem da **coluna do board** do Work Item vinculado (não do Test "
+        "Point). Escolha o **Status geral** manualmente.\n"
+        "4. Use **Sugerir com IA** pra preencher Contexto, Escopo, Conclusão e Próximos Passos, "
+        "ajuste o texto e clique em **Gerar Relatório**.\n"
+        "5. Baixe o PDF (ou salve em Documentos Armazenados).\n\n"
+        "💡 Se sair da tela com um relatório gerado e não baixado, o app avisa antes."
+    ),
+    "wiql": (
+        "**O que é:** cria uma **query salva dentro do Azure DevOps** a partir de uma descrição em "
+        "português — a IA traduz pra WIQL (a linguagem de consulta do Azure).\n\n"
+        "**Quando usar:** pra montar consultas que você vai reutilizar lá (dashboards, widgets, "
+        "acompanhamento) sem escrever WIQL na mão.\n\n"
+        "**Passo a passo:**\n"
+        "1. Conecte ao Azure DevOps.\n"
+        "2. Descreva o que quer (ex.: *bugs abertos atribuídos a mim nos últimos 30 dias*) e clique "
+        "em **Gerar Query com IA**.\n"
+        "3. Clique em **Testar Query** pra ver os resultados reais antes de salvar.\n"
+        "4. Dê um nome, escolha a pasta (My Queries / Shared Queries) e **salve**.\n\n"
+        "💡 Os atalhos **Usar pra Gerar Testes** e **Usar pra Criar Manual** pulam o salvar e já "
+        "levam o resultado pro Passo 1 ou pro Manual de Testes. Isto é diferente do modo "
+        "\"Gerar a partir de uma Query\" do Passo 1, que parte de uma query que você **já tem** salva."
+    ),
+    "manual": (
+        "**O que é:** um **manual de reprodução em linguagem simples**, pra quem não é de TI "
+        "(Produto, Marketing) testar em UAT sem confundir passo executado errado com bug.\n\n"
+        "**Quando usar:** antes de liberar uma funcionalidade pra aceite por times não técnicos.\n\n"
+        "**Passo a passo:**\n"
+        "1. Escolha a origem do conteúdo: Documentos, Work Items do Azure DevOps (board ou query "
+        "salva) ou Mesclado.\n"
+        "2. Anexe/busque o material e clique em **Gerar Manual com IA**.\n"
+        "3. Revise o texto na tela (editável) e baixe o PDF.\n\n"
+        "💡 O app **não tira print ao vivo** — só reaproveita imagens que já existam nos documentos "
+        "ou nos Work Items."
+    ),
+    "documentos": (
+        "**O que é:** um arquivo de tudo que o app já gerou (CSV, PDF, relatórios, evidências de "
+        "Testes de API), guardado num banco próprio e organizado por grupo.\n\n"
+        "**Quando usar:** pra recuperar uma documentação sem precisar gerar de novo, ou pra "
+        "consultar o que outra pessoa do time gerou.\n\n"
+        "**Como usar:** filtre pelo fluxo de origem, abra o grupo e clique no arquivo pra baixar. "
+        "Pra salvar algo aqui, use o botão \"Salvar em Documentos Armazenados\" que aparece nas "
+        "telas que geram arquivos (Passo 6, Relatório de Testes, Testes de API).\n\n"
+        "💡 Qualquer pessoa com a permissão salva e vê; **excluir** um grupo é só do dono do app."
+    ),
+    "mapa": (
+        "**O que é:** uma visualização em árvore — **Work Item → Suítes → Casos de Teste** — "
+        "navegável e com zoom.\n\n"
+        "**Quando usar:** pra apresentar ou revisar a cobertura de um conjunto de Work Items de "
+        "forma visual.\n\n"
+        "**Passo a passo:**\n"
+        "1. Escolha a origem: a sessão atual (Planos gerados no Passo 5), um grupo de Documentos "
+        "Armazenados ou Work Items do Azure DevOps.\n"
+        "2. Clique em **Gerar Mapa Mental**.\n"
+        "3. Expanda/recolha os nós na tela; exporte em **SVG** ou **PDF** — o arquivo sai sempre "
+        "com tudo expandido."
+    ),
+    "bug": (
+        "**O que é:** cria um **Bug direto no Azure DevOps**, sem sair do app.\n\n"
+        "**Quando usar:** ao encontrar um defeito durante a execução dos testes.\n\n"
+        "**Passo a passo:**\n"
+        "1. Conecte ao Azure DevOps e escolha Projeto e Area Path.\n"
+        "2. Modo **livre** (preenche tudo) ou **a partir de um Work Item** com Casos de Teste "
+        "relacionados — vinculando a um Caso específico (título e Passos de Reprodução já vêm "
+        "preenchidos) ou direto no Work Item.\n"
+        "3. Preencha Título, Passos de Reprodução e, se quiser, System Info, Acceptance Criteria, "
+        "Discussion e **evidências em imagem** (sobem como anexo e ficam embutidas no System Info).\n"
+        "4. Revise a confirmação e clique em **Criar Bug**.\n\n"
+        "💡 Nada criado no Azure DevOps pode ser desfeito pelo app — corrija lá se precisar."
+    ),
+    "work_item": (
+        "**O que é:** cria **Work Items de qualquer tipo** que o processo do projeto permita "
+        "(User Story, Epic, Feature, Task, Spike, tipos customizados...).\n\n"
+        "**Quando usar:** pra registrar itens de backlog sem abrir o Azure DevOps, ou pra quebrar "
+        "uma User Story em várias Tasks de uma vez.\n\n"
+        "**Passo a passo:**\n"
+        "1. Conecte ao Azure DevOps e escolha o Projeto (Area Path, Sprint e coluna são opcionais).\n"
+        "2. Escolha o **tipo** — o formulário é montado com os campos do próprio projeto; os "
+        "obrigatórios aparecem em destaque, o resto fica em \"Outros campos\".\n"
+        "3. Modo **Um Work Item** (com pai opcional) ou **Vários filhos de um Work Item**.\n"
+        "4. Tags (existentes ou novas), responsável, evidências em imagem → revise e clique em "
+        "**Criar Work Item**."
+    ),
+}
+
 # Liga/desliga a seção de integração direta com o Azure DevOps no Passo 6.
 # Coloque True quando quiser reativar a integração.
 AZURE_DEVOPS_INTEGRATION_ENABLED = True
@@ -287,24 +400,29 @@ class UserInterface(ApiTestsPageMixin):
     # precisa sobreviver pra sempre (pior caso, a pessoa vê o aviso de novo
     # depois de um restart raro), então não criei tabela nova só pra isso.
     _PAT_NOTICE_FILE = Path(tempfile.gettempdir()) / "qa_testgen_pat_notice_dismissed.json"
+    # Versão do aviso de novidades: mude este valor quando houver algo novo
+    # pra anunciar — quem dispensou uma versão anterior volta a ver o modal
+    # uma vez. O arquivo guarda {"dispensado": {usuario: versao}}; o formato
+    # antigo ({"usuarios": [...]}) conta como "dispensou só a versão do PAT".
+    _NOTICE_VERSION = "2026-09-testes-api"
 
     @classmethod
     def _pat_notice_ja_dispensado(cls, username: str) -> bool:
         try:
             dados = json.loads(cls._PAT_NOTICE_FILE.read_text(encoding="utf-8"))
-            return username in dados.get("usuarios", [])
+            return dados.get("dispensado", {}).get(username) == cls._NOTICE_VERSION
         except Exception:
             return False
 
     @classmethod
     def _marcar_pat_notice_dispensado(cls, username: str):
         try:
-            dados = {"usuarios": []}
+            dados = {}
             if cls._PAT_NOTICE_FILE.exists():
                 dados = json.loads(cls._PAT_NOTICE_FILE.read_text(encoding="utf-8"))
-            if username not in dados.get("usuarios", []):
-                dados.setdefault("usuarios", []).append(username)
-            cls._PAT_NOTICE_FILE.write_text(json.dumps(dados), encoding="utf-8")
+            dispensado = dados.get("dispensado") or {}
+            dispensado[username] = cls._NOTICE_VERSION
+            cls._PAT_NOTICE_FILE.write_text(json.dumps({"dispensado": dispensado}), encoding="utf-8")
         except Exception:
             pass  # não crítico — pior caso, a pessoa vê o aviso de novo
 
@@ -386,7 +504,7 @@ class UserInterface(ApiTestsPageMixin):
                     "💾 Armazenar esta documentação",
                     key=btn_key,
                     disabled=self.state.get('is_processing') or not nome_documento.strip(),
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     try:
                         prefixo = re.sub(r'[^\w\-]+', '_', nome_documento.strip())[:60]
@@ -424,6 +542,10 @@ class UserInterface(ApiTestsPageMixin):
         """Mesma ideia de _flash_error, mas pra st.warning()."""
         self.state.set('_flash_message', {'kind': 'warning', 'text': message})
 
+    def _flash_success(self, message: str) -> None:
+        """Mesma ideia de _flash_error, mas pra st.success()."""
+        self.state.set('_flash_message', {'kind': 'success', 'text': message})
+
     def _render_flash_message(self) -> None:
         """
         Mostra (uma única vez) a mensagem guardada por _flash_error/
@@ -445,6 +567,8 @@ class UserInterface(ApiTestsPageMixin):
                 st.error(f"❌ {flash['text']}")
             elif flash['kind'] == 'warning':
                 st.warning(flash['text'])
+            elif flash['kind'] == 'success':
+                st.success(f"✅ {flash['text']}")
             st.markdown(
                 """
                 <svg onload="
@@ -454,6 +578,18 @@ class UserInterface(ApiTestsPageMixin):
                 """,
                 unsafe_allow_html=True
             )
+
+    def _render_area_help(self, area: str):
+        """
+        Expander padrão "ℹ️ O que é e como usar esta área", logo abaixo do
+        título/caption de cada tela. Um texto por área em AREA_HELP — mesma
+        estrutura em todas (o que é, quando usar, passo a passo, onde clicar).
+        """
+        texto = AREA_HELP.get(area)
+        if not texto:
+            return
+        with st.expander("ℹ️ O que é e como usar esta área"):
+            st.markdown(texto)
 
     def _navigate_or_confirm(self, pending_state_updates: dict):
         """
@@ -472,6 +608,14 @@ class UserInterface(ApiTestsPageMixin):
         if self.state.get('show_execution_report_page') and self.state.get('report_pdf_bytes'):
             self.state.set('_pending_navigation_after_report', pending_state_updates)
             self.state.set('show_leave_report_modal', True)
+            st.rerun()
+        elif (
+            self.state.get('show_api_tests_page')
+            and self._api_tem_relatorio_nao_baixado()
+            and pending_state_updates.get('show_api_tests_page') is False
+        ):
+            self.state.set('_pending_navigation_after_api', pending_state_updates)
+            self.state.set('show_leave_api_modal', True)
             st.rerun()
         else:
             # A página de Testes de API não está listada nos dicionários de
@@ -747,21 +891,25 @@ class UserInterface(ApiTestsPageMixin):
                 st.warning("⚠️ Controles")
             if processando:
                 st.info("Processamento em andamento. Aguarde a conclusão ou solicite a interrupção.")
-                if st.button("⏹️ Interromper Processamento", use_container_width=True, type="primary", key="btn_interrupt_sidebar"):
+                if st.button("⏹️ Interromper Processamento", width="stretch", type="primary", key="btn_interrupt_sidebar"):
                     self.state.set('show_interrupt_modal', True)
                     st.rerun()
 
-            if tem_assistente and st.button("🔄 Nova Análise", use_container_width=True, type="primary", key="btn_new_sidebar"):
+            if tem_assistente and st.button("🔄 Nova Análise", width="stretch", type="primary", key="btn_new_sidebar"):
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
-            if tem_assistente and st.button("🏠 Início", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_home_sidebar"):
+            if tem_assistente and st.button("🏠 Início", width="stretch", disabled=self.state.get('is_processing'), key="btn_home_sidebar"):
                 # Diferente de "Nova Análise": só navega pro Passo 1, sem
                 # apagar nada — tudo que já foi preenchido continua lá, e
                 # dá pra voltar a qualquer passo já feito normalmente.
                 if self.state.get('show_execution_report_page') and self.state.get('report_pdf_bytes'):
                     self.state.set('_pending_navigation_after_report', {'show_execution_report_page': False, 'step': 1})
                     self.state.set('show_leave_report_modal', True)
+                    st.rerun()
+                elif self.state.get('show_api_tests_page') and self._api_tem_relatorio_nao_baixado():
+                    self.state.set('_pending_navigation_after_api', {'show_api_tests_page': False, 'step': 1})
+                    self.state.set('show_leave_api_modal', True)
                     st.rerun()
                 elif self._has_editing_in_progress():
                     confirm_navigate_away_modal(1)
@@ -771,7 +919,7 @@ class UserInterface(ApiTestsPageMixin):
                     st.rerun()
 
             st.divider()
-            if st.button("ℹ️ Sobre o app", use_container_width=True, key="btn_about_sidebar", disabled=self.state.get('is_processing')):
+            if st.button("ℹ️ Sobre o app", width="stretch", key="btn_about_sidebar", disabled=self.state.get('is_processing')):
                 self._navigate_or_confirm({
                     'show_about_page': True, 'show_admin_page': False,
                     'show_execution_report_page': False,
@@ -781,7 +929,7 @@ class UserInterface(ApiTestsPageMixin):
 
             current_username = st.session_state.get(SESSION_USER_KEY, "")
             if self._get_permission_cached("manual_testes"):
-                if st.button("📘 Manual de Testes (UAT)", use_container_width=True, key="btn_manual_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("📘 Manual de Testes (UAT)", width="stretch", key="btn_manual_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_manual_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
@@ -789,7 +937,7 @@ class UserInterface(ApiTestsPageMixin):
                         'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                     })
             if self._get_permission_cached("documentos_armazenados"):
-                if st.button("🗄️ Documentos Armazenados", use_container_width=True, key="btn_document_store_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("🗄️ Documentos Armazenados", width="stretch", key="btn_document_store_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_document_store_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
@@ -797,7 +945,7 @@ class UserInterface(ApiTestsPageMixin):
                         'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                     })
             if self._get_permission_cached("mapa_mental"):
-                if st.button("🧠 Mapa Mental", use_container_width=True, key="btn_mindmap_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("🧠 Mapa Mental", width="stretch", key="btn_mindmap_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_mindmap_page': True, 'show_bug_page': False, 'show_work_item_page': False, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
@@ -805,7 +953,7 @@ class UserInterface(ApiTestsPageMixin):
                         'show_document_store_page': False,
                     })
             if self._get_permission_cached("criar_bug"):
-                if st.button("🐛 Criar Bug", use_container_width=True, key="btn_bug_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("🐛 Criar Bug", width="stretch", key="btn_bug_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_bug_page': True, 'show_work_item_page': False,
                         'show_mindmap_page': False, 'show_about_page': False,
@@ -814,7 +962,7 @@ class UserInterface(ApiTestsPageMixin):
                         'show_document_store_page': False,
                     })
             if self._get_permission_cached("criar_work_item"):
-                if st.button("🧱 Criar Work Item", use_container_width=True, key="btn_work_item_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("🧱 Criar Work Item", width="stretch", key="btn_work_item_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_work_item_page': True, 'show_bug_page': False,
                         'show_mindmap_page': False, 'show_about_page': False,
@@ -823,7 +971,7 @@ class UserInterface(ApiTestsPageMixin):
                         'show_document_store_page': False,
                     })
             if self._get_permission_cached("azure_devops"):
-                if st.button("🔎 Criar Query com IA", use_container_width=True, key="btn_wiql_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("🔎 Criar Query com IA", width="stretch", key="btn_wiql_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_wiql_generation_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
@@ -831,9 +979,14 @@ class UserInterface(ApiTestsPageMixin):
                         'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                     })
             if self._get_permission_cached("execution_report"):
-                if st.button("📊 Relatório de Testes", use_container_width=True, key="btn_report_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("📊 Relatório de Testes", width="stretch", key="btn_report_sidebar", disabled=self.state.get('is_processing')):
                     # Já estar na própria página de Relatório não conta como
-                    # "sair" dela — não precisa do guarda aqui.
+                    # "sair" dela — não precisa do guarda aqui. Sair dos
+                    # Testes de API com relatório não baixado, sim.
+                    if self.state.get('show_api_tests_page') and self._api_tem_relatorio_nao_baixado():
+                        self.state.set('_pending_navigation_after_api', {'show_api_tests_page': False, 'show_execution_report_page': True})
+                        self.state.set('show_leave_api_modal', True)
+                        st.rerun()
                     self.state.set('show_execution_report_page', True)
                     self.state.set('show_about_page', False)
                     self.state.set('show_admin_page', False)
@@ -844,7 +997,7 @@ class UserInterface(ApiTestsPageMixin):
                     self.state.set('show_api_tests_page', False)
                     st.rerun()
             if self._get_permission_cached("testes_api"):
-                if st.button("🔌 Testes de API", use_container_width=True, key="btn_api_tests_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("🔌 Testes de API", width="stretch", key="btn_api_tests_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_api_tests_page': True, 'show_about_page': False,
                         'show_admin_page': False, 'show_execution_report_page': False,
@@ -858,7 +1011,7 @@ class UserInterface(ApiTestsPageMixin):
                 # Pendentes pra todo mundo, mas só o dono vê o cadastro de
                 # aprovadores/permissões (isso é decidido dentro da própria
                 # página, não aqui).
-                if st.button("🛡️ Administração", use_container_width=True, key="btn_admin_sidebar", disabled=self.state.get('is_processing')):
+                if st.button("🛡️ Administração", width="stretch", key="btn_admin_sidebar", disabled=self.state.get('is_processing')):
                     self._navigate_or_confirm({
                         'show_admin_page': True, 'show_about_page': False,
                         'show_execution_report_page': False,
@@ -905,7 +1058,7 @@ class UserInterface(ApiTestsPageMixin):
     def _render_row_toggle(self, active_key: str, index: int, label: str, disabled: bool = False) -> bool:
         is_active = self.state.get(active_key) == index
         marker = "▼" if is_active else "▶"
-        if st.button(f"{marker} {label}", key=f"{active_key}_{index}", use_container_width=True, disabled=disabled):
+        if st.button(f"{marker} {label}", key=f"{active_key}_{index}", width="stretch", disabled=disabled):
             self.state.set(active_key, None if is_active else index)
             st.rerun()
         return is_active
@@ -1041,7 +1194,7 @@ class UserInterface(ApiTestsPageMixin):
                 f'<div class="qa-processing-text">{action}.<br>Esta é a única ação disponível até finalizar.</div>',
                 unsafe_allow_html=True,
             )
-            if st.button("⏹️ Cancelar Processamento", key="qa_processing_cancel_btn", use_container_width=True, type="primary"):
+            if st.button("⏹️ Cancelar Processamento", key="qa_processing_cancel_btn", width="stretch", type="primary"):
                 self.state.set('show_interrupt_modal', True)
                 st.rerun()
 
@@ -1073,7 +1226,7 @@ class UserInterface(ApiTestsPageMixin):
                             unsafe_allow_html=True,
                         )
                     elif is_accessible:
-                        if st.button(label, key=f"nav_step_{i}", use_container_width=True, disabled=is_processing):
+                        if st.button(label, key=f"nav_step_{i}", width="stretch", disabled=is_processing):
                             if self._has_editing_in_progress():
                                 confirm_navigate_away_modal(i)
                             else:
@@ -1081,7 +1234,7 @@ class UserInterface(ApiTestsPageMixin):
                                 self._set_step(i)
                                 st.rerun()
                     else:
-                        st.button(label, key=f"nav_step_{i}", use_container_width=True, disabled=True)
+                        st.button(label, key=f"nav_step_{i}", width="stretch", disabled=True)
         st.divider()
 
     def _ensure_steps_state(self, key: str, initial: list):
@@ -1262,6 +1415,7 @@ class UserInterface(ApiTestsPageMixin):
 
     def step_1(self):
         st.subheader("Passo 1 – Setup e Documentação")
+        self._render_area_help("assistente")
         if self.state.get('processing_interrupted'):
             st.info("⚠️ Processamento interrompido. Você pode continuar editando esta etapa.")
 
@@ -1427,7 +1581,7 @@ class UserInterface(ApiTestsPageMixin):
                         key="btn_fetch_wi_step1",
                         on_click=self.trigger_action,
                         args=("fetch_wi_step1",),
-                        use_container_width=True,
+                        width="stretch",
                     )
             if self.state.get('current_action') == 'fetch_wi_step1' and not self.state.get('show_interrupt_modal'):
                 try:
@@ -1483,14 +1637,14 @@ class UserInterface(ApiTestsPageMixin):
             st.info("Selecione o Ambiente dos Testes e o Tipo de Documento para continuar.")
             return
 
-        st.button(
-            "🔍 Executar Análise de Cobertura (IA)",
-            use_container_width=True,
-            type="primary",
-            on_click=self.trigger_action,
-            args=("analyze_docs",),
-            disabled=self.state.get('is_processing'),
-        )
+        with st.container(key="azure_blue_btn_analyze_docs"):
+            st.button(
+                "🔍 Executar Análise de Cobertura (IA)",
+                width="stretch",
+                on_click=self.trigger_action,
+                args=("analyze_docs",),
+                disabled=self.state.get('is_processing'),
+            )
 
         if self.state.get('current_action') == 'analyze_docs' and not self.state.get('show_interrupt_modal'):
             with st.spinner("Extraindo texto dos documentos..."):
@@ -2046,13 +2200,13 @@ class UserInterface(ApiTestsPageMixin):
 
         c1, c2 = st.columns([1, 3])
         with c1:
-            if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing')):
+            if st.button("← Voltar", width="stretch", disabled=self.state.get('is_processing')):
                 self._set_step(1)
                 st.rerun()
         with c2:
             st.button(
                 "📊 Gerar Matriz de Cobertura",
-                use_container_width=True,
+                width="stretch",
                 type="primary",
                 on_click=self._iniciar_geracao_em_lotes,
                 args=("generate_matrix", "geracao_matriz"),
@@ -2125,7 +2279,7 @@ class UserInterface(ApiTestsPageMixin):
                             vals = self._render_matriz_form(f"m{i}", row)
                             cs, cc = st.columns(2)
                             with cs:
-                                if st.button("💾 Salvar Alterações", key=f"save_m_{i}", type="primary", use_container_width=True):
+                                if st.button("💾 Salvar Alterações", key=f"save_m_{i}", type="primary", width="stretch"):
                                     missing = self._validate_matriz(
                                         vals['id'], vals['funcionalidade'], vals['requisito'],
                                         vals['cenario'], vals['categoria'], vals['prioridade'], vals['criticidade'],
@@ -2138,7 +2292,7 @@ class UserInterface(ApiTestsPageMixin):
                                         self.state.set(f"edit_m_{i}", False)
                                         st.rerun()
                             with cc:
-                                if st.button("✖ Cancelar", key=f"cancel_m_{i}", use_container_width=True):
+                                if st.button("✖ Cancelar", key=f"cancel_m_{i}", width="stretch"):
                                     self.state.set(f"edit_m_{i}", False)
                                     st.rerun()
                     else:
@@ -2155,12 +2309,12 @@ class UserInterface(ApiTestsPageMixin):
                         st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
                         ce, cd, _ = st.columns([1, 1, 6])
                         with ce:
-                            if st.button("✏️ Editar", key=f"btn_edit_m_{i}", use_container_width=True, disabled=self.state.get('is_processing')):
+                            if st.button("✏️ Editar", key=f"btn_edit_m_{i}", width="stretch", disabled=self.state.get('is_processing')):
                                 self.state.set(f"edit_m_{i}", True)
                                 self.state.set('active_matriz_row', i)
                                 st.rerun()
                         with cd:
-                            if st.button("🗑️ Excluir", key=f"btn_del_m_{i}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
+                            if st.button("🗑️ Excluir", key=f"btn_del_m_{i}", type="primary", width="stretch", disabled=self.state.get('is_processing')):
                                 confirm_matriz_deletion_modal(i)
 
         st.markdown("<div style='margin-top:.5rem'></div>", unsafe_allow_html=True)
@@ -2173,7 +2327,7 @@ class UserInterface(ApiTestsPageMixin):
                     vals = self._render_matriz_form('newm', blank)
                     cs, cc = st.columns(2)
                     with cs:
-                        if st.button("💾 Salvar Novo Cenário", key="save_newm", type="primary", use_container_width=True):
+                        if st.button("💾 Salvar Novo Cenário", key="save_newm", type="primary", width="stretch"):
                             missing = self._validate_matriz(
                                 vals['id'], vals['funcionalidade'], vals['requisito'],
                                 vals['cenario'], vals['categoria'], vals['prioridade'], vals['criticidade'],
@@ -2187,10 +2341,10 @@ class UserInterface(ApiTestsPageMixin):
                                 clear_widget_states()
                                 st.rerun()
                     with cc:
-                        if st.button("✖ Cancelar", key="cancel_newm", use_container_width=True):
+                        if st.button("✖ Cancelar", key="cancel_newm", width="stretch"):
                             confirm_discard_new_modal('adding_matriz_row')
         else:
-            if st.button("➕ Adicionar Novo Cenário à Matriz", use_container_width=True, disabled=editing_any or self.state.get('is_processing')):
+            if st.button("➕ Adicionar Novo Cenário à Matriz", width="stretch", disabled=editing_any or self.state.get('is_processing')):
                 self.state.set('active_matriz_row', None)
                 self.state.set('adding_matriz_row', True)
                 st.rerun()
@@ -2198,21 +2352,21 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         c1, c2 = st.columns([1, 3])
         with c1:
-            if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing')):
+            if st.button("← Voltar", width="stretch", disabled=self.state.get('is_processing')):
                 self._set_step(2)
                 st.rerun()
         with c2:
             if editing_any or self.state.get('adding_matriz_row'):
                 st.warning("⚠️ Salve ou cancele a edição/criação em aberto para prosseguir.")
             else:
-                st.button(
-                    "🚀 Gerar Casos de Teste",
-                    use_container_width=True,
-                    type="primary",
-                    on_click=self._iniciar_geracao_em_lotes,
-                    args=("generate_cases", "geracao_casos"),
-                    disabled=self.state.get('is_processing'),
-                )
+                with st.container(key="azure_blue_btn_generate_cases"):
+                    st.button(
+                        "🚀 Gerar Casos de Teste",
+                        width="stretch",
+                        on_click=self._iniciar_geracao_em_lotes,
+                        args=("generate_cases", "geracao_casos"),
+                        disabled=self.state.get('is_processing'),
+                    )
 
         if self.state.get('current_action') == 'generate_cases' and not self.state.get('show_interrupt_modal'):
             matriz_completa = self.state.get('matriz') or []
@@ -2303,7 +2457,7 @@ class UserInterface(ApiTestsPageMixin):
                             steps = self._render_steps_editor(sk, f"etc{idx}")
                             cs, cc = st.columns(2)
                             with cs:
-                                if st.button("💾 Salvar Caso de Teste", key=f"save_tc_{idx}", type="primary", use_container_width=True):
+                                if st.button("💾 Salvar Caso de Teste", key=f"save_tc_{idx}", type="primary", width="stretch"):
                                     missing = self._validate_tc(titulo, pre, steps)
                                     if missing:
                                         st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
@@ -2322,7 +2476,7 @@ class UserInterface(ApiTestsPageMixin):
                                         self.state.delete(sk)
                                         st.rerun()
                             with cc:
-                                if st.button("✖ Cancelar", key=f"cancel_tc_{idx}", use_container_width=True):
+                                if st.button("✖ Cancelar", key=f"cancel_tc_{idx}", width="stretch"):
                                     self.state.set(f"edit_tc_{idx}", False)
                                     self.state.delete(sk)
                                     st.rerun()
@@ -2359,12 +2513,12 @@ class UserInterface(ApiTestsPageMixin):
                         st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
                         ce, cd, _ = st.columns([1, 1, 6])
                         with ce:
-                            if st.button("✏️ Editar", key=f"btn_edit_tc_{idx}", use_container_width=True, disabled=self.state.get('is_processing')):
+                            if st.button("✏️ Editar", key=f"btn_edit_tc_{idx}", width="stretch", disabled=self.state.get('is_processing')):
                                 self.state.set(f"edit_tc_{idx}", True)
                                 self.state.set('active_test_case_row', idx)
                                 st.rerun()
                         with cd:
-                            if st.button("🗑️ Excluir", key=f"btn_del_tc_{idx}", type="primary", use_container_width=True, disabled=self.state.get('is_processing')):
+                            if st.button("🗑️ Excluir", key=f"btn_del_tc_{idx}", type="primary", width="stretch", disabled=self.state.get('is_processing')):
                                 confirm_deletion_modal('test_cases', idx)
 
         st.markdown("<div style='margin-top:.5rem'></div>", unsafe_allow_html=True)
@@ -2378,7 +2532,7 @@ class UserInterface(ApiTestsPageMixin):
                     steps = self._render_steps_editor(sk, "newtc")
                     cs, cc = st.columns(2)
                     with cs:
-                        if st.button("💾 Salvar Novo Caso de Teste", key="save_newtc", type="primary", use_container_width=True):
+                        if st.button("💾 Salvar Novo Caso de Teste", key="save_newtc", type="primary", width="stretch"):
                             missing = self._validate_tc(titulo, pre, steps)
                             if missing:
                                 st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
@@ -2397,10 +2551,10 @@ class UserInterface(ApiTestsPageMixin):
                                 clear_widget_states()
                                 st.rerun()
                     with cc:
-                        if st.button("✖ Cancelar", key="cancel_newtc", use_container_width=True):
+                        if st.button("✖ Cancelar", key="cancel_newtc", width="stretch"):
                             confirm_discard_new_modal('adding_test_case')
         else:
-            if st.button("➕ Adicionar Novo Caso de Teste", use_container_width=True, disabled=editing_any or self.state.get('is_processing')):
+            if st.button("➕ Adicionar Novo Caso de Teste", width="stretch", disabled=editing_any or self.state.get('is_processing')):
                 self.state.set('active_test_case_row', None)
                 self.state.set('adding_test_case', True)
                 st.rerun()
@@ -2408,7 +2562,7 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         c1, c2 = st.columns([1, 3])
         with c1:
-            if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing')):
+            if st.button("← Voltar", width="stretch", disabled=self.state.get('is_processing')):
                 self._set_step(3)
                 st.rerun()
         with c2:
@@ -2417,7 +2571,7 @@ class UserInterface(ApiTestsPageMixin):
             else:
                 st.button(
                     "📁 Gerar Planos de Teste",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary",
                     on_click=self._iniciar_geracao_em_lotes,
                     args=("generate_plans", "geracao_planos"),
@@ -2508,7 +2662,7 @@ class UserInterface(ApiTestsPageMixin):
 
                             cs, cc = st.columns(2)
                             with cs:
-                                if st.button("💾 Salvar Plano", key=f"save_p_{i}", type="primary", use_container_width=True):
+                                if st.button("💾 Salvar Plano", key=f"save_p_{i}", type="primary", width="stretch"):
                                     missing = self._validate_plan(nome, suites_vals)
                                     if missing:
                                         st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
@@ -2519,7 +2673,7 @@ class UserInterface(ApiTestsPageMixin):
                                         self.state.delete(sk)
                                         st.rerun()
                             with cc:
-                                if st.button("✖ Cancelar", key=f"cancel_p_{i}", use_container_width=True):
+                                if st.button("✖ Cancelar", key=f"cancel_p_{i}", width="stretch"):
                                     self.state.set(f"edit_p_{i}", False)
                                     self.state.delete(sk)
                                     st.rerun()
@@ -2546,12 +2700,12 @@ class UserInterface(ApiTestsPageMixin):
                         st.markdown("<div style='margin-top:.75rem'></div>", unsafe_allow_html=True)
                         ce, cd, _ = st.columns([1, 1, 6])
                         with ce:
-                            if st.button("✏️ Editar", key=f"btn_edit_p_{i}", use_container_width=True):
+                            if st.button("✏️ Editar", key=f"btn_edit_p_{i}", width="stretch"):
                                 self.state.set(f"edit_p_{i}", True)
                                 self.state.set('active_test_plan_row', i)
                                 st.rerun()
                         with cd:
-                            if st.button("🗑️ Excluir", key=f"btn_del_p_{i}", type="primary", use_container_width=True):
+                            if st.button("🗑️ Excluir", key=f"btn_del_p_{i}", type="primary", width="stretch"):
                                 confirm_deletion_modal('test_plans', i)
 
         st.markdown("<div style='margin-top:.5rem'></div>", unsafe_allow_html=True)
@@ -2565,7 +2719,7 @@ class UserInterface(ApiTestsPageMixin):
                     suites_vals = self._render_suites_editor(sk, "newp", available_cases)
                     cs, cc = st.columns(2)
                     with cs:
-                        if st.button("💾 Salvar Novo Plano", key="save_newp", type="primary", use_container_width=True):
+                        if st.button("💾 Salvar Novo Plano", key="save_newp", type="primary", width="stretch"):
                             missing = self._validate_plan(nome, suites_vals)
                             if missing:
                                 st.error("❌ Campos obrigatórios faltando: " + ", ".join(missing) + ".")
@@ -2577,10 +2731,10 @@ class UserInterface(ApiTestsPageMixin):
                                 clear_widget_states()
                                 st.rerun()
                     with cc:
-                        if st.button("✖ Cancelar", key="cancel_newp", use_container_width=True):
+                        if st.button("✖ Cancelar", key="cancel_newp", width="stretch"):
                             confirm_discard_new_modal('adding_test_plan')
         else:
-            if st.button("➕ Adicionar Novo Plano de Teste", use_container_width=True, disabled=editing_any or self.state.get('is_processing')):
+            if st.button("➕ Adicionar Novo Plano de Teste", width="stretch", disabled=editing_any or self.state.get('is_processing')):
                 self.state.set('active_test_plan_row', None)
                 self.state.set('adding_test_plan', True)
                 st.rerun()
@@ -2588,7 +2742,7 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         c1, c2 = st.columns([1, 3])
         with c1:
-            if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing')):
+            if st.button("← Voltar", width="stretch", disabled=self.state.get('is_processing')):
                 self._set_step(4)
                 st.rerun()
         with c2:
@@ -2597,7 +2751,7 @@ class UserInterface(ApiTestsPageMixin):
             else:
                 st.button(
                     "📥 Consolidar e Construir Artefatos",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary",
                     on_click=self.trigger_action,
                     args=("build_artifacts",),
@@ -2621,7 +2775,7 @@ class UserInterface(ApiTestsPageMixin):
         project = self.state.get('project_name')
         safe_name = project.replace(' ', '_')
 
-        st.markdown("### 📄 Exportações CSV – Azure DevOps")
+        st.markdown("#### 📄 Exportações CSV – Azure DevOps")
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Test Cases - Azure DevOps**")
@@ -2632,7 +2786,7 @@ class UserInterface(ApiTestsPageMixin):
                 data=csv_cases,
                 file_name=f"QA_Cases_{safe_name}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
                 type="primary",
             )
         with col2:
@@ -2644,7 +2798,7 @@ class UserInterface(ApiTestsPageMixin):
                 data=csv_plans,
                 file_name=f"QA_Plans_{safe_name}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
                 type="primary",
             )
 
@@ -2660,7 +2814,7 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         col_pdf, col_azure = st.columns(2)
         with col_pdf:
-            st.markdown("### 📑 Documentação Técnica – PDF Report")
+            st.markdown("#### 📑 Documentação Técnica – PDF Report")
             st.caption("Relatório completo: Matriz de Cobertura, Planos de Teste e Casos de Teste.")
             # Gerar PDF é um trabalho relativamente pesado (várias tabelas,
             # ReportLab) — antes rodava de novo em TODA interação nessa tela
@@ -2692,14 +2846,14 @@ class UserInterface(ApiTestsPageMixin):
                 data=pdf_bytes,
                 file_name=f"QA_Report_{safe_name}.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 type="primary",
             )
         with col_azure:
-            st.markdown("### 🔗 Azure DevOps")
+            st.markdown("#### 🔗 Azure DevOps")
             st.caption("Envie os artefatos gerados direto para o seu projeto no Azure DevOps.")
             with st.container(key="azure_blue_btn_goto_step7"):
-                if st.button("🔗 Ir para Integração com Azure DevOps →", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_goto_step7"):
+                if st.button("🔗 Ir para Integração com Azure DevOps →", width="stretch", disabled=self.state.get('is_processing'), key="btn_goto_step7"):
                     self._set_step(7, allow_during_processing=True)
                     st.rerun()
 
@@ -2715,11 +2869,11 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("← Voltar", use_container_width=True, disabled=self.state.get('is_processing'), key="btn_back_step6"):
+            if st.button("← Voltar", width="stretch", disabled=self.state.get('is_processing'), key="btn_back_step6"):
                 self._set_step(5)
                 st.rerun()
         with c2:
-            if st.button("🔄 Nova Análise", use_container_width=True, type="primary", disabled=self.state.get('is_processing'), key="btn_new_step6"):
+            if st.button("🔄 Nova Análise", width="stretch", type="primary", disabled=self.state.get('is_processing'), key="btn_new_step6"):
                 self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
@@ -2758,7 +2912,7 @@ class UserInterface(ApiTestsPageMixin):
                 "foram removidos das Suítes automaticamente. Revise o Passo 5 antes de integrar."
             )
 
-        st.markdown("### 📋 Test Plan (destino no Azure DevOps)")
+        st.markdown("#### 📋 Test Plan (destino no Azure DevOps)")
         st.caption(
             f"Os **{len(test_plans)} Plano(s)** e suas Suítes, gerados no Passo 5, serão criados "
             "como Suítes Estáticas no Azure DevOps, com os Casos de Teste vinculados diretamente "
@@ -2843,7 +2997,7 @@ class UserInterface(ApiTestsPageMixin):
         with st.container(key="azure_blue_btn_confirm_static"):
             if st.button(
                 "🔗 Confirmar e Integrar com Azure DevOps",
-                type="primary", use_container_width=True,
+                type="primary", width="stretch",
                 disabled=self.state.get('is_processing') or not plan_name.strip(),
                 key="btn_confirm_static_push",
             ):
@@ -2889,7 +3043,7 @@ class UserInterface(ApiTestsPageMixin):
 
         log = self.state.get('ado_static_push_log') or []
         if log:
-            st.markdown("#### 📋 Resultado da integração")
+            st.markdown("##### 📋 Resultado da integração")
             for line in log:
                 st.write(line)
 
@@ -3109,7 +3263,7 @@ class UserInterface(ApiTestsPageMixin):
         ainda não existir) e o vínculo "Tests" entre o Caso já existente e
         o Work Item novo.
         """
-        st.markdown("### 📋 1. Escolha o Test Plan anterior")
+        st.markdown("#### 📋 1. Escolha o Test Plan anterior")
         st.caption("O Test Plan que já tem os Casos de Teste criados (do fluxo 'Sem Work Items').")
 
         with st.container(key="azure_blue_btn_fetch_recon_plans"):
@@ -3152,7 +3306,7 @@ class UserInterface(ApiTestsPageMixin):
                     key="btn_fetch_recon_cases",
                     on_click=self.trigger_action,
                     args=("fetch_recon_cases",),
-                    use_container_width=True,
+                    width="stretch",
                 )
         if self.state.get('current_action') == 'fetch_recon_cases' and not self.state.get('show_interrupt_modal'):
             try:
@@ -3205,7 +3359,7 @@ class UserInterface(ApiTestsPageMixin):
         st.caption(f"✅ {len(old_cases)} Caso(s) de Teste encontrados neste Test Plan, prontos pra vincular.")
 
         st.divider()
-        st.markdown("### 🎯 2. Busque os Work Items novos")
+        st.markdown("#### 🎯 2. Busque os Work Items novos")
         with st.container(key="azure_blue_btn_fetch_recon_wi"):
             st.button(
                 "🔄 Buscar Work Items do Board",
@@ -3234,7 +3388,7 @@ class UserInterface(ApiTestsPageMixin):
             return
 
         st.divider()
-        st.markdown("### 🤖 3. Sugestão automática com IA")
+        st.markdown("#### 🤖 3. Sugestão automática com IA")
         st.caption(
             "Compara os títulos dos Casos já existentes no Test Plan anterior com os Work Items "
             "novos — a IA baseia a sugestão só no título de cada caso (não tem acesso aos passos "
@@ -3276,7 +3430,7 @@ class UserInterface(ApiTestsPageMixin):
             st.rerun()
 
         st.divider()
-        st.markdown("### ✏️ 4. Revisar e confirmar")
+        st.markdown("#### ✏️ 4. Revisar e confirmar")
         st.caption("Cada Caso só pode ser vinculado a UM Work Item — se já estiver escolhido em outro, some das opções aqui.")
         links = dict(self.state.get('ado_recon_wi_case_links') or {})
         ordered_wids = [str(item['id']) for item in selected_items]
@@ -3303,7 +3457,7 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         with st.container(key="azure_blue_btn_confirm_recon"):
             if st.button(
-                "🔗 Confirmar e Vincular no Azure DevOps", type="primary", use_container_width=True,
+                "🔗 Confirmar e Vincular no Azure DevOps", type="primary", width="stretch",
                 disabled=self.state.get('is_processing') or total_links == 0,
                 key="btn_confirm_recon",
             ):
@@ -3330,7 +3484,7 @@ class UserInterface(ApiTestsPageMixin):
 
         log = self.state.get('ado_recon_push_log') or []
         if log:
-            st.markdown("#### 📋 Resultado da reconciliação")
+            st.markdown("##### 📋 Resultado da reconciliação")
             for line in log:
                 st.write(line)
 
@@ -3395,14 +3549,14 @@ class UserInterface(ApiTestsPageMixin):
         c1, c2 = st.columns(2)
         with c1:
             if st.button(
-                "← Voltar", use_container_width=True,
+                "← Voltar", width="stretch",
                 disabled=self.state.get('is_processing'), key=f"btn_back_step7_{key_suffix}",
             ):
                 self._set_step(back_step)
                 st.rerun()
         with c2:
             if st.button(
-                "🔄 Nova Análise", use_container_width=True, type="primary",
+                "🔄 Nova Análise", width="stretch", type="primary",
                 disabled=self.state.get('is_processing'), key=f"btn_new_step7_{key_suffix}",
             ):
                 self.state.set('show_new_analysis_modal', True)
@@ -3484,7 +3638,7 @@ class UserInterface(ApiTestsPageMixin):
         `show_area_path_picker=False`, `area_path` sempre volta como
         `ado_project` (equivalente a "raiz do projeto").
         """
-        st.markdown("#### 🔧 Configuração do Azure DevOps")
+        st.markdown("##### 🔧 Configuração do Azure DevOps")
         st.caption(
             "Organização, Projeto e Area Path vêm direto do Azure DevOps — nada aqui é digitado livremente."
         )
@@ -3673,7 +3827,7 @@ class UserInterface(ApiTestsPageMixin):
                         key="btn_fetch_projects",
                         on_click=self.trigger_action,
                         args=("fetch_projects",),
-                        use_container_width=True,
+                        width="stretch",
                     )
 
         if self.state.get('current_action') == 'fetch_projects' and not self.state.get('show_interrupt_modal'):
@@ -3854,7 +4008,7 @@ class UserInterface(ApiTestsPageMixin):
                     key="btn_fetch_wi_s7",
                     on_click=self.trigger_action,
                     args=("fetch_wi",),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
         if self.state.get('current_action') == 'fetch_wi' and not self.state.get('show_interrupt_modal'):
@@ -3978,7 +4132,7 @@ class UserInterface(ApiTestsPageMixin):
             st.info("Nenhum Caso de Teste foi gerado ainda nesta análise.")
         else:
             st.divider()
-            st.markdown("### 🤖 Sugestão automática de vínculos com IA")
+            st.markdown("#### 🤖 Sugestão automática de vínculos com IA")
             st.caption(
                 "Envia os Work Items selecionados abaixo e os Casos de Teste gerados pro n8n, "
                 "que devolve uma sugestão de quais casos se relacionam a quais Work Items. Você "
@@ -4090,7 +4244,7 @@ class UserInterface(ApiTestsPageMixin):
                         st.divider()
 
             st.divider()
-            st.markdown("### ✏️ Revisar e confirmar vínculos")
+            st.markdown("#### ✏️ Revisar e confirmar vínculos")
             st.caption(
                 "Adicione ou remova Casos de Teste livremente pra cada Work Item. Cada Caso só "
                 "pode ser vinculado a UM Work Item — se ele já estiver escolhido em outro, some "
@@ -4170,7 +4324,7 @@ class UserInterface(ApiTestsPageMixin):
                         st.write(f"- {t}")
 
             st.divider()
-            st.markdown("### 🚫 Excluir Casos de Teste do Envio")
+            st.markdown("#### 🚫 Excluir Casos de Teste do Envio")
             st.caption(
                 "Escolha aqui os Casos de Teste que você **não** quer enviar pro Azure DevOps "
                 "nesta integração — nem como Caso avulso, nem vinculados a nenhum Work Item. "
@@ -4201,7 +4355,7 @@ class UserInterface(ApiTestsPageMixin):
             total_links = sum(len(c) for c in items_with_cases.values())
 
             st.divider()
-            st.markdown("### 📋 Test Plan")
+            st.markdown("#### 📋 Test Plan")
 
             with st.container(key="azure_blue_btn_fetch_existing_plans"):
                 st.button(
@@ -4295,7 +4449,7 @@ class UserInterface(ApiTestsPageMixin):
                     if st.button(
                         "🔗 Confirmar e Integrar com Azure DevOps",
                         type="primary",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=self.state.get('is_processing'),
                         key="btn_open_ado_full_confirm",
                     ):
@@ -4372,7 +4526,7 @@ class UserInterface(ApiTestsPageMixin):
 
             log = self.state.get('ado_full_push_log') or []
             if log:
-                st.markdown("#### 📋 Resultado da integração")
+                st.markdown("##### 📋 Resultado da integração")
                 for line in log:
                     st.write(line)
 
@@ -4385,13 +4539,14 @@ class UserInterface(ApiTestsPageMixin):
             "Documenta o que já foi EXECUTADO no Azure DevOps — não depende de terminar o "
             "assistente de geração, só busca dados que já existem lá."
         )
+        self._render_area_help("relatorio")
 
         c_back, c_new = st.columns(2)
         with c_back:
-            if st.button("← Voltar", key="btn_report_back_top", use_container_width=True):
+            if st.button("← Voltar", key="btn_report_back_top", width="stretch"):
                 self._navigate_or_confirm({'show_execution_report_page': False})
         with c_new:
-            if st.button("🔄 Novo Relatório", key="btn_new_report_top", use_container_width=True, disabled=not self.state.get('report_pdf_bytes')):
+            if st.button("🔄 Novo Relatório", key="btn_new_report_top", width="stretch", disabled=not self.state.get('report_pdf_bytes')):
                 self.state.set('show_new_report_modal', True)
                 st.rerun()
         if self.state.get('show_new_report_modal'):
@@ -4508,7 +4663,7 @@ class UserInterface(ApiTestsPageMixin):
                     key="btn_fetch_wi_gen",
                     on_click=self.trigger_action,
                     args=("fetch_wi_gen",),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
         if self.state.get('current_action') == 'fetch_wi_gen' and not self.state.get('show_interrupt_modal'):
@@ -4664,7 +4819,7 @@ class UserInterface(ApiTestsPageMixin):
             st.button(
                 "✅ Confirmar e Gerar Especificação",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=self.state.get('is_processing') or not project_name.strip() or not ambiente or falta_tipo_documento,
                 key=f"btn_{confirm_action_key}",
                 on_click=self.trigger_action,
@@ -4749,7 +4904,7 @@ class UserInterface(ApiTestsPageMixin):
                     key="btn_fetch_saved_queries",
                     on_click=self.trigger_action,
                     args=("fetch_saved_queries",),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             if self.state.get('current_action') == 'fetch_saved_queries' and not self.state.get('show_interrupt_modal'):
@@ -4794,7 +4949,7 @@ class UserInterface(ApiTestsPageMixin):
                     key="btn_run_saved_query",
                     on_click=self.trigger_action,
                     args=("run_saved_query",),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             if self.state.get('current_action') == 'run_saved_query' and not self.state.get('show_interrupt_modal'):
@@ -4867,6 +5022,7 @@ class UserInterface(ApiTestsPageMixin):
             "Visualiza a hierarquia como um mapa mental — a partir da sessão atual, de um "
             "grupo de documentos já armazenado, ou de Work Items escolhidos direto no Azure DevOps."
         )
+        self._render_area_help("mapa")
 
         origem = st.radio(
             "Origem dos dados",
@@ -4966,7 +5122,7 @@ class UserInterface(ApiTestsPageMixin):
                         key="btn_fetch_wi_mindmap",
                         on_click=self.trigger_action,
                         args=("fetch_wi_mindmap",),
-                        use_container_width=True,
+                        width="stretch",
                     )
             if self.state.get('current_action') == 'fetch_wi_mindmap' and not self.state.get('show_interrupt_modal'):
                 try:
@@ -5012,7 +5168,7 @@ class UserInterface(ApiTestsPageMixin):
                 st.button(
                     "🧠 Gerar Mapa Mental",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=self.state.get('is_processing') or not selected_wis or not raiz_nome_sugerida.strip(),
                     key="btn_gerar_mindmap_wi",
                     on_click=self.trigger_action,
@@ -5123,7 +5279,7 @@ class UserInterface(ApiTestsPageMixin):
                 key=f"btn_fetch_colunas_{key_prefix}",
                 on_click=self.trigger_action,
                 args=(f"fetch_colunas_{key_prefix}",),
-                use_container_width=True,
+                width="stretch",
             )
         if self.state.get('current_action') == f'fetch_colunas_{key_prefix}' and not self.state.get('show_interrupt_modal'):
             try:
@@ -5202,7 +5358,7 @@ class UserInterface(ApiTestsPageMixin):
                     key=f"btn_fetch_tags_{key_prefix}",
                     on_click=self.trigger_action,
                     args=(f"fetch_tags_{key_prefix}",),
-                    use_container_width=True,
+                    width="stretch",
                 )
             if self.state.get('current_action') == f'fetch_tags_{key_prefix}' and not self.state.get('show_interrupt_modal'):
                 try:
@@ -5234,7 +5390,7 @@ class UserInterface(ApiTestsPageMixin):
                     key=f"btn_fetch_membros_{key_prefix}",
                     on_click=self.trigger_action,
                     args=(f"fetch_membros_{key_prefix}",),
-                    use_container_width=True,
+                    width="stretch",
                     help=(
                         "Busca em todos os Times do projeto — não fica limitado ao Time "
                         "da Area Path escolhida, já que o Azure DevOps permite atribuir "
@@ -5581,7 +5737,7 @@ class UserInterface(ApiTestsPageMixin):
                 key=f"btn_wi_fetch_tags_{key_prefix}",
                 on_click=self.trigger_action,
                 args=(f"wi_fetch_tags_{key_prefix}",),
-                use_container_width=True,
+                width="stretch",
             )
             if self.state.get('current_action') == f'wi_fetch_tags_{key_prefix}' and not self.state.get('show_interrupt_modal'):
                 try:
@@ -5630,7 +5786,7 @@ class UserInterface(ApiTestsPageMixin):
             key=f"btn_wi_fetch_membros_{key_prefix}",
             on_click=self.trigger_action,
             args=(f"wi_fetch_membros_{key_prefix}",),
-            use_container_width=True,
+            width="stretch",
             help="Busca em todos os Times do projeto. Pode levar alguns segundos em projetos com muitos Times.",
         )
         if self.state.get('current_action') == f'wi_fetch_membros_{key_prefix}' and not self.state.get('show_interrupt_modal'):
@@ -5679,7 +5835,7 @@ class UserInterface(ApiTestsPageMixin):
                 key=f"btn_wi_fetch_colunas_{key_prefix}",
                 on_click=self.trigger_action,
                 args=(f"wi_fetch_colunas_{key_prefix}",),
-                use_container_width=True,
+                width="stretch",
             )
             if self.state.get('current_action') == f'wi_fetch_colunas_{key_prefix}' and not self.state.get('show_interrupt_modal'):
                 try:
@@ -5785,7 +5941,7 @@ class UserInterface(ApiTestsPageMixin):
         st.subheader("👋 Bem-vindo")
         st.caption("Escolha por onde começar — essas são as áreas liberadas para o seu usuário.")
         for chave, _perm, rotulo in areas:
-            if st.button(rotulo, use_container_width=True, key=f"btn_home_area_{chave}"):
+            if st.button(rotulo, width="stretch", key=f"btn_home_area_{chave}"):
                 self.state.set(chave, True)
                 st.rerun()
 
@@ -5805,6 +5961,7 @@ class UserInterface(ApiTestsPageMixin):
             "vêm do processo do próprio projeto, então tipos e campos customizados da sua "
             "organização aparecem aqui automaticamente."
         )
+        self._render_area_help("work_item")
 
         conn = self._setup_azure_devops_connection(show_area_path_picker=False)
         if conn is None:
@@ -6025,7 +6182,7 @@ class UserInterface(ApiTestsPageMixin):
             c["reference_name"] in valores for c in obrigatorios_extra
             if (catalogo.get(c["reference_name"]) or {}).get("type") != "boolean"
         )
-        if st.button("🧱 Criar Work Item", type="primary", use_container_width=True,
+        if st.button("🧱 Criar Work Item", type="primary", width="stretch",
                       disabled=self.state.get('is_processing') or not pode_criar,
                       key="btn_wi_criar"):
             self.state.set('wi_snapshot', {
@@ -6126,7 +6283,7 @@ class UserInterface(ApiTestsPageMixin):
             key=f"btn_wi_fetch_pais_{key_prefix}",
             on_click=self.trigger_action,
             args=(f"wi_fetch_pais_{key_prefix}",),
-            use_container_width=True,
+            width="stretch",
         )
         if self.state.get('current_action') == f'wi_fetch_pais_{key_prefix}' and not self.state.get('show_interrupt_modal'):
             try:
@@ -6225,7 +6382,7 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         if st.button(
             f"🧩 Criar {len(preenchidos)} {tipo_filho}(s) dentro de '{pai['title']}'",
-            type="primary", use_container_width=True,
+            type="primary", width="stretch",
             disabled=self.state.get('is_processing') or not preenchidos,
             key="btn_wi_lote_criar",
         ):
@@ -6289,7 +6446,7 @@ class UserInterface(ApiTestsPageMixin):
             st.success(f"🎉 {resultado_anterior['tipo']} criado: **{resultado_anterior['titulo']}** (ID {resultado_anterior['id']})")
             for linha in resultado_anterior.get("log", []):
                 st.markdown(linha)
-            if st.button("🧱 Criar outro", key="btn_wi_criar_outro", use_container_width=True):
+            if st.button("🧱 Criar outro", key="btn_wi_criar_outro", width="stretch"):
                 self.state.set('wi_ultimo_criado', None)
                 self.state.set('wi_snapshot', None)
                 # Renova a key do uploader pra ele nascer vazio (ver comentário
@@ -6383,11 +6540,11 @@ class UserInterface(ApiTestsPageMixin):
                 st.markdown("**Imagens:** " + ", ".join(nome for nome, _ in snapshot["imagens"]))
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("✅ Sim, criar", type="primary", use_container_width=True, key="btn_wi_confirm_sim"):
+            if st.button("✅ Sim, criar", type="primary", width="stretch", key="btn_wi_confirm_sim"):
                 self.trigger_action('wi_confirm_criar')
                 st.rerun()
         with c2:
-            if st.button("✖ Cancelar", use_container_width=True, key="btn_wi_confirm_nao"):
+            if st.button("✖ Cancelar", width="stretch", key="btn_wi_confirm_nao"):
                 self.state.set('wi_snapshot', None)
                 st.rerun()
 
@@ -6399,7 +6556,7 @@ class UserInterface(ApiTestsPageMixin):
             st.success(resultado_anterior["resumo"])
             for linha in resultado_anterior.get("log", []):
                 st.markdown(linha)
-            if st.button("🧩 Criar outro lote", key="btn_wi_lote_outro", use_container_width=True):
+            if st.button("🧩 Criar outro lote", key="btn_wi_lote_outro", width="stretch"):
                 self.state.set('wi_lote_ultimo', None)
                 self.state.set('wi_lote_snapshot', None)
                 self.state.set('wi_lote_filhos', None)
@@ -6462,11 +6619,11 @@ class UserInterface(ApiTestsPageMixin):
                 st.markdown(f"- **{f['titulo']}**" + (f" — {f['descricao']}" if f.get("descricao") else ""))
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("✅ Sim, criar todos", type="primary", use_container_width=True, key="btn_wi_lote_sim"):
+            if st.button("✅ Sim, criar todos", type="primary", width="stretch", key="btn_wi_lote_sim"):
                 self.trigger_action('wi_lote_confirm')
                 st.rerun()
         with c2:
-            if st.button("✖ Cancelar", use_container_width=True, key="btn_wi_lote_nao"):
+            if st.button("✖ Cancelar", width="stretch", key="btn_wi_lote_nao"):
                 self.state.set('wi_lote_snapshot', None)
                 st.rerun()
 
@@ -6490,6 +6647,7 @@ class UserInterface(ApiTestsPageMixin):
             "vinculado de volta a ele) ou abrir direto no Work Item principal, sem escolher um "
             "Caso específico."
         )
+        self._render_area_help("bug")
 
         conn = self._setup_azure_devops_connection(show_area_path_picker=False)
         if conn is None:
@@ -6562,7 +6720,7 @@ class UserInterface(ApiTestsPageMixin):
                 key="btn_fetch_wi_bug",
                 on_click=self.trigger_action,
                 args=("fetch_wi_bug",),
-                use_container_width=True,
+                width="stretch",
             )
         if self.state.get('current_action') == 'fetch_wi_bug' and not self.state.get('show_interrupt_modal'):
             try:
@@ -6620,7 +6778,7 @@ class UserInterface(ApiTestsPageMixin):
                     key="btn_fetch_tc_bug",
                     on_click=self.trigger_action,
                     args=("fetch_tc_bug",),
-                    use_container_width=True,
+                    width="stretch",
                 )
             if self.state.get('current_action') == 'fetch_tc_bug' and not self.state.get('show_interrupt_modal'):
                 try:
@@ -6704,7 +6862,7 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         with st.container(key="azure_blue_btn_ir_confirmar_de_caso"):
             if st.button(
-                "🐛 Criar Bug", type="primary", use_container_width=True,
+                "🐛 Criar Bug", type="primary", width="stretch",
                 disabled=self.state.get('is_processing') or not pode_confirmar,
                 key="btn_ir_confirmar_de_caso",
             ):
@@ -6772,7 +6930,7 @@ class UserInterface(ApiTestsPageMixin):
         st.divider()
         with st.container(key="azure_blue_btn_ir_confirmar_livre"):
             if st.button(
-                "🐛 Criar Bug", type="primary", use_container_width=True,
+                "🐛 Criar Bug", type="primary", width="stretch",
                 disabled=self.state.get('is_processing') or not pode_confirmar,
                 key="btn_ir_confirmar_livre",
             ):
@@ -6955,7 +7113,7 @@ class UserInterface(ApiTestsPageMixin):
         ultimo = self.state.get(f'bug_ultimo_criado_{key_prefix}')
         if ultimo:
             st.markdown('<div id="bug-sucesso-anchor"></div>', unsafe_allow_html=True)
-            st.markdown("#### 📋 Resultado da integração")
+            st.markdown("##### 📋 Resultado da integração")
             for line in ultimo['log']:
                 st.write(line)
             if self.state.get(f'show_new_bug_modal_{key_prefix}'):
@@ -6969,17 +7127,17 @@ class UserInterface(ApiTestsPageMixin):
                     )
                     cc1, cc2 = st.columns(2)
                     with cc1:
-                        if st.button("🔄 Sim, Criar Outro", use_container_width=True, type="primary",
+                        if st.button("🔄 Sim, Criar Outro", width="stretch", type="primary",
                                       key=f"confirm_new_bug_yes_{key_prefix}"):
                             self._iniciar_novo_bug(key_prefix)
                             self.state.set(f'show_new_bug_modal_{key_prefix}', False)
                             st.rerun()
                     with cc2:
-                        if st.button("Cancelar", use_container_width=True, key=f"confirm_new_bug_no_{key_prefix}"):
+                        if st.button("Cancelar", width="stretch", key=f"confirm_new_bug_no_{key_prefix}"):
                             self.state.set(f'show_new_bug_modal_{key_prefix}', False)
                             st.rerun()
             else:
-                if st.button("➕ Criar outro Bug", key=f"btn_bug_outro_{key_prefix}", use_container_width=True):
+                if st.button("➕ Criar outro Bug", key=f"btn_bug_outro_{key_prefix}", width="stretch"):
                     self.state.set(f'show_new_bug_modal_{key_prefix}', True)
                     st.rerun()
 
@@ -7063,13 +7221,13 @@ class UserInterface(ApiTestsPageMixin):
 
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("🐛 Sim, Criar Bug", use_container_width=True, type="primary",
+                if st.button("🐛 Sim, Criar Bug", width="stretch", type="primary",
                               key=f"confirm_bug_yes_{key_prefix}"):
                     self.state.set('show_bug_confirm_modal', False)
                     self.state.set(f'_bug_confirmado_{key_prefix}', True)
                     st.rerun()
             with c2:
-                if st.button("❌ Cancelar", use_container_width=True, key=f"confirm_bug_no_{key_prefix}"):
+                if st.button("❌ Cancelar", width="stretch", key=f"confirm_bug_no_{key_prefix}"):
                     self.state.set('show_bug_confirm_modal', False)
                     st.rerun()
 
@@ -7661,6 +7819,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "fluxo de origem — mais recentes primeiro. Guardados num banco separado (Turso), "
             "fora do app em si."
         )
+        self._render_area_help("documentos")
 
         store = DocumentStore(self.config.turso_database_url, self.config.turso_auth_token)
         try:
@@ -7714,10 +7873,10 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                             mime = {"csv": "text/csv", "md": "text/markdown", "zip": "application/zip"}.get(arq['tipo'], "application/pdf")
                             st.download_button(
                                 "💾 Salvar", data=conteudo_pronto, file_name=arq['nome_arquivo'],
-                                mime=mime, key=f"dlbtn_{arq['id']}", use_container_width=True,
+                                mime=mime, key=f"dlbtn_{arq['id']}", width="stretch",
                             )
                         else:
-                            if st.button("⬇️ Buscar", key=f"btn_prep_{arq['id']}", use_container_width=True):
+                            if st.button("⬇️ Buscar", key=f"btn_prep_{arq['id']}", width="stretch"):
                                 try:
                                     with st.spinner("Buscando arquivo..."):
                                         conteudo = store.buscar_conteudo(arq['id'])
@@ -7737,7 +7896,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                         st.warning("Tem certeza? Isso apaga os arquivos deste grupo permanentemente do banco.")
                         c1, c2 = st.columns(2)
                         with c1:
-                            if st.button("✅ Sim, excluir", key=f"btn_confirm_delete_{grupo['grupo_id']}", type="primary", use_container_width=True):
+                            if st.button("✅ Sim, excluir", key=f"btn_confirm_delete_{grupo['grupo_id']}", type="primary", width="stretch"):
                                 try:
                                     store.excluir_grupo(grupo['grupo_id'])
                                     st.success("Excluído.")
@@ -7750,7 +7909,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                                 self.state.set(delete_flag_key, False)
                                 st.rerun()
                         with c2:
-                            if st.button("✖ Cancelar", key=f"btn_cancel_delete_{grupo['grupo_id']}", use_container_width=True):
+                            if st.button("✖ Cancelar", key=f"btn_cancel_delete_{grupo['grupo_id']}", width="stretch"):
                                 self.state.set(delete_flag_key, False)
                                 st.rerun()
 
@@ -7769,6 +7928,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "não é de TI (times de Produto/Marketing em UAT) — evita relatos de \"bug\" que na "
             "real são passos executados fora de ordem ou mal interpretados."
         )
+        self._render_area_help("manual")
         st.info(
             "📷 O app **não tira print de tela ao vivo** — ele só reaproveita imagens que **você "
             "já tiver**, anexadas em documentos ou já existentes nos Work Items do Azure DevOps."
@@ -7844,7 +8004,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                         key="btn_fetch_manual_queries",
                         on_click=self.trigger_action,
                         args=("fetch_manual_queries",),
-                        use_container_width=True,
+                        width="stretch",
                     )
                 if self.state.get('current_action') == 'fetch_manual_queries' and not self.state.get('show_interrupt_modal'):
                     try:
@@ -7876,7 +8036,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                         key="btn_run_manual_query",
                         on_click=self.trigger_action,
                         args=("run_manual_query",),
-                        use_container_width=True,
+                        width="stretch",
                     )
                 if self.state.get('current_action') == 'run_manual_query' and not self.state.get('show_interrupt_modal'):
                     try:
@@ -7925,7 +8085,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                             key="btn_fetch_wi_manual",
                             on_click=self.trigger_action,
                             args=("fetch_wi_manual",),
-                            use_container_width=True,
+                            width="stretch",
                         )
                 if self.state.get('current_action') == 'fetch_wi_manual' and not self.state.get('show_interrupt_modal'):
                     try:
@@ -8005,7 +8165,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             st.button(
                 "🤖 Gerar Manual com IA",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=self.state.get('is_processing') or not nome_manual.strip(),
                 key="btn_generate_manual",
                 on_click=self.trigger_action,
@@ -8045,7 +8205,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             return
 
         st.divider()
-        st.markdown("### ✏️ Revisar o Manual")
+        st.markdown("#### ✏️ Revisar o Manual")
         st.caption("Edite os textos livremente e escolha quais imagens ilustram cada passo antes de gerar o PDF.")
 
         if "manual_titulo_input" not in st.session_state:
@@ -8103,7 +8263,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             st.button(
                 "📄 Gerar PDF do Manual",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=self.state.get('is_processing'),
                 key="btn_build_manual_pdf",
                 on_click=self.trigger_action,
@@ -8136,7 +8296,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 data=pdf_bytes,
                 file_name=f"Manual_{safe_name}.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 type="primary",
                 key="download_manual_pdf",
             )
@@ -8153,6 +8313,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "linguagem de query do Azure DevOps). Antes de criar qualquer coisa de verdade, "
             "você vê um preview de quantos itens a query traria, pra confirmar que é isso mesmo."
         )
+        self._render_area_help("wiql")
 
         if st.button("← Voltar", key="btn_wiql_back_top"):
             self.state.set('show_wiql_generation_page', False)
@@ -8182,7 +8343,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             st.button(
                 "🤖 Gerar Query com IA",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=self.state.get('is_processing') or not descricao.strip(),
                 key="btn_generate_wiql",
                 on_click=self.trigger_action,
@@ -8207,7 +8368,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             return
 
         st.divider()
-        st.markdown("#### 📝 Revise antes de criar")
+        st.markdown("##### 📝 Revise antes de criar")
         st.info(f"**O que a IA entendeu:** {generated.get('explicacao', '—')}")
 
         if "wiql_titulo_input" not in st.session_state:
@@ -8236,7 +8397,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         with st.container(key="azure_blue_btn_preview_wiql"):
             st.button(
                 "🔍 Testar Query (preview, não cria nada ainda)",
-                use_container_width=True,
+                width="stretch",
                 disabled=self.state.get('is_processing') or not wiql_text.strip(),
                 key="btn_preview_wiql",
                 on_click=self.trigger_action,
@@ -8269,7 +8430,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                     {"ID": d["id"], "Título": d["title"], "Tipo": d["type"], "Estado": d["state"]}
                     for d in details
                 ]
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+                st.dataframe(rows, width="stretch", hide_index=True)
                 if preview['count'] > len(details):
                     st.caption(f"Mostrando os primeiros {len(details)} de {preview['count']} itens.")
 
@@ -8277,7 +8438,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 st.button(
                     "✅ Confirmar e Criar Query no Azure DevOps",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=self.state.get('is_processing') or not titulo.strip(),
                     key="btn_confirm_wiql",
                     on_click=self.trigger_action,
@@ -8290,7 +8451,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 if self._get_permission_cached("azure_query"):
                     st.button(
                         "🎯 Usar pra Gerar Testes",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=self.state.get('is_processing'),
                         key="btn_wiql_para_testes",
                         on_click=self.trigger_action,
@@ -8303,7 +8464,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 if self._get_permission_cached("manual_testes"):
                     st.button(
                         "📘 Usar pra Criar Manual",
-                        use_container_width=True,
+                        width="stretch",
                         disabled=self.state.get('is_processing'),
                         key="btn_wiql_para_manual",
                         on_click=self.trigger_action,
@@ -8469,7 +8630,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             st.button(
                 "📊 Buscar Resultados e Gerar Relatório",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=self.state.get('is_processing') or not nome_relatorio.strip() or not contexto or not escopo_proposito or not conclusao or not status_manual,
                 key="btn_generate_execution_report_wi",
                 on_click=self.trigger_action,
@@ -8489,7 +8650,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 data=report_bytes,
                 file_name=f"Relatorio_Testes_{safe_name}.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 type="primary",
                 key="download_report_wi",
             )
@@ -8748,7 +8909,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
     def _render_execution_report_section(self, ado_client, ado_project: str = "", area_paths: list = None):
         area_paths = area_paths or []
-        st.markdown("### 📊 Relatório de Testes (execução)")
+        st.markdown("#### 📊 Relatório de Testes (execução)")
         st.caption(
             "Documenta o que foi EXECUTADO no Azure DevOps (diferente do PDF do Passo 6, que "
             "documenta o que foi planejado). Busca o Test Plan escolhido, os resultados de "
@@ -8818,7 +8979,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             st.button(
                 "📊 Buscar Resultados e Gerar Relatório",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=self.state.get('is_processing') or not contexto or not escopo_proposito or not conclusao or not status_manual,
                 key="btn_generate_execution_report",
                 on_click=self.trigger_action,
@@ -8838,7 +8999,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 data=report_bytes,
                 file_name=f"Relatorio_Testes_{safe_name}.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
                 type="primary",
             )
             for warn in self.state.get('report_warnings') or []:
@@ -10024,7 +10185,10 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             and not self.state.get('show_interrupt_modal')
             and not self.state.get('show_new_analysis_modal')
         ):
-            aviso_pat_compartilhado_modal(lambda: self._marcar_pat_notice_dispensado(username))
+            aviso_pat_compartilhado_modal(
+                lambda: self._marcar_pat_notice_dispensado(username),
+                tem_testes_api=self._get_permission_cached("testes_api"),
+            )
 
         # Scroll Viewport to Top Tracking System
         current_step = self.state.get('step')
