@@ -259,6 +259,12 @@ def _render_user_management_section(config, client, current_username: str):
         "secrets.toml. Ao editar, a senha só muda se você preencher o campo de senha."
     )
 
+    # Aviso de sucesso do último salvamento — fica FORA dos cartões, porque
+    # o cartão de quem foi salvo é fechado logo depois de gravar.
+    aviso_salvo = st.session_state.pop('_usuario_salvo_aviso', None)
+    if aviso_salvo:
+        st.success(aviso_salvo)
+
     try:
         usuarios = client.list_users()
     except Exception as error:
@@ -288,7 +294,24 @@ def _render_user_management_section(config, client, current_username: str):
                     st.session_state[f"edit_perm_{perm_key}_{uname}"] = True
                 st.session_state[grant_all_key] = False
 
-            with st.expander(f"👤 {nome_atual or uname}  ({uname})"):
+            # Pra conseguir FECHAR o cartão pelo código depois de salvar, o
+            # expander precisa de key E de on_change != "ignore": só assim ele
+            # é registrado como widget e passa a ler o estado de
+            # st.session_state (com o on_change padrão "ignore", o key serve
+            # apenas como id de bloco/classe CSS e o aberto/fechado fica só no
+            # navegador, fora do alcance do app). O custo é um rerender a cada
+            # abrir/fechar, aceitável numa tela de administração.
+            card_key = f"user_card_{uname}"
+            # O fechamento é pedido no clique de salvar, mas aplicado AQUI, no
+            # rerender seguinte, antes do expander existir: escrever em
+            # session_state de um widget já instanciado levanta
+            # StreamlitAPIException ("cannot be modified after the widget ...
+            # is instantiated"). Mesmo motivo do atalho "Conceder tudo" acima.
+            if st.session_state.pop(f"_fechar_card_{uname}", False):
+                st.session_state[card_key] = False
+
+            with st.expander(f"👤 {nome_atual or uname}  ({uname})", key=card_key,
+                              on_change="rerun"):
                 info_criacao = f"Criado em {criado_em}" if criado_em else "Criado"
                 if criado_por:
                     info_criacao += f" por {criado_por}"
@@ -384,8 +407,15 @@ def _render_user_management_section(config, client, current_username: str):
                                     config, current_username, "Editar Usuário", "Administração",
                                     f"Atualizou o cadastro de {uname} (agora {username_final})",
                                 )
-                                st.success("Alterações salvas.")
                                 st.session_state[pending_key] = None
+                                # Pede o fechamento do cartão (aplicado no
+                                # rerender, antes do expander nascer) e avisa
+                                # fora dele — senão a mensagem de sucesso
+                                # ficava escondida dentro de um cartão aberto.
+                                st.session_state[f"_fechar_card_{uname}"] = True
+                                st.session_state['_usuario_salvo_aviso'] = (
+                                    f"✅ Alterações salvas em **{username_final}**."
+                                )
                                 st.rerun()
                             except Exception as error:
                                 st.error(f"❌ {error}")
@@ -421,7 +451,10 @@ def _render_user_management_section(config, client, current_username: str):
         st.caption("Nenhum usuário cadastrado ainda.")
 
     st.divider()
-    with st.expander("➕ Cadastrar novo usuário"):
+    # Mesmo padrão diferido do cartão de edição (ver comentário lá).
+    if st.session_state.pop("_fechar_card_novo", False):
+        st.session_state["user_card_novo"] = False
+    with st.expander("➕ Cadastrar novo usuário", key="user_card_novo", on_change="rerun"):
         with st.form("create_user_form", clear_on_submit=True):
             novo_nome_criar = st.text_input("Nome *")
             novo_email_criar = st.text_input("E-mail *")
@@ -462,7 +495,13 @@ def _render_user_management_section(config, client, current_username: str):
                         for perm_key in permissoes_criar:
                             client.grant_permission(novo_username_criar, perm_key)
                         log_action(config, current_username, "Criar Usuário", "Administração", f"Criou o usuário {novo_username_criar}")
-                        st.success(f"Usuário {novo_username_criar} criado — já pode fazer login.")
+                        # Mesmo tratamento do salvar: fecha o formulário e avisa
+                        # fora dele, pra pessoa ver a confirmação sem ter que
+                        # rolar dentro de um bloco que continuou aberto.
+                        st.session_state["_fechar_card_novo"] = True
+                        st.session_state['_usuario_salvo_aviso'] = (
+                            f"✅ Usuário **{novo_username_criar}** criado — já pode fazer login."
+                        )
                         st.rerun()
                     except Exception as error:
                         st.error(f"❌ {error}")
