@@ -5954,6 +5954,26 @@ class UserInterface:
         st.markdown("##### 🔗 Vínculo com um pai (opcional)")
         parent_id = self._wi_selecionar_pai(ado_client, ado_project, tipos, "unico")
 
+        st.divider()
+        st.markdown("##### 📎 Evidências em imagem (opcional)")
+        # A versão na key faz o uploader nascer vazio depois de "Criar outro"
+        # — sem isso, as imagens do item anterior continuariam selecionadas e
+        # iriam anexadas de novo no próximo, em silêncio. Mesmo padrão dos
+        # widgets versionados do Criar Bug.
+        versao_wi = self.state.get('wi_form_versao') or 0
+        uploaded = st.file_uploader(
+            "Imagens", type=["png", "jpg", "jpeg"], accept_multiple_files=True,
+            key=f"wi_evidencias_unico_{versao_wi}",
+            disabled=self.state.get('is_processing'),
+            help=(
+                "Igual ao Criar Bug: sobem como anexo formal do Work Item (aba Attachments) "
+                "e ficam também embutidas no fim da Descrição, pra aparecerem direto no item."
+            ),
+        )
+        imagens = [(f.name, f.getvalue()) for f in (uploaded or [])]
+        if imagens:
+            st.caption(f"{len(imagens)} imagem(ns) selecionada(s).")
+
         # Demais campos do tipo, pra quem precisar de algo específico.
         ja_tratados = set(AzureDevOpsClient.CAMPOS_COM_WIDGET_PROPRIO) | {
             c["reference_name"] for c in obrigatorios_extra
@@ -5996,6 +6016,11 @@ class UserInterface:
             self.state.set('wi_snapshot', {
                 "tipo": tipo_nome, "campos": valores, "parent_id": parent_id,
                 "state": coluna_info.get("state"), "coluna": coluna_info.get("coluna"),
+                "imagens": imagens,
+                # Só embute <img> na Descrição se o tipo realmente tem esse
+                # campo editável — senão o anexo formal ainda vale, mas a
+                # Descrição não é tocada.
+                "tem_descricao": "System.Description" in por_ref,
             })
             st.rerun()
         if not pode_criar:
@@ -6252,6 +6277,9 @@ class UserInterface:
             if st.button("🧱 Criar outro", key="btn_wi_criar_outro", use_container_width=True):
                 self.state.set('wi_ultimo_criado', None)
                 self.state.set('wi_snapshot', None)
+                # Renova a key do uploader pra ele nascer vazio (ver comentário
+                # no formulário).
+                self.state.set('wi_form_versao', (self.state.get('wi_form_versao') or 0) + 1)
                 st.rerun()
             return
 
@@ -6260,11 +6288,51 @@ class UserInterface:
 
         if self.state.get('current_action') == 'wi_confirm_criar' and not self.state.get('show_interrupt_modal'):
             try:
+                campos = dict(snapshot["campos"])
+                avisos = []
+
+                # Mesma ordem do Criar Bug: as imagens sobem ANTES do item
+                # existir (upload_attachment não depende de Work Item), pra já
+                # dar pra embutir a URL de cada uma como <img> na Descrição na
+                # mesma chamada que cria o item. O vínculo formal como anexo
+                # (aba Attachments) vem depois, com o id em mãos — best-effort:
+                # falha ali não desfaz o item, vira aviso.
+                anexos_urls = []
+                for nome, conteudo in (snapshot.get("imagens") or []):
+                    try:
+                        anexo = ado_client.upload_attachment(conteudo, nome)
+                        if anexo.get("url"):
+                            anexos_urls.append(anexo["url"])
+                    except Exception as error:
+                        avisos.append(f"⚠️ Falha ao enviar a imagem '{nome}': {error}")
+
+                if anexos_urls and snapshot.get("tem_descricao"):
+                    imgs_html = "".join(
+                        f'<div><img src="{u}" style="max-width:100%" /></div>' for u in anexos_urls
+                    )
+                    descricao_atual = campos.get("System.Description") or ""
+                    campos["System.Description"] = (
+                        f"{descricao_atual}<br><br>{imgs_html}" if descricao_atual else imgs_html
+                    )
+
                 resultado = ado_client.create_work_item(
-                    snapshot["tipo"], snapshot["campos"],
+                    snapshot["tipo"], campos,
                     parent_id=snapshot.get("parent_id"), state=snapshot.get("state"),
                 )
+
+                for url in anexos_urls:
+                    try:
+                        ado_client.attach_file_to_work_item(
+                            resultado["id"], url, comment="Evidência anexada via QA TestGen",
+                        )
+                    except Exception as error:
+                        avisos.append(f"⚠️ Item criado, mas falha ao vincular uma imagem como anexo formal: {error}")
+
                 log = []
+                if anexos_urls:
+                    onde = "anexada(s) e embutida(s) na Descrição" if snapshot.get("tem_descricao") else "anexada(s)"
+                    log.append(f"↳ {len(anexos_urls)} imagem(ns) {onde}")
+                log.extend(avisos)
                 if snapshot.get("parent_id"):
                     log.append(f"↳ Vinculado como filho do Work Item {snapshot['parent_id']} (Parent/Child)")
                 if snapshot.get("coluna"):
@@ -6285,15 +6353,19 @@ class UserInterface:
             self.clear_action()
             st.rerun()
 
+        n_imgs = len(snapshot.get("imagens") or [])
         st.warning(
             f"Vai criar um **{snapshot['tipo']}** chamado **{snapshot['campos'].get('System.Title', '')}** "
             f"com {len(snapshot['campos'])} campo(s) preenchido(s)"
             + (f", como filho do Work Item {snapshot['parent_id']}" if snapshot.get("parent_id") else "")
+            + (f", com {n_imgs} imagem(ns) anexada(s)" if n_imgs else "")
             + ". Isso cria um item real no Azure DevOps e **não pode ser desfeito pelo app**. Confirma?"
         )
         with st.expander("🔍 Ver exatamente o que vai ser enviado"):
             for ref, valor in snapshot["campos"].items():
                 st.markdown(f"- `{ref}` = {valor}")
+            if n_imgs:
+                st.markdown("**Imagens:** " + ", ".join(nome for nome, _ in snapshot["imagens"]))
         c1, c2 = st.columns(2)
         with c1:
             if st.button("✅ Sim, criar", type="primary", use_container_width=True, key="btn_wi_confirm_sim"):
@@ -9732,8 +9804,9 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "- **🧱 Criar Work Item**: cria Work Items de qualquer tipo que o processo do "
             "projeto permita (User Story, Epic, Feature, Task, Spike, tipos customizados...), "
             "com o formulário montado a partir dos metadados do próprio projeto — campo "
-            "customizado aparece sozinho. Tem modo de criar **vários filhos de uma vez** sob "
-            "um pai (quebrar uma User Story em Tasks), e dá pra criar tag nova na hora"
+            "customizado aparece sozinho. Aceita evidências em imagem (anexo + embutidas na "
+            "Descrição), tem modo de criar **vários filhos de uma vez** sob um pai (quebrar "
+            "uma User Story em Tasks), e dá pra criar tag nova na hora"
         )
         st.caption(
             "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "
