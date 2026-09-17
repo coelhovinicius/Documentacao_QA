@@ -47,6 +47,7 @@ from qa_testgen.ui.dialogs import (
     confirm_leave_report_modal,
     aviso_pat_compartilhado_modal,
 )
+from qa_testgen.ui.api_tests_page import ApiTestsPageMixin
 from qa_testgen.ui.auth import (
     require_login, render_logout_control, is_approver, has_permission,
     render_admin_panel, log_action, SESSION_USER_KEY,
@@ -71,7 +72,7 @@ DOCUMENT_UPLOAD_DISABLED_MSG = (
 )
 
 
-class UserInterface:
+class UserInterface(ApiTestsPageMixin):
     def __init__(self):
         page_icon = "🧪"
         if Path(SIMBOLO_PATH).exists():
@@ -473,6 +474,9 @@ class UserInterface:
             self.state.set('show_leave_report_modal', True)
             st.rerun()
         else:
+            # A página de Testes de API não está listada nos dicionários de
+            # navegação das outras áreas — desliga aqui, de forma central.
+            self.state.set('show_api_tests_page', False)
             for key, value in pending_state_updates.items():
                 self.state.set(key, value)
             self.state.set('show_bug_confirm_modal', False)
@@ -492,6 +496,7 @@ class UserInterface:
         ('show_work_item_page', 'criar_work_item', '🧱 Criar Work Item'),
         ('show_wiql_generation_page', 'azure_devops', '🔎 Criar Query com IA'),
         ('show_execution_report_page', 'execution_report', '📊 Relatório de Testes'),
+        ('show_api_tests_page', 'testes_api', '🔌 Testes de API'),
     ]
 
     def _areas_liberadas(self) -> list:
@@ -836,7 +841,17 @@ class UserInterface:
                     self.state.set('show_manual_page', False)
                     self.state.set('show_document_store_page', False)
                     self.state.set('show_mindmap_page', False)
+                    self.state.set('show_api_tests_page', False)
                     st.rerun()
+            if self._get_permission_cached("testes_api"):
+                if st.button("🔌 Testes de API", use_container_width=True, key="btn_api_tests_sidebar", disabled=self.state.get('is_processing')):
+                    self._navigate_or_confirm({
+                        'show_api_tests_page': True, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wiql_generation_page': False, 'show_manual_page': False,
+                        'show_document_store_page': False, 'show_mindmap_page': False,
+                        'show_bug_page': False, 'show_work_item_page': False,
+                    })
             if is_approver(self.config, current_username):
                 # "Administração" agora fica visível pra qualquer aprovador,
                 # não só pro dono — a página em si mostra Solicitações
@@ -7691,12 +7706,12 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 for arq in grupo['arquivos']:
                     col_info, col_btn = st.columns([3, 1])
                     with col_info:
-                        icone = "📄" if arq['tipo'] == 'csv' else "📑"
+                        icone = {"csv": "📄", "md": "📝", "zip": "🗜️"}.get(arq['tipo'], "📑")
                         st.write(f"{icone} {arq['nome_arquivo']} ({arq['tamanho_bytes'] / 1024:.0f} KB)")
                     with col_btn:
                         conteudo_pronto = self.state.get(f"document_store_content_{arq['id']}")
                         if conteudo_pronto:
-                            mime = "text/csv" if arq['tipo'] == 'csv' else "application/pdf"
+                            mime = {"csv": "text/csv", "md": "text/markdown", "zip": "application/zip"}.get(arq['tipo'], "application/pdf")
                             st.download_button(
                                 "💾 Salvar", data=conteudo_pronto, file_name=arq['nome_arquivo'],
                                 mime=mime, key=f"dlbtn_{arq['id']}", use_container_width=True,
@@ -10089,6 +10104,10 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
         if self.state.get('show_work_item_page'):
             self._work_item_creation_page()
+            return
+
+        if self.state.get('show_api_tests_page'):
+            self._api_tests_page()
             return
 
         # Daqui pra baixo é o assistente de QA (Passos 1–6). Quem não tem

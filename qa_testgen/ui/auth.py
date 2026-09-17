@@ -251,6 +251,7 @@ _PERMISSOES_CONHECIDAS = [
     ("mapa_mental", "🧠 Mapa Mental"),
     ("criar_bug", "🐛 Criar Bug"),
     ("criar_work_item", "🧱 Criar Work Item"),
+    ("testes_api", "🔌 Testes de API"),
 ]
 
 

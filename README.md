@@ -100,6 +100,7 @@ Escolhidos na tela, com sugestão automática baseada no Tipo de Documento do Pa
 - **📘 Manual de Testes (UAT)** *(permissão `manual_testes`)* — gera um manual de reprodução em linguagem simples, pra times não-técnicos (Produto/Marketing) em UAT. Não tira print ao vivo — só reaproveita imagens já existentes (anexadas em documentos ou já presentes nos Work Items). Origem do conteúdo: Documentos, Work Items do Azure DevOps, ou Mesclado. Quando a origem inclui Work Items, escolhe entre buscar pelo **Board (Area Path)** ou por uma **Query salva** — mesmo padrão do Passo 1.
 - **🗄️ Documentos Armazenados** *(permissão `documentos_armazenados`)* — guarda CSVs/PDFs gerados no banco de documentos, organizados por grupo, pra buscar depois sem precisar gerar de novo. Qualquer pessoa com a permissão salva e visualiza; **excluir um grupo é exclusivo do dono do app**, mesmo para quem tem a permissão.
 - **🧠 Mapa Mental** *(permissão `mapa_mental`)* — visualização em árvore (Work Item → Suítes → Casos), navegável e com zoom. Exporta em SVG (direto do navegador) ou PDF (gerado no servidor), sempre com tudo expandido no arquivo exportado, independente do que estiver expandido/recolhido na tela.
+- **🔌 Testes de API** *(permissão `testes_api`)* — executa testes de API direto do app, em Python puro (sem Node/Newman — funciona no Streamlit Cloud). Os casos vêm de uma **collection do Postman** (v2.1, com environment opcional; os `pm.test` mais comuns são convertidos automaticamente em asserções declarativas, e o que não dá pra converter vira aviso no caso), de uma **definição salva** (.json exportado pelo próprio módulo) ou são **criados na tela**. Variáveis `{{nome}}` em URL/headers/body, variáveis **secretas** (senhas/tokens pedidos em campo de senha, guardados só na sessão e mascarados em toda evidência), extração de valores da resposta pra encadear casos (ex.: token do login → rota protegida), documentos de contexto opcionais. Evidências: **RELATORIO.md**, **RELATORIO.pdf** (padrão QA TestGen), **.zip** com uma pasta por caso (`1_request.txt`, `2_response.txt`, `3_resultado.txt` + prints anexados) e opção de guardar em Documentos Armazenados. Não depende do Azure DevOps — o vínculo com Test Cases e o registro de resultado no Azure é a próxima fase.
 - **📊 Relatório de Testes** *(permissão `execution_report`)* — documenta o que foi **executado**. Status calculado pela **coluna do board (Kanban)** de cada Work Item vinculado (não pelo outcome do Test Point), com Status geral escolhido manualmente. Monta uma Matriz de Cobertura independente quando a sessão não tem uma.
 - **🐛 Criar Bug** *(permissão `criar_bug`)* — cria um Bug diretamente no Azure DevOps: livremente, ou a partir de um Work Item com Casos de Teste relacionados. Nesse segundo modo, dá pra escolher vincular a um **Caso de Teste específico** (título e Passos de Reprodução já vêm pré-preenchidos, e o Bug fica vinculado de volta ao Caso e ao Work Item) **ou** abrir direto no **Work Item principal**, sem depender de nenhum Caso específico (o Bug fica vinculado só ao Work Item) — útil quando o problema não é de um Caso isolado, mas do item como um todo. Campos extras opcionais: **System Info**, **Acceptance Criteria**, **Discussion**, e evidências em **imagem** (sobem como anexo formal do Bug e ficam também embutidas no System Info).
 - **🧱 Criar Work Item** *(permissão `criar_work_item`)* — cria Work Items de **qualquer tipo** que o processo do projeto permita (User Story, Bug, Epic, Feature, Task, Spike, Improvement, UX Story, tipos customizados da organização...), com o formulário montado **dinamicamente a partir dos metadados do próprio projeto** — então campos customizados aparecem sozinhos, sem precisar mexer no código. Projeto é obrigatório; Area Path, Iteration/Sprint e coluna do board são opcionais. Tags: escolhe entre as existentes **e/ou cria novas** (o Azure DevOps cria a tag junto com o item). Dá pra atribuir responsável, anexar **evidências em imagem** (mesmo mecanismo do Criar Bug: sobem como anexo formal e ficam embutidas no fim da Descrição) e preencher qualquer campo editável do tipo (os obrigatórios do tipo aparecem em destaque; o resto fica num expander). Dois modos:
@@ -139,10 +140,11 @@ qa_testgen/
 │   └── constants.py                # cores, caminhos de logo, timezone
 ├── ui/
 │   ├── application.py              # UserInterface — toda a lógica de tela (7 passos + sidebar)
+│   ├── api_tests_page.py           # página Testes de API (mixin de UserInterface)
 │   ├── auth.py                     # login, sessão (ID opaco), permissões, logout, Administração
 │   └── dialogs.py                  # modais de confirmação
 ├── domain/
-│   ├── models/                     # MatrixRow, TestCase, TestPlan, TestStep
+│   ├── models/                     # MatrixRow, TestCase, TestPlan, TestStep, api_test (Testes de API)
 │   └── validators/                 # validação de campos obrigatórios (Matriz/Caso/Plano)
 ├── infrastructure/
 │   ├── webhook_client.py           # chamadas aos webhooks de IA do n8n
@@ -152,7 +154,10 @@ qa_testgen/
 │   ├── document_store.py           # Documentos Armazenados (Turso/libsql)
 │   ├── csv_formatter.py            # exportação CSV
 │   ├── pdf_report.py               # PDFs (Documentação QA e Relatório de Testes)
-│   └── manual_pdf.py               # PDF do Manual de Testes (UAT)
+│   ├── manual_pdf.py               # PDF do Manual de Testes (UAT)
+│   ├── postman_importer.py         # collection/environment Postman -> casos do módulo Testes de API
+│   ├── api_test_runner.py          # executor dos Testes de API (requests, asserções, variáveis)
+│   └── api_evidence.py             # evidências dos Testes de API (mascaramento, .md, .zip)
 ├── assets/                         # Guia_Usuario.pdf, Guia_Administrador.pdf (baixáveis em "Sobre o App")
 └── application/session.py          # SessionState (defaults do st.session_state)
 ```
@@ -276,6 +281,8 @@ O Status **geral** do relatório é escolhido manualmente.
 
 ## Limitações conhecidas
 
+- **Testes de API — scripts do Postman**: o app não executa JavaScript. O importador converte por padrão de texto os `pm.test` mais comuns (`to.have.status`, `to.have.property`, `to.eql`, `to.be.a`, `.not.empty`, `collectionVariables.set` e aliases como `const d = pm.response.json().data`). Lógica JS arbitrária (`forEach`, `oneOf`, cálculos) precisa ser reescrita nas asserções declarativas da tela.
+- **Testes de API — asserções por caso**: um caso sem asserção é reprovado de propósito ("Nenhuma asserção definida") — o mínimo é o status HTTP esperado.
 - **Matriz de Cobertura** nunca é enviada ao Azure DevOps — só existe no PDF quando gerada na mesma sessão, ou reconstruída de forma independente a partir dos Work Items vinculados.
 - **Reconciliação com Test Plan Anterior** faz o match por **título apenas** (não tem acesso fácil aos passos detalhados dos Casos já existentes) — revise as sugestões com mais atenção que no fluxo direto.
 - **Logs de auditoria e sessões** guardam um histórico limitado (armazenamento via n8n static data, sem banco de dados dedicado).

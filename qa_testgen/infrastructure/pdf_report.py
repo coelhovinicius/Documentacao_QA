@@ -656,3 +656,255 @@ class PdfReportGenerator:
 
         doc.build(story, onFirstPage=on_page, onLaterPages=on_page, canvasmaker=_NumberedCanvas)
         return buffer.getvalue()
+
+    # ------------------------------------------------------------------
+    # Relatório de Testes de API (módulo Testes de API)
+    # ------------------------------------------------------------------
+    _API_STATUS_COLORS = {
+        'erro': (colors.HexColor('#B9770E'), colors.HexColor('#FEF5E7')),
+        'não executado': (colors.HexColor('#7A7A7A'), colors.HexColor('#F0F0F0')),
+    }
+
+    @classmethod
+    def _api_badge(cls, styles, value: str):
+        key = (value or '').strip().lower()
+        if key in cls._API_STATUS_COLORS:
+            fg, bg = cls._API_STATUS_COLORS[key]
+            t = Table([[Paragraph(f"<b>{cls._esc(value)}</b>", styles['cell'])]], colWidths=[3.2 * cm])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), bg),
+                ('TEXTCOLOR', (0, 0), (-1, -1), fg),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ]))
+            return t
+        return cls._status_badge(styles, value)
+
+    @classmethod
+    def _bloco_codigo(cls, styles, texto: str, largura, max_linhas: int = 60):
+        """Request/response em fonte mono, truncado pra não explodir o PDF."""
+        linhas = (texto or '').splitlines()
+        if len(linhas) > max_linhas:
+            linhas = linhas[:max_linhas] + [f"... ({len(linhas) - max_linhas} linhas omitidas - integra no .zip)"]
+        estilo = ParagraphStyle(
+            'ApiCode', parent=styles['cell'], fontName='Courier', fontSize=7, leading=9,
+        )
+        corpo = "<br/>".join(cls._esc(l).replace(" ", "&nbsp;") for l in linhas) or "&nbsp;"
+        t = Table([[Paragraph(corpo, estilo)]], colWidths=[largura])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), COR_CINZA_LIN),
+            ('BOX', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        return t
+
+    @classmethod
+    def generate_api_test_report(
+        cls,
+        project_name: str,
+        ambiente: str,
+        base_url: str,
+        resultados: list,
+        resumo: dict,
+        textos_por_caso: dict,
+        contexto: str = "",
+        documentos: list = None,
+        observacoes: str = "",
+        imagens_por_caso: dict = None,
+        author_name: str = "",
+    ) -> bytes:
+        """
+        resultados: lista de ApiCaseResult (domain/models/api_test.py).
+        resumo: dict de ApiEvidenceBuilder.resumo().
+        textos_por_caso: {case_id: {"request": str, "response": str}} — já
+                         MASCARADOS (o PDF nunca recebe segredo em claro).
+        imagens_por_caso: {case_id: [(nome_arquivo, bytes), ...]}
+        """
+        buffer = io.BytesIO()
+        styles = cls._styles()
+        on_page = lambda canvas, doc: cls._on_page(canvas, doc, project_name, author_name)
+        doc = SimpleDocTemplate(
+            buffer, pagesize=A4,
+            leftMargin=1.8 * cm, rightMargin=1.8 * cm, topMargin=3.2 * cm, bottomMargin=2.0 * cm,
+            title=f"Relatório de Testes de API – {project_name}",
+            author=author_name or "QA TestGen",
+        )
+        pw = doc.width
+        story = []
+        documentos = documentos or []
+        imagens_por_caso = imagens_por_caso or {}
+        sigla = cls._sigla(ambiente)
+
+        # ---- Capa ----
+        story.append(Spacer(1, 0.4 * cm))
+        story.append(Paragraph("Relatório de Testes de API", styles['title']))
+        story.append(Paragraph(
+            f"Gerado em {datetime.now(TZ_BR).strftime('%d/%m/%Y às %H:%M')}"
+            + (f" por <b>{cls._esc(author_name)}</b>" if author_name else ""),
+            styles['subtitle'],
+        ))
+        story.append(HRFlowable(width="100%", thickness=2, color=COR_LARANJA, spaceAfter=14))
+
+        info_data = [
+            [Paragraph("<b>Projeto</b>", styles['cell']), Paragraph(cls._esc(project_name), styles['cell'])],
+            [Paragraph("<b>Ambiente</b>", styles['cell']), Paragraph(cls._esc(ambiente or '—'), styles['cell'])],
+            [Paragraph("<b>Base URL</b>", styles['cell']), Paragraph(cls._esc(base_url or '—'), styles['cell'])],
+            [Paragraph("<b>Status</b>", styles['cell']), cls._api_badge(styles, resumo.get('status_geral', 'Reprovado'))],
+        ]
+        info_t = Table(info_data, colWidths=[3.5 * cm, pw - 3.5 * cm])
+        info_t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA_CLARO),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#EAD9CE')),
+        ]))
+        story.append(info_t)
+        story.append(Spacer(1, 16))
+
+        # ---- 1. Resumo ----
+        story.append(Paragraph("1. Resumo da Execução", styles['section']))
+        executados = resumo.get('total', 0) - resumo.get('pulados', 0)
+        resumo_rows = [
+            ["Casos executados", f"{executados} de {resumo.get('total', 0)}" + (f" ({resumo.get('pulados')} desabilitado(s))" if resumo.get('pulados') else "")],
+            ["Aprovados / Reprovados / Erros", f"{resumo.get('aprovados', 0)} / {resumo.get('reprovados', 0)} / {resumo.get('erros', 0)}"],
+            ["Asserções", f"{resumo.get('assercoes', 0)} executadas · {resumo.get('assercoes_ok', 0)} passaram · {resumo.get('assercoes', 0) - resumo.get('assercoes_ok', 0)} falharam"],
+            ["Tempo de resposta", f"médio {resumo.get('tempo_medio_ms', 0)} ms · mín. {resumo.get('tempo_min_ms', 0)} ms · máx. {resumo.get('tempo_max_ms', 0)} ms"],
+        ]
+        data = [[Paragraph("<b>Métrica</b>", styles['cell_head']), Paragraph("<b>Valor</b>", styles['cell_head'])]]
+        for k, v in resumo_rows:
+            data.append([Paragraph(cls._esc(k), styles['cell']), Paragraph(cls._esc(v), styles['cell'])])
+        t = Table(data, colWidths=[5.5 * cm, pw - 5.5 * cm])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), COR_LARANJA),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [COR_BRANCO, COR_CINZA_LIN]),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
+            ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]))
+        story.append(t)
+
+        secao = 2
+        if contexto or documentos:
+            story.append(Paragraph(f"{secao}. Contexto", styles['section']))
+            if contexto:
+                story.append(Paragraph(cls._esc(contexto).replace(chr(10), '<br/>'), styles['body']))
+            if documentos:
+                story.append(Spacer(1, 6))
+                story.append(Paragraph("<b>Documentos de apoio:</b> " + cls._esc(", ".join(documentos)), styles['body']))
+            secao += 1
+
+        # ---- Resultados por caso (tabela) ----
+        story.append(Paragraph(f"{secao}. Resultados por Caso", styles['section']))
+        secao += 1
+        data = [[Paragraph(h, styles['cell_head']) for h in ["#", "Caso", "Método", "Status", "Tempo", "Asserções", "Resultado"]]]
+        for idx, r in enumerate(resultados, start=1):
+            ok = sum(1 for a in r.assercoes if a.passou)
+            data.append([
+                Paragraph(str(idx), styles['cell']),
+                Paragraph(cls._esc(r.nome), styles['cell']),
+                Paragraph(cls._esc(r.metodo), styles['cell']),
+                Paragraph(cls._esc(str(r.status_code) if r.status_code is not None else '—'), styles['cell']),
+                Paragraph(cls._esc(f"{r.tempo_ms} ms"), styles['cell']),
+                Paragraph(cls._esc(f"{ok}/{len(r.assercoes)}"), styles['cell']),
+                Paragraph(cls._esc(r.resultado_label), styles['cell']),
+            ])
+        widths = [0.8 * cm, pw - (0.8 + 1.6 + 1.4 + 1.6 + 1.8 + 2.4) * cm, 1.6 * cm, 1.4 * cm, 1.6 * cm, 1.8 * cm, 2.4 * cm]
+        t = Table(data, colWidths=widths, repeatRows=1)
+        estilo = [
+            ('BACKGROUND', (0, 0), (-1, 0), COR_LARANJA),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [COR_BRANCO, COR_CINZA_LIN]),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
+            ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]
+        for idx, r in enumerate(resultados, start=1):
+            cor = cls._STATUS_COLORS['aprovado'][0] if r.passou else (
+                cls._API_STATUS_COLORS['não executado'][0] if r.pulado else cls._STATUS_COLORS['reprovado'][0])
+            estilo.append(('TEXTCOLOR', (6, idx), (6, idx), cor))
+        t.setStyle(TableStyle(estilo))
+        story.append(t)
+        story.append(PageBreak())
+
+        # ---- Detalhes e evidências ----
+        story.append(Paragraph(f"{secao}. Detalhes e Evidências", styles['section']))
+        secao += 1
+        for idx, r in enumerate(resultados, start=1):
+            hdr = Table([[Paragraph(cls._esc(cls._case_label(idx, r.nome, sigla)), styles['tc_title'])]], colWidths=[pw])
+            hdr.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA),
+                ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ]))
+            info_row = Table(
+                [[
+                    Paragraph("<b>Requisição:</b>", styles['cell']),
+                    Paragraph(cls._esc(f"{r.metodo} {r.url_final}"), styles['cell']),
+                    Paragraph("<b>Resultado:</b>", styles['cell']),
+                    cls._api_badge(styles, r.resultado_label),
+                ]],
+                colWidths=[2.4 * cm, pw * 0.48, 2.2 * cm, pw - 2.4 * cm - pw * 0.48 - 2.2 * cm],
+            )
+            info_row.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA_CLARO),
+                ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            story.append(KeepTogether([hdr, info_row]))
+            story.append(Spacer(1, 6))
+
+            story.append(Paragraph("Asserções", styles['subsection']))
+            data = [[Paragraph("<b>Regra</b>", styles['cell_head']), Paragraph("<b>Resultado</b>", styles['cell_head']), Paragraph("<b>Detalhe</b>", styles['cell_head'])]]
+            for a in r.assercoes:
+                data.append([
+                    Paragraph(cls._esc(a.descricao), styles['cell']),
+                    Paragraph(f"<b>{'PASSOU' if a.passou else 'FALHOU'}</b>", styles['cell']),
+                    Paragraph(cls._esc(a.detalhe or ''), styles['cell']),
+                ])
+            if r.erro:
+                data.append([Paragraph("Erro de execução", styles['cell']), Paragraph("<b>ERRO</b>", styles['cell']), Paragraph(cls._esc(r.erro), styles['cell'])])
+            ta = Table(data, colWidths=[pw * 0.45, 2.2 * cm, pw * 0.55 - 2.2 * cm], repeatRows=1)
+            estilo = [
+                ('BACKGROUND', (0, 0), (-1, 0), COR_LARANJA),
+                ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
+                ('TOPPADDING', (0, 0), (-1, -1), 3), ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]
+            for i, a in enumerate(r.assercoes, start=1):
+                estilo.append(('TEXTCOLOR', (1, i), (1, i), cls._STATUS_COLORS['aprovado' if a.passou else 'reprovado'][0]))
+            ta.setStyle(TableStyle(estilo))
+            story.append(ta)
+
+            textos = textos_por_caso.get(r.case_id) or {}
+            if not r.pulado:
+                story.append(Paragraph("Request", styles['subsection']))
+                story.append(cls._bloco_codigo(styles, textos.get('request', ''), pw))
+                story.append(Paragraph("Response", styles['subsection']))
+                story.append(cls._bloco_codigo(styles, textos.get('response', ''), pw))
+
+            for filename, img_bytes in imagens_por_caso.get(r.case_id) or []:
+                try:
+                    rl_img = RLImage(io.BytesIO(img_bytes))
+                    ratio = min(pw / rl_img.imageWidth, 9 * cm / rl_img.imageHeight, 1.0)
+                    rl_img.drawWidth = rl_img.imageWidth * ratio
+                    rl_img.drawHeight = rl_img.imageHeight * ratio
+                    story.append(Spacer(1, 6))
+                    story.append(rl_img)
+                    story.append(Paragraph(cls._esc(filename), styles['cell']))
+                except Exception:
+                    story.append(Paragraph(f"Não foi possível incorporar a imagem '{cls._esc(filename)}'.", styles['cell']))
+            story.append(Spacer(1, 14))
+
+        if observacoes and observacoes.strip():
+            story.append(PageBreak())
+            story.append(Paragraph(f"{secao}. Observações e Próximos Passos", styles['section']))
+            story.append(Paragraph(cls._esc(observacoes).replace(chr(10), '<br/>'), styles['body']))
+
+        doc.build(story, onFirstPage=on_page, onLaterPages=on_page, canvasmaker=_NumberedCanvas)
+        return buffer.getvalue()

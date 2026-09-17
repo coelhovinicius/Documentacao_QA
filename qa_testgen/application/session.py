@@ -1,7 +1,10 @@
 import streamlit as st
 
+from qa_testgen.ui.api_tests_page import API_TESTS_STATE_DEFAULTS
+
 class SessionState:
     DEFAULTS = {
+        **API_TESTS_STATE_DEFAULTS,
         'step': 1,
         'doc_text': '',
         'project_name': '',
