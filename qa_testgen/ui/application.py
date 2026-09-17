@@ -730,18 +730,21 @@ class UserInterface:
                     unsafe_allow_html=True,
                 )
 
-            st.divider()
-            st.warning("⚠️ Controles")
-            if self.state.get('is_processing'):
+            # "Nova Análise" e "Início" só fazem sentido pra quem tem o
+            # assistente de QA — as duas navegam pra dentro do fluxo de
+            # Passos 1–6. Sem elas (e sem processamento rodando), a seção
+            # "Controles" ficaria só um título com nada embaixo.
+            tem_assistente = self._get_permission_cached("assistente_qa")
+            processando = self.state.get('is_processing')
+
+            if tem_assistente or processando:
+                st.divider()
+                st.warning("⚠️ Controles")
+            if processando:
                 st.info("Processamento em andamento. Aguarde a conclusão ou solicite a interrupção.")
                 if st.button("⏹️ Interromper Processamento", use_container_width=True, type="primary", key="btn_interrupt_sidebar"):
                     self.state.set('show_interrupt_modal', True)
                     st.rerun()
-            
-            # "Nova Análise" e "Início" só fazem sentido pra quem tem o
-            # assistente de QA — as duas navegam pra dentro do fluxo de
-            # Passos 1–6.
-            tem_assistente = self._get_permission_cached("assistente_qa")
 
             if tem_assistente and st.button("🔄 Nova Análise", use_container_width=True, type="primary", key="btn_new_sidebar"):
                 self.state.set('show_new_analysis_modal', True)
@@ -5403,7 +5406,8 @@ class UserInterface:
         "Microsoft.VSTS.Common.BusinessValue",
     ]
 
-    def _render_campo_wi(self, campo: dict, tipo_dado: str, key: str, membros: list = None):
+    def _render_campo_wi(self, campo: dict, tipo_dado: str, key: str, membros: list = None,
+                          eh_identidade: bool = False):
         """
         Renderiza UM campo de Work Item escolhendo o widget pelo tipo de
         dado que a própria API do Azure DevOps informa, e devolve o valor
@@ -5453,23 +5457,36 @@ class UserInterface:
             return texto.strip()
 
         if tipo_dado == "boolean":
-            return st.checkbox(label, key=key, disabled=desabilitado, help=help_text)
+            if campo["always_required"]:
+                return st.checkbox(label, key=key, disabled=desabilitado, help=help_text)
+            # Opcional usa 3 estados em vez de checkbox: com checkbox não dá
+            # pra distinguir "não mexi nisso" de "marquei como Não", e aí
+            # todo campo booleano do tipo iria como False, sobrescrevendo
+            # silenciosamente o padrão que o processo definir.
+            escolha = st.selectbox(label, options=["(vazio)", "Sim", "Não"], index=0,
+                                    key=key, disabled=desabilitado, help=help_text)
+            if escolha == "(vazio)":
+                return None
+            return escolha == "Sim"
 
-        if tipo_dado == "integer":
-            valor = st.number_input(label, value=0, step=1, key=key,
-                                     disabled=desabilitado, help=help_text)
-            return int(valor) if valor else None
-
-        if tipo_dado == "double":
-            valor = st.number_input(label, value=0.0, step=0.5, key=key,
-                                     disabled=desabilitado, help=help_text)
-            return float(valor) if valor else None
+        if tipo_dado in ("integer", "double"):
+            # value=None deixa o campo vazio de verdade, em vez de começar em
+            # 0. Sem isso, não havia como diferenciar "não preenchi" de
+            # "quero 0" — e o 0 acabava descartado por ser falsy, travando
+            # campo obrigatório que a pessoa via preenchido com 0 na tela.
+            valor = st.number_input(
+                label, value=None, step=1 if tipo_dado == "integer" else 0.5,
+                key=key, disabled=desabilitado, help=help_text,
+            )
+            if valor is None:
+                return None
+            return int(valor) if tipo_dado == "integer" else float(valor)
 
         if tipo_dado == "dateTime":
             data = st.date_input(label, value=None, key=key, disabled=desabilitado, help=help_text)
             return data.isoformat() if data else None
 
-        if membros is not None and campo["reference_name"] == "System.AssignedTo":
+        if eh_identidade and membros:
             opcoes = ["(Ninguém)"] + [f"{m['display_name']} ({m['unique_name']})" for m in membros]
             escolha = st.selectbox(label, options=opcoes, index=0, key=key,
                                     disabled=desabilitado, help=help_text)
@@ -5477,7 +5494,10 @@ class UserInterface:
                 return None
             return membros[opcoes.index(escolha) - 1]["unique_name"]
 
-        texto = st.text_input(label, key=key, disabled=desabilitado, help=help_text)
+        texto = st.text_input(
+            label, key=key, disabled=desabilitado, help=help_text,
+            placeholder="e-mail da pessoa" if eh_identidade else None,
+        )
         return texto.strip() or None
 
     def _wi_carregar_metadados(self, ado_client, ado_project: str):
@@ -5491,6 +5511,19 @@ class UserInterface:
             self.state.set('wi_tipos', None)
             self.state.set('wi_catalogo_campos', None)
             self.state.set('wi_campos_por_tipo', {})
+            # Tudo que foi buscado do projeto ANTERIOR tem que sair da tela
+            # junto: senão, depois de trocar de projeto, a pessoa ainda veria
+            # (e poderia usar) tags, pessoas, colunas e Work Items do projeto
+            # antigo — dando pra atribuir alguém que não é do projeto, ou
+            # pendurar um filho num pai de outro projeto.
+            for sufixo in ("unico", "lote"):
+                self.state.set(f'wi_tags_existentes_{sufixo}', None)
+                self.state.set(f'wi_membros_{sufixo}', None)
+                self.state.set(f'wi_colunas_{sufixo}', None)
+                self.state.set(f'wi_pais_{sufixo}', None)
+            self.state.set('wi_snapshot', None)
+            self.state.set('wi_lote_snapshot', None)
+            self.state.set('wi_lote_pai_detalhe_id', None)
 
         if self.state.get('wi_tipos') is None:
             try:
@@ -5871,12 +5904,19 @@ class UserInterface:
             c for c in campos
             if c["always_required"]
             and c["reference_name"] not in AzureDevOpsClient.CAMPOS_COM_WIDGET_PROPRIO
+            # Somente-leitura marcado como obrigatório existe em processo
+            # customizado: mostrar viraria um campo que a pessoa preenche e
+            # a API recusa depois.
+            and not (catalogo.get(c["reference_name"]) or {}).get("read_only")
         ]
         if obrigatorios_extra:
             st.caption("Campos obrigatórios desse tipo de Work Item:")
             for c in obrigatorios_extra:
-                tipo_dado = (catalogo.get(c["reference_name"]) or {}).get("type", "string")
-                valor = self._render_campo_wi(c, tipo_dado, f"wi_obrig_{c['reference_name']}")
+                meta = catalogo.get(c["reference_name"]) or {}
+                valor = self._render_campo_wi(
+                    c, meta.get("type", "string"), f"wi_obrig_{c['reference_name']}",
+                    eh_identidade=bool(meta.get("is_identity")),
+                )
                 if valor is not None:
                     valores[c["reference_name"]] = valor
 
@@ -5939,7 +5979,8 @@ class UserInterface:
                     if meta.get("read_only") or meta.get("type") in ("history", "treePath"):
                         continue
                     valor = self._render_campo_wi(
-                        c, meta.get("type", "string"), f"wi_extra_{c['reference_name']}", membros
+                        c, meta.get("type", "string"), f"wi_extra_{c['reference_name']}",
+                        membros, eh_identidade=bool(meta.get("is_identity")),
                     )
                     if valor is not None and valor != "":
                         valores[c["reference_name"]] = valor
