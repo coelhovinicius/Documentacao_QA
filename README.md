@@ -90,6 +90,7 @@ Escolhidos na tela, com sugestão automática baseada no Tipo de Documento do Pa
 **🔄 Reconciliar Test Plan Anterior** — pra quando os Work Items forem criados *depois* de um envio "Sem Work Items". Busca os Casos de Teste que já existem no Test Plan antigo, e a IA sugere quais Work Items novos correspondem a quais Casos já criados — sem duplicar nenhum Caso, só cria o vínculo e a Requirement Suite.
 
 **Regras que valem nos 3 modos:**
+- **Responsável (Assigned To) dos Test Cases**: escolhido no Passo 7 ("👤 Atribuir os Test Cases a"), pré-selecionando a pessoa cujo e-mail no Azure DevOps bate com o e-mail cadastrado no app. Sem essa escolha, o Azure DevOps atribui ao *criador* — que, no modo de PAT compartilhado, é sempre o dono do PAT. A tag `criado-por:<usuário>` é calculada antes das threads de criação (antes saía `criado-por:desconhecido`).
 - Um Caso de Teste só pode ficar vinculado a **um** Work Item por vez — uma vez escolhido em algum, some das opções dos demais.
 - Antes de qualquer chamada real à API do Azure DevOps, o app sempre mostra uma **lista detalhada** (quais Casos serão criados, quais Suítes/Work Items serão afetados) num modal de confirmação.
 - Dá pra excluir Casos específicos do envio (Casos sem nenhum Work Item vinculado já vêm pré-marcados pra exclusão, por padrão).

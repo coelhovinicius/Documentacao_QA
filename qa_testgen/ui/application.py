@@ -26,6 +26,7 @@ from qa_testgen.infrastructure.manual_pdf import ManualPdfGenerator
 from qa_testgen.infrastructure.document_store import DocumentStore, DocumentStoreError
 from qa_testgen.infrastructure.webhook_client import WebhookClient
 from qa_testgen.infrastructure.azure_devops_client import AzureDevOpsClient, AzureDevOpsError
+from qa_testgen.infrastructure.access_control_client import AccessControlClient
 from qa_testgen.application.session import SessionState
 from qa_testgen.domain.validators.matrix_validator import MatrixValidator
 from qa_testgen.domain.validators.plan_validator import TestPlanValidator
@@ -371,10 +372,15 @@ class UserInterface(ApiTestsPageMixin):
         return msg
 
     @staticmethod
-    def _tag_criado_por(tags_existentes: str = None) -> str:
+    def _tag_criado_por(tags_existentes: str = None, username: str = None) -> str:
         """
         Acrescenta "criado-por:<usuário logado>" à lista de tags — usada em
-        toda criação de Bug/Test Case no Azure DevOps. Existe pra dar
+        toda criação de Bug/Test Case no Azure DevOps.
+
+        ATENÇÃO: st.session_state só existe na thread principal do Streamlit.
+        Quem cria itens dentro de um ThreadPoolExecutor precisa calcular a
+        tag ANTES de abrir as threads (ou passar `username` pronto) — senão
+        a tag sai como "criado-por:desconhecido". Existe pra dar
         rastreabilidade de quem fez o quê mesmo quando todas as chamadas
         usam o mesmo PAT compartilhado: o Azure DevOps grava toda mudança
         no campo Tags como uma revisão normal na aba History do próprio
@@ -384,7 +390,8 @@ class UserInterface(ApiTestsPageMixin):
         tags_existentes: string já no formato "tag1; tag2" (ou None) —
         outras tags que a pessoa já tenha escolhido manualmente, se houver.
         """
-        username = st.session_state.get(SESSION_USER_KEY, "") or "desconhecido"
+        if username is None:
+            username = st.session_state.get(SESSION_USER_KEY, "") or "desconhecido"
         username_tag = username.strip().replace(";", "").replace(" ", "-").lower()
         tag_autor = f"criado-por:{username_tag}"
         if tags_existentes:
@@ -590,6 +597,58 @@ class UserInterface(ApiTestsPageMixin):
             return
         with st.expander("ℹ️ O que é e como usar esta área"):
             st.markdown(texto)
+
+    def _email_do_usuario_logado(self) -> str:
+        """
+        E-mail cadastrado no app pro usuário logado (via Controle de Acesso),
+        usado pra pré-selecionar a pessoa certa no Azure DevOps. Cache por
+        sessão; string vazia se não der pra descobrir.
+        """
+        if self.state.get('_email_usuario_logado') is None:
+            email = ""
+            try:
+                username = st.session_state.get(SESSION_USER_KEY, "")
+                for u in AccessControlClient(self.config).list_users():
+                    if u.get("username") == username:
+                        email = (u.get("email") or "").strip().lower()
+                        break
+            except Exception:
+                email = ""
+            self.state.set('_email_usuario_logado', email)
+        return self.state.get('_email_usuario_logado') or ""
+
+    def _render_step7_assigned_to(self, ado_client):
+        """
+        "Assigned To" dos Test Cases criados no Passo 7. Sem isso, o Azure
+        DevOps atribui ao criador — que no modo de PAT compartilhado é
+        sempre o dono do PAT, não quem está usando o app. Pré-seleciona a
+        pessoa cujo e-mail no Azure bate com o e-mail cadastrado no app.
+        """
+        st.markdown("##### 👤 Atribuir os Test Cases a")
+        st.caption(
+            "Quem fica como responsável (Assigned To) em cada Test Case criado. Por padrão, você — "
+            "se o seu e-mail cadastrado no app existir no projeto do Azure DevOps."
+        )
+        membros = self._wi_render_pessoas(ado_client, "passo7")
+        if not membros:
+            st.caption("Busque as pessoas acima pra escolher. Sem escolha, o Azure DevOps atribui ao criador (dono do PAT).")
+            self.state.set('ado_test_case_assigned_to', None)
+            return
+        opcoes = ["— Não atribuir (o Azure DevOps decide)"] + [f"{m['display_name']} ({m['unique_name']})" for m in membros]
+        email = self._email_do_usuario_logado()
+        default_idx = 0
+        for i, m in enumerate(membros, start=1):
+            if email and (m.get("unique_name") or "").strip().lower() == email:
+                default_idx = i
+                break
+        escolha = st.selectbox("Responsável pelos Test Cases", opcoes, index=default_idx, key="ado_tc_assigned_to_select",
+                               disabled=self.state.get('is_processing'))
+        idx = opcoes.index(escolha)
+        self.state.set('ado_test_case_assigned_to', membros[idx - 1]["unique_name"] if idx > 0 else None)
+        if idx == 0:
+            st.warning("⚠️ Sem responsável escolhido, os Test Cases vão nascer atribuídos ao dono do PAT compartilhado.")
+        elif default_idx == 0 and email:
+            st.caption(f"ℹ️ Seu e-mail no app ({email}) não foi encontrado entre as pessoas do projeto — confira o cadastro.")
 
     def _navigate_or_confirm(self, pending_state_updates: dict):
         """
@@ -3158,12 +3217,17 @@ class UserInterface(ApiTestsPageMixin):
             progress = st.progress(0, text=f"Criando Test Cases no Azure DevOps... (0/{total})")
             done = 0
 
+            # Calculados AQUI (thread principal): dentro do executor não
+            # existe st.session_state, e a tag sairia "criado-por:desconhecido".
+            tag_autor = self._tag_criado_por()
+            atribuir_a = self.state.get('ado_test_case_assigned_to') or None
+
             def _create_case(tc):
                 titulo = tc.get('titulo')
                 titulo_prefixado = titled.get(titulo, titulo)
                 result = ado_client.create_test_case(
                     titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path, initial_state,
-                    tags=self._tag_criado_por(),
+                    tags=tag_autor, assigned_to=atribuir_a,
                 )
                 return titulo, result["id"]
 
@@ -4044,6 +4108,9 @@ class UserInterface(ApiTestsPageMixin):
             st.divider()
             self._render_step7_back_and_new("waiting_wi")
             return
+
+        st.divider()
+        self._render_step7_assigned_to(ado_client)
 
         st.divider()
         st.markdown("##### 🔀 Modo de Envio")
@@ -9613,12 +9680,17 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             done = 0
             progress = st.progress(0, text=f"Criando Test Cases no Azure DevOps... (0/{total})")
 
+            # Calculados AQUI (thread principal): dentro do executor não
+            # existe st.session_state, e a tag sairia "criado-por:desconhecido".
+            tag_autor = self._tag_criado_por()
+            atribuir_a = self.state.get('ado_test_case_assigned_to') or None
+
             def _create_case(tc):
                 titulo = tc.get('titulo')
                 titulo_prefixado = titled.get(titulo, titulo)
                 result = ado_client.create_test_case(
                     titulo_prefixado, tc.get('pre_condicoes', ''), tc.get('passos', []), area_path, initial_state,
-                    tags=self._tag_criado_por(),
+                    tags=tag_autor, assigned_to=atribuir_a,
                 )
                 return titulo, titulo_prefixado, result["id"], result.get("state_warning")
 

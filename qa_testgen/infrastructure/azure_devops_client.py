@@ -306,9 +306,14 @@ class AzureDevOpsClient:
     PRECONDICOES_FIELD = "Custom.Precondicoes"
 
     def create_test_case(self, titulo: str, pre_condicoes: str, passos: list, area_path: str = None,
-                          initial_state: str = None, tags: str = None) -> dict:
+                          initial_state: str = None, tags: str = None, assigned_to: str = None) -> dict:
         """
         Cria um work item do tipo Test Case e retorna {'id': int, 'state_warning': str|None}.
+
+        assigned_to: uniqueName (e-mail) de quem deve ficar como "Assigned
+        To". Sem isso, o processo do projeto costuma preencher com o
+        criador — que, no modo de PAT compartilhado, é sempre o dono do PAT,
+        não a pessoa que está usando o app.
 
         O campo System.State não pode ser definido direto na criação — o
         Azure DevOps valida isso como uma transição de workflow (ex.: só
@@ -327,6 +332,8 @@ class AzureDevOpsClient:
             body.append({"op": "add", "path": "/fields/System.AreaPath", "value": area_path})
         if tags:
             body.append({"op": "add", "path": "/fields/System.Tags", "value": tags})
+        if assigned_to:
+            body.append({"op": "add", "path": "/fields/System.AssignedTo", "value": assigned_to})
 
         url = f"{self._base_url()}/wit/workitems/$Test%20Case?api-version={API_VERSION}"
         response = self.session.post(url, json=body, headers=self.headers_json_patch, timeout=60)

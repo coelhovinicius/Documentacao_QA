@@ -38,6 +38,8 @@ class SessionState:
         'active_test_case_row': None,
         'active_test_plan_row': None,
         'ado_area_path': '',
+        'ado_test_case_assigned_to': None,
+        '_email_usuario_logado': None,
         'report_available_plans': [],
         'report_wi_board_items': [],
         'report_contexto': '',
