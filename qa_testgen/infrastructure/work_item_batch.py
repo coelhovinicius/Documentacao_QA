@@ -63,7 +63,10 @@ def campos_extras_por_tipo(tipos: list, campos_por_tipo: dict, catalogo: dict, c
             ref = c["reference_name"]
             if not c.get("always_required") or ref in campos_widget_proprio:
                 continue
-            if (catalogo.get(ref) or {}).get("read_only"):
+            meta = catalogo.get(ref) or {}
+            # Mesma regra do formulário: somente-leitura não entra; booleano
+            # obrigatório também não (o Azure aplica o padrão sozinho).
+            if meta.get("read_only") or meta.get("type") == "boolean":
                 continue
             extras.append(c)
         saida[nome] = extras
@@ -84,6 +87,7 @@ def colunas_do_modelo(tipos: list, extras_por_tipo: dict) -> list:
                 "chave": c["reference_name"], "titulo": c["name"], "obrigatoria": False,
                 "descricao": f"Obrigatório para: {', '.join(tipos_que_exigem)}."
                              + (f" Valores aceitos: {', '.join(map(str, c['allowed_values']))}." if c.get("allowed_values") else "")
+                             + (f" Vazio = padrão '{c['default_value']}'." if c.get("default_value") not in (None, "") else "")
                              + (f" {c['help_text']}" if c.get("help_text") else ""),
                 "sinonimos": [_norm(c["name"]), _norm(c["reference_name"])],
                 "extra": True, "reference_name": c["reference_name"],
@@ -123,9 +127,20 @@ def gerar_modelo_xlsx(project: str, tipos: list, extras_por_tipo: dict, area_pat
     if tipo_filho:
         exemplos.append({"ref": "T1", "tipo": tipo_filho, "titulo": "Implementar endpoint POST /auth/login", "descricao": "",
                          "area_path": area_ex, "iteration": "", "tags": "backend", "atribuido_a": pessoa_ex, "pai": "#US1", "estado": ""})
+    def _valor_exemplo_extra(col, tipo_linha):
+        if not col.get("extra"):
+            return ""
+        campo = next((x for x in (extras_por_tipo.get(tipo_linha) or []) if x["reference_name"] == col["reference_name"]), None)
+        if campo is None:
+            return ""
+        if campo.get("default_value") not in (None, ""):
+            return campo["default_value"]
+        return campo["allowed_values"][0] if campo.get("allowed_values") else ""
+
     for r, ex in enumerate(exemplos, start=2):
         for i, c in enumerate(cols, start=1):
-            cel = ws.cell(row=r, column=i, value=ex.get(c["chave"], ""))
+            valor = ex.get(c["chave"], "") if not c.get("extra") else _valor_exemplo_extra(c, ex.get("tipo"))
+            cel = ws.cell(row=r, column=i, value=valor)
             cel.fill = cinza
     ws.freeze_panes = "A2"
 
@@ -180,7 +195,14 @@ def gerar_modelo_csv(tipos: list, extras_por_tipo: dict, project: str) -> str:
     w.writerow([c["titulo"] + (" *" if c["obrigatoria"] else "") for c in cols])
     linha = {"ref": "US1", "tipo": tipo_ex, "titulo": "Login com e-mail e senha", "descricao": "Como usuário quero acessar o sistema.",
              "area_path": project, "iteration": "", "tags": "login", "atribuido_a": "", "pai": "", "estado": ""}
-    w.writerow([linha.get(c["chave"], "") for c in cols])
+    def _ex(c):
+        if not c.get("extra"):
+            return linha.get(c["chave"], "")
+        campo = next((x for x in (extras_por_tipo.get(tipo_ex) or []) if x["reference_name"] == c["reference_name"]), None)
+        if campo is None:
+            return ""
+        return campo["default_value"] if campo.get("default_value") not in (None, "") else (campo["allowed_values"][0] if campo.get("allowed_values") else "")
+    w.writerow([_ex(c) for c in cols])
     return "﻿" + buf.getvalue()   # BOM: Excel abre com acentos corretos
 
 
@@ -252,6 +274,8 @@ def validar_linhas(linhas: list, cols_modelo: list, tipos: list, extras_por_tipo
     if not linhas:
         return []
     mapa = mapear_colunas(list(linhas[0].keys()), cols_modelo)
+    colunas_presentes = set(mapa.values())
+    lista_tipos = ", ".join(nomes_tipos.values())
     resultado = []
     refs_vistas = {}
     for n, raw in enumerate(linhas, start=2):   # 2 = primeira linha de dados na planilha
@@ -261,14 +285,14 @@ def validar_linhas(linhas: list, cols_modelo: list, tipos: list, extras_por_tipo
         # tipo
         tipo_raw = (d.get("tipo") or "").strip()
         if not tipo_raw:
-            item["erros"].append("Tipo vazio.")
+            item["erros"].append(f"Coluna 'Tipo' vazia — preencha com um destes: {lista_tipos}.")
         elif _norm(tipo_raw) not in nomes_tipos:
-            item["erros"].append(f"Tipo '{tipo_raw}' não existe no projeto.")
+            item["erros"].append(f"Tipo '{tipo_raw}' não existe no projeto — use um destes: {lista_tipos}.")
         else:
             item["tipo"] = nomes_tipos[_norm(tipo_raw)]
         # título
         if not item["titulo"]:
-            item["erros"].append("Título vazio.")
+            item["erros"].append("Coluna 'Título' vazia — escreva o título do item.")
         else:
             item["campos"]["System.Title"] = item["titulo"]
         # descrição
@@ -317,8 +341,16 @@ def validar_linhas(linhas: list, cols_modelo: list, tipos: list, extras_por_tipo
         # campos extras obrigatórios do tipo
         for c in (extras_por_tipo.get(item["tipo"]) or []):
             valor = (d.get(c["reference_name"]) or "").strip()
+            if not valor and c.get("default_value") not in (None, ""):
+                valor = str(c["default_value"])
+                item["avisos"].append(f"'{c['name']}' vazio — usado o padrão '{valor}'.")
             if not valor:
-                item["erros"].append(f"Campo obrigatório para {item['tipo']}: '{c['name']}'.")
+                aceitos = f" Valores aceitos: {', '.join(map(str, c['allowed_values']))}." if c.get("allowed_values") else ""
+                if c["reference_name"] not in colunas_presentes:
+                    item["erros"].append(f"Falta a coluna '{c['name']}' no arquivo (obrigatória para {item['tipo']}) — "
+                                         f"baixe o modelo atualizado ou acrescente a coluna.{aceitos}")
+                else:
+                    item["erros"].append(f"Coluna '{c['name']}' vazia (obrigatória para {item['tipo']}) — preencha.{aceitos}")
                 continue
             permitidos = c.get("allowed_values") or []
             if permitidos and valor not in [str(p) for p in permitidos]:
@@ -350,6 +382,38 @@ def validar_linhas(linhas: list, cols_modelo: list, tipos: list, extras_por_tipo
         elif r["parent_ref"] == r["ref"] and r["ref"]:
             r["erros"].append("Uma linha não pode ser pai dela mesma.")
     return resultado
+
+
+def problemas_do_arquivo(cabecalhos: list, cols_modelo: list, validadas: list, extras_por_tipo: dict) -> list:
+    """
+    Problemas do arquivo como um todo (não de uma linha): colunas obrigatórias ausentes e colunas
+    de campos obrigatórios que faltam pros tipos usados. Devolve mensagens prontas pra mostrar.
+    """
+    mapa = mapear_colunas(cabecalhos, cols_modelo)
+    presentes = set(mapa.values())
+    msgs = []
+    for c in cols_modelo:
+        if c.get("obrigatoria") and c["chave"] not in presentes:
+            msgs.append(f"O arquivo não tem a coluna **{c['titulo']}** (obrigatória). Use o modelo baixado nesta tela.")
+    tipos_usados = sorted({v["tipo"] for v in validadas if v.get("tipo")})
+    faltando = {}
+    for t in tipos_usados:
+        for c in extras_por_tipo.get(t) or []:
+            if c["reference_name"] not in presentes and c.get("default_value") in (None, ""):
+                faltando.setdefault(c["name"], []).append(t)
+    for nome, tipos_ in faltando.items():
+        msgs.append(f"Falta a coluna **{nome}** — obrigatória para {', '.join(tipos_)}. "
+                    "Baixe o modelo atualizado (ele já traz essa coluna) ou acrescente-a ao seu arquivo.")
+    return msgs
+
+
+def resumo_pendencias(validadas: list) -> list:
+    """Agrupa os erros iguais entre linhas: [{"mensagem", "linhas": [2, 5, ...]}] — pra mostrar 'o que falta' de uma vez."""
+    grupos = {}
+    for v in validadas:
+        for e in v.get("erros") or []:
+            grupos.setdefault(e, []).append(v["linha"])
+    return [{"mensagem": m, "linhas": ls} for m, ls in grupos.items()]
 
 
 def ordenar_para_criacao(itens: list) -> list:

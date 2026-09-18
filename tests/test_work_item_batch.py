@@ -11,9 +11,13 @@ CATALOGO = {
     "Microsoft.VSTS.Common.Priority": {"type": "integer", "read_only": False},
     "Microsoft.VSTS.Common.Severity": {"type": "string", "read_only": False},
     "System.Id": {"type": "integer", "read_only": True},
+    "Microsoft.VSTS.Common.ValueArea": {"type": "string", "read_only": False},
+    "Custom.Bloqueado": {"type": "boolean", "read_only": False},
 }
 CAMPOS_POR_TIPO = {
-    "User Story": [{"reference_name": "System.Title", "name": "Title", "always_required": True, "allowed_values": []}],
+    "User Story": [{"reference_name": "System.Title", "name": "Title", "always_required": True, "allowed_values": []},
+                   {"reference_name": "Microsoft.VSTS.Common.ValueArea", "name": "Value Area", "always_required": True, "allowed_values": ["Architectural", "Business"], "default_value": "Business"},
+                   {"reference_name": "Custom.Bloqueado", "name": "Bloqueado", "always_required": True, "allowed_values": [], "default_value": "0"}],
     "Task": [{"reference_name": "Microsoft.VSTS.Common.Priority", "name": "Priority", "always_required": True, "allowed_values": ["1", "2", "3", "4"]}],
     "Bug": [
         {"reference_name": "Microsoft.VSTS.Common.Severity", "name": "Severity", "always_required": True,
@@ -34,7 +38,7 @@ def _extras():
 class TemplateTests(unittest.TestCase):
     def test_extras_ignore_widget_and_readonly_fields(self):
         extras = _extras()
-        self.assertEqual([c["name"] for c in extras["User Story"]], [])
+        self.assertEqual([c["name"] for c in extras["User Story"]], ["Value Area"])   # booleano obrigatório fica de fora
         self.assertEqual([c["name"] for c in extras["Task"]], ["Priority"])
         self.assertEqual([c["name"] for c in extras["Bug"]], ["Severity"])   # System.Id é somente-leitura
 
@@ -48,6 +52,9 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("Severity", cab)
         exemplo = [c.value for c in wb["Work Items"][3]]
         self.assertEqual(exemplo[cab.index("Pai")], "#US1")   # Task filha da US1 do exemplo
+        exemplo_us = [c.value for c in wb["Work Items"][2]]
+        self.assertEqual(exemplo_us[cab.index("Value Area")], "Business")   # extra preenchido com o padrão
+        self.assertNotIn("Bloqueado", cab)
         listas = [c.value for c in wb["Listas"][2]]
         self.assertEqual(listas[0], "User Story")
         self.assertEqual(listas[3], PESSOAS[0]["unique_name"])
@@ -82,6 +89,8 @@ class ReadAndValidateTests(unittest.TestCase):
         ]
         r = self._validar(linhas)
         self.assertEqual(r[0]["erros"], [])
+        self.assertEqual(r[0]["campos"]["Microsoft.VSTS.Common.ValueArea"], "Business")   # vazio -> padrão
+        self.assertTrue(any("padrão" in a for a in r[0]["avisos"]))
         self.assertEqual(r[0]["tipo"], "User Story")
         self.assertEqual(r[0]["campos"]["System.AreaPath"], "Proj\\Backend")
         self.assertEqual(r[0]["campos"]["System.AssignedTo"], PESSOAS[0]["unique_name"])
@@ -92,11 +101,31 @@ class ReadAndValidateTests(unittest.TestCase):
         self.assertEqual(r[1]["campos"]["Microsoft.VSTS.Common.Priority"], 2)
         self.assertEqual(r[1]["erros"], [])
         erros3 = " ".join(r[2]["erros"])
-        for trecho in ("Tipo 'Epico'", "Título vazio", "Pai 'abc'", "Area Path 'Nada'", "Pessoa 'x@y.z'"):
+        for trecho in ("Tipo 'Epico'", "use um destes: User Story, Task, Bug", "Coluna 'Título' vazia", "Pai 'abc'", "Area Path 'Nada'", "Pessoa 'x@y.z'"):
             self.assertIn(trecho, erros3)
         erros4 = " ".join(r[3]["erros"])
         self.assertIn("valores aceitos", erros4)
         self.assertIn("#NAOEXISTE", erros4)
+
+    def test_missing_required_column_is_reported_clearly(self):
+        # arquivo antigo, sem a coluna Priority (obrigatória pra Task e sem padrão)
+        linhas = [{"Tipo": "Task", "Título": "Sem coluna"}, {"Tipo": "Task", "Título": "Outra"}]
+        r = self._validar(linhas)
+        self.assertIn("Falta a coluna 'Priority'", r[0]["erros"][0])
+        self.assertIn("Valores aceitos: 1, 2, 3, 4", r[0]["erros"][0])
+        cols = wib.colunas_do_modelo(TIPOS, _extras())
+        msgs = wib.problemas_do_arquivo(list(linhas[0].keys()), cols, r, _extras())
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("**Priority**", msgs[0])
+        self.assertIn("Task", msgs[0])
+        grupos = wib.resumo_pendencias(r)
+        self.assertEqual(grupos[0]["linhas"], [2, 3])
+        # coluna presente mas vazia -> mensagem diferente
+        r2 = self._validar([{"Tipo": "Task", "Título": "Vazia", "Priority": ""}])
+        self.assertIn("Coluna 'Priority' vazia", r2[0]["erros"][0])
+        # arquivo sem Tipo/Título
+        msgs2 = wib.problemas_do_arquivo(["Coisa", "Outra"], cols, [], _extras())   # "Nome" seria sinônimo de Título
+        self.assertTrue(any("**Tipo**" in m for m in msgs2) and any("**Título**" in m for m in msgs2))
 
     def test_parent_ref_ordering(self):
         itens = [

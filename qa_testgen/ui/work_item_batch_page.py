@@ -73,6 +73,57 @@ class WorkItemBatchMixin:
             st.error(f"❌ Não foi possível carregar as listas do projeto: {error}")
             return None
 
+    def _wi_fila_mostrar_diagnostico(self, nome_arquivo: str, cabecalhos: list, cols_modelo: list, validadas: list,
+                                     ok: list, ruins: list, nao_reconhecidas: list, extras_por_tipo: dict):
+        """Depois de ler o arquivo: diz na hora quantas linhas estão prontas e, pra cada pendência, o que falta e onde."""
+        total = len(validadas)
+        if not ruins:
+            st.success(f"📄 **{nome_arquivo}** lido: {total} linha(s), todas prontas pra fila.")
+        elif ok:
+            st.warning(f"📄 **{nome_arquivo}** lido: {total} linha(s) — **{len(ok)} pronta(s)** e **{len(ruins)} com pendência** (veja abaixo).")
+        else:
+            st.error(f"📄 **{nome_arquivo}** lido: {total} linha(s), **nenhuma pronta** — todas têm pendências (veja abaixo).")
+
+        problemas_arquivo = wib.problemas_do_arquivo(cabecalhos, cols_modelo, validadas, extras_por_tipo)
+        if problemas_arquivo:
+            st.error("**Problema no arquivo (vale pra todas as linhas):**\n\n" + "\n".join(f"- {m}" for m in problemas_arquivo))
+        if nao_reconhecidas:
+            st.caption("Colunas ignoradas (não fazem parte do modelo): " + ", ".join(f"`{c}`" for c in nao_reconhecidas))
+
+        def _situacao(v):
+            if v["erros"]:
+                return f"❌ {len(v['erros'])} pendência(s)"
+            return "✅ Pronta" + (" (padrão aplicado)" if v.get("avisos") else "")
+
+        st.dataframe(pd.DataFrame([{
+            "Linha": v["linha"], "Ref": v["ref"], "Tipo": v["tipo"] or "?", "Título": v["titulo"],
+            "Pai": f"#{v['parent_ref']}" if v["parent_ref"] else (v["parent_id"] or ""),
+            "Situação": _situacao(v),
+        } for v in validadas]), width="stretch", hide_index=True)
+
+        if ruins:
+            with st.container(border=True):
+                st.markdown(f"##### 🛠️ O que corrigir ({len(ruins)} linha(s))")
+                st.caption("Abra o arquivo, ajuste o que está listado abaixo, salve e suba de novo. "
+                           "A numeração é a mesma da planilha (linha 1 = cabeçalho).")
+                for v in ruins:
+                    ident = f"**Linha {v['linha']}**" + (f" · {v['tipo']}" if v["tipo"] else "") + (f" · \"{v['titulo']}\"" if v["titulo"] else "")
+                    st.markdown(ident + "\n" + "\n".join(f"- {e}" for e in v["erros"]))
+                repetidos = [g for g in wib.resumo_pendencias(validadas) if len(g["linhas"]) > 1]
+                if repetidos:
+                    st.markdown("**Resumo (mesma pendência em várias linhas):**\n" + "\n".join(
+                        f"- {g['mensagem']} → linhas {', '.join(map(str, g['linhas']))}" for g in repetidos))
+            if ok:
+                st.info(f"Você pode adicionar agora as {len(ok)} linha(s) prontas e subir as outras depois de corrigir — "
+                        "ou corrigir tudo e subir o arquivo completo de novo.")
+            else:
+                st.info("O botão **➕ Adicionar à fila** aparece quando houver pelo menos uma linha pronta.")
+
+        avisos = [(v["linha"], a) for v in ok for a in (v.get("avisos") or [])]
+        if avisos:
+            with st.expander(f"ℹ️ Valores padrão aplicados automaticamente ({len(avisos)})", expanded=False):
+                st.markdown("\n".join(f"- Linha {n}: {a}" for n, a in avisos))
+
     def _wi_fila_adicionar(self, item: dict):
         fila = list(self.state.get('wi_fila') or [])
         item.setdefault("uid", str(uuid.uuid4()))
@@ -131,20 +182,15 @@ class WorkItemBatchMixin:
                     st.warning("O arquivo não tem nenhuma linha de dados.")
                 else:
                     cols_modelo = wib.colunas_do_modelo(tipos, listas["extras_por_tipo"])
-                    mapa = wib.mapear_colunas(list(linhas[0].keys()), cols_modelo)
-                    nao_reconhecidas = [c for c in linhas[0].keys() if c not in mapa]
-                    if nao_reconhecidas:
-                        st.caption("Colunas ignoradas (não reconhecidas): " + ", ".join(f"`{c}`" for c in nao_reconhecidas))
+                    cabecalhos = list(linhas[0].keys())
+                    mapa = wib.mapear_colunas(cabecalhos, cols_modelo)
+                    nao_reconhecidas = [c for c in cabecalhos if c not in mapa]
                     validadas = wib.validar_linhas(linhas, cols_modelo, tipos, listas["extras_por_tipo"], catalogo,
                                                    listas["area_paths"], listas["iterations"], listas["pessoas"])
                     ok = [v for v in validadas if not v["erros"]]
                     ruins = [v for v in validadas if v["erros"]]
-                    st.dataframe(pd.DataFrame([{
-                        "Linha": v["linha"], "Ref": v["ref"], "Tipo": v["tipo"] or "?", "Título": v["titulo"],
-                        "Pai": f"#{v['parent_ref']}" if v["parent_ref"] else (v["parent_id"] or ""),
-                        "Situação": "✅ OK" if not v["erros"] else "❌ " + " | ".join(v["erros"]),
-                    } for v in validadas]), width="stretch", hide_index=True)
-                    st.markdown(f"**{len(ok)}** linha(s) válida(s) · **{len(ruins)}** com erro (corrija no arquivo e suba de novo).")
+                    self._wi_fila_mostrar_diagnostico(arquivo.name, cabecalhos, cols_modelo, validadas, ok, ruins,
+                                                      nao_reconhecidas, listas["extras_por_tipo"])
                     if ok and st.button(f"➕ Adicionar {len(ok)} linha(s) válida(s) à fila", key="btn_wi_fila_add_arquivo", type="primary", width="stretch"):
                         refs_na_fila = {i.get("ref") for i in (self.state.get('wi_fila') or []) if i.get("ref")}
                         for v in ok:
