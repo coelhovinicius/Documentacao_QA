@@ -236,7 +236,8 @@ class ApiTestsPageMixin:
                 "- ✍️ **Criar manualmente** — monta cada caso do zero na própria tela.\n\n"
                 "**Variáveis:** qualquer `{{nome}}` em URL, headers ou body é substituído pelo valor da tabela. "
                 "`{{base_url}}` é sempre o campo Base URL. Variáveis **secretas** (senhas, tokens) são pedidas em campo "
-                "de senha, ficam só nesta sessão e saem **mascaradas** de toda evidência. Um caso pode **extrair** "
+                "de senha, ficam só nesta sessão e saem **mascaradas** de toda evidência. Depois de preencher, clique em "
+                "**💾 Salvar variáveis** (a tabela e as senhas só são gravadas com esse botão). Um caso pode **extrair** "
                 "um valor da resposta pra uma variável (ex.: `data.token` → `auth_token`) e os casos seguintes usam "
                 "`{{auth_token}}` — por isso a ordem importa.\n\n"
                 "**🔎 Reconhecer a API** (dentro de Gerar com IA): antes de gerar, o app faz chamadas sem credencial "
@@ -684,45 +685,65 @@ class ApiTestsPageMixin:
             return
         df = pd.DataFrame(variaveis or [{"nome": "", "valor": "", "secreto": False}], columns=["nome", "valor", "secreto"])
         df["valor"] = df.apply(lambda r: "" if r["secreto"] else r["valor"], axis=1)
-        edit = st.data_editor(
-            df, num_rows="dynamic" if manual else "fixed", width="stretch", hide_index=True, key="apiw_vars_editor",
-            disabled=[] if manual else ["nome", "secreto"],
-            column_config={
-                "nome": st.column_config.TextColumn("Nome", required=True),
-                "valor": st.column_config.TextColumn("Valor (vazio se secreto)"),
-                "secreto": st.column_config.CheckboxColumn("Secreto", default=False),
-            },
-        )
-        novas = []
-        for _, row in edit.iterrows():
-            nome = str(row.get("nome") or "").strip()
-            if not nome:
-                continue
-            secreto = bool(row.get("secreto"))
-            valor = "" if secreto else str(row.get("valor") if row.get("valor") is not None else "")
-            novas.append({"nome": nome, "valor": valor, "secreto": secreto})
-        self.state.set('api_variaveis', novas)
+        # Tudo dentro de um formulário: a tabela e os campos de senha só são
+        # enviados ao clicar em "Salvar variáveis". Sem isso, a tabela grava
+        # ao perder o foco e dispara um rerun no meio da digitação da senha
+        # (ou o clique em "Próxima etapa" chega antes de a célula ser gravada)
+        # — e o valor digitado some.
+        form = st.form("apiw_vars_form", border=True)
+        with form:
+            edit = st.data_editor(
+                df, num_rows="dynamic" if manual else "fixed", width="stretch", hide_index=True, key="apiw_vars_editor",
+                disabled=[] if manual else ["nome", "secreto"],
+                column_config={
+                    "nome": st.column_config.TextColumn("Nome", required=True),
+                    "valor": st.column_config.TextColumn("Valor (vazio se secreto)"),
+                    "secreto": st.column_config.CheckboxColumn("Secreto", default=False),
+                },
+            )
+            novas = []
+            for _, row in edit.iterrows():
+                nome = str(row.get("nome") or "").strip()
+                if not nome:
+                    continue
+                secreto = bool(row.get("secreto"))
+                valor = "" if secreto else str(row.get("valor") if row.get("valor") is not None else "")
+                novas.append({"nome": nome, "valor": valor, "secreto": secreto})
 
-        secretas = [v['nome'] for v in novas if v['secreto']]
-        segredos = dict(self.state.get('api_segredos') or {})
-        if secretas:
-            usados, extraidos = self._api_uso_de_variaveis()
-            st.caption("Valores das variáveis secretas (só nesta sessão):")
-            cols = st.columns(min(3, len(secretas)))
-            for i, nome in enumerate(secretas):
-                # Deixa explícito o que é obrigatório e o que não é: variável
-                # que um caso extrai da resposta (ex.: auth_token) ou que nenhum
-                # caso habilitado usa (ex.: senha de um caso desmarcado) é opcional.
-                if nome in extraidos:
-                    rotulo, ajuda = f"🔒 {nome} — opcional", "Preenchida automaticamente por um caso que extrai esse valor da resposta. Deixe em branco."
-                elif nome not in usados:
-                    rotulo, ajuda = f"🔒 {nome} — opcional", "Nenhum caso habilitado usa esta variável no momento."
-                else:
-                    rotulo, ajuda = f"🔒 {nome} — obrigatória", "Usada por pelo menos um caso habilitado."
-                with cols[i % len(cols)]:
-                    segredos[nome] = st.text_input(rotulo, value=segredos.get(nome, ""), type="password",
-                                                   key=f"apiw_secret_{nome}", help=ajuda)
-        self.state.set('api_segredos', {k: v for k, v in segredos.items() if k in secretas})
+            # Campos de senha: a lista de secretas vem do estado salvo (não da
+            # edição ainda não enviada), pra não mudar o formulário no meio.
+            secretas = [v['nome'] for v in variaveis if v['secreto']] if not manual else [v['nome'] for v in novas if v['secreto']]
+            segredos = dict(self.state.get('api_segredos') or {})
+            if secretas:
+                usados, extraidos = self._api_uso_de_variaveis()
+                st.caption("Valores das variáveis secretas (só nesta sessão):")
+                cols = st.columns(min(3, len(secretas)))
+                for i, nome in enumerate(secretas):
+                    # Deixa explícito o que é obrigatório e o que não é: variável
+                    # que um caso extrai da resposta (ex.: auth_token) ou que nenhum
+                    # caso habilitado usa (ex.: senha de um caso desmarcado) é opcional.
+                    if nome in extraidos:
+                        rotulo, ajuda = f"🔒 {nome} — opcional", "Preenchida automaticamente por um caso que extrai esse valor da resposta. Deixe em branco."
+                    elif nome not in usados:
+                        rotulo, ajuda = f"🔒 {nome} — opcional", "Nenhum caso habilitado usa esta variável no momento."
+                    else:
+                        rotulo, ajuda = f"🔒 {nome} — obrigatória", "Usada por pelo menos um caso habilitado."
+                    with cols[i % len(cols)]:
+                        segredos[nome] = st.text_input(rotulo, value=segredos.get(nome, ""), type="password",
+                                                       key=f"apiw_secret_{nome}", help=ajuda)
+            salvar = st.form_submit_button("💾 Salvar variáveis", type="primary", width="stretch")
+        if salvar:
+            self.state.set('api_variaveis', novas)
+            secretas_finais = [v['nome'] for v in novas if v['secreto']]
+            self.state.set('api_segredos', {k: v for k, v in segredos.items() if k in secretas_finais and v})
+            self._api_invalidar_evidencias()
+            self._flash_success("Variáveis salvas.")
+            st.rerun()
+        else:
+            faltam = [v['nome'] for v in variaveis if not v['secreto'] and not (v.get('valor') or '').strip()]
+            faltam += [n for n in [v['nome'] for v in variaveis if v['secreto']] if not (self.state.get('api_segredos') or {}).get(n)]
+            if faltam:
+                st.caption("⚠️ Preencha e clique em **Salvar variáveis** antes de seguir — valores ainda não salvos: " + ", ".join(faltam))
 
     def _api_uso_de_variaveis(self):
         """(variáveis usadas por casos habilitados, variáveis produzidas por extração)."""
