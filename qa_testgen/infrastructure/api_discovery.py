@@ -90,6 +90,7 @@ def analisar(sondas: list, respostas: list) -> dict:
     tabela, rotas_reais, fatos = [], {}, []
     formato_msg_i18n = None
     tem_errors_por_campo = False
+    status_validacao = None
     exige_bearer = []
     for s, r in zip(sondas, respostas or []):
         status = r.get("status")
@@ -114,6 +115,7 @@ def analisar(sondas: list, respostas: list) -> dict:
                 formato_msg_i18n = bool(_RE_I18N.match(msg.strip()))
             if isinstance(js, dict) and isinstance(js.get("errors"), dict):
                 tem_errors_por_campo = True
+                status_validacao = status
             if status == 401:
                 exige_bearer.append(s["variante"])
         tabela.append({"sonda": s["nome"], "status": status if status is not None else "—", "conclusao": conclusao})
@@ -131,9 +133,9 @@ def analisar(sondas: list, respostas: list) -> dict:
     elif formato_msg_i18n is False:
         fatos.append('As mensagens de erro vêm no campo "message" como texto — prefira json_exists em "message" a comparar o texto exato.')
     if tem_errors_por_campo:
-        fatos.append('Erros de validação (422) vêm em "errors.<campo>" como lista de strings — use json_exists em errors.<campo>; não existe campo "error" no singular.')
+        fatos.append(f'Erros de validação retornam HTTP {status_validacao} (NUNCA 400) com "errors.<campo>" como lista de strings — use status {status_validacao} e json_exists em errors.<campo>; não existe campo "error" no singular.')
     if exige_bearer:
-        fatos.append("Rotas protegidas (respondem 401 sem token): " + ", ".join(sorted(set(exige_bearer))) + ' — envie "Authorization: Bearer {{auth_token}}" extraído do login.')
+        fatos.append("Rotas protegidas (respondem 401 sem token): " + ", ".join(sorted(set(exige_bearer))) + ' — TODO caso nessas rotas (inclusive os de validação de campos) deve enviar "Authorization: Bearer {{auth_token}}" extraído do login; sem token, o único resultado possível é 401. Não gere caso de cadastro/criação "aberto" nessas rotas.')
     if not fatos:
         fatos.append("Nenhuma rota citada respondeu como API a partir desta Base URL — confira a Base URL e as rotas antes de gerar.")
     return {"observacoes": "\n".join(f"- {f}" for f in fatos), "tabela": tabela, "rotas_reais": rotas_reais}
