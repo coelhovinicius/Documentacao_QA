@@ -879,6 +879,19 @@ class ApiTestsPageMixin:
         ]
         if secretas_vazias:
             erros.append("Variáveis secretas sem valor: " + ", ".join(secretas_vazias) + " (preencha na etapa Definição).")
+        # Variáveis normais usadas por casos habilitados e sem valor: o request
+        # sairia com "" no lugar (ex.: "email": "") e todo caso falharia.
+        normais_vazias = [
+            v['nome'] for v in (self.state.get('api_variaveis') or [])
+            if not v['secreto'] and v['nome'] in usados and v['nome'] not in extraidos and not (v.get('valor') or '').strip()
+        ]
+        if normais_vazias:
+            erros.append("Variáveis sem valor: " + ", ".join(normais_vazias) + " (preencha a coluna Valor na etapa Definição).")
+        # Variável usada por algum caso mas que não existe na tabela nem é extraída
+        conhecidas = {v['nome'] for v in (self.state.get('api_variaveis') or [])} | extraidos | {'base_url'}
+        desconhecidas = sorted(usados - conhecidas)
+        if desconhecidas:
+            erros.append("Variáveis usadas nos casos mas não definidas: " + ", ".join(desconhecidas) + ".")
         return erros
 
     def _api_render_execucao(self):
