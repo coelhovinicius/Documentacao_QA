@@ -331,7 +331,11 @@ Não existe mais `cookie_secret` — a sessão não usa assinatura local, valida
 - Testes unitários em `tests/test_api_tests_module.py` (importador, runner com servidor HTTP local, avaliação de respostas externas, reconhecimento da API, mascaramento/zip).
 - Prompt do `Doc_QA_ApiTest_Generation` propositalmente curto (~3,3k caracteres, máx. 10 casos, `body` como objeto JSON): a versão longa estourava os limites por requisição/minuto dos provedores gratuitos (Gemini/OpenAI/Mistral 429, Groq truncando a saída). O nó de erro do workflow devolve o erro bruto de cada provedor no 502.
 
-**Próximas fases (não implementadas):** vínculo dos casos a Test Cases do Azure DevOps (existentes ou novos, com Projeto/Area Path/Tags/Atribuído a/Plano/Suíte) e registro de Test Runs com evidência anexada; geração determinística a partir de Swagger/OpenAPI.
+**Azure DevOps:** `api_to_assistant.converter_bateria` transforma casos + resultados em `matriz`/`test_cases`/`test_plans` da sessão (formato idêntico ao do assistente; `origem: testes_api`, `api_case_id`, `work_item_relacionado` = Work Item da geração) e o app navega pro Passo 5; o Passo 7 segue inalterado. Após o push, `ado_last_plan_id` + `ado_test_case_ids` + `api_test_run_pendente` habilitam "Registrar Test Run": `list_plan_suites` → `list_test_points` → `create_test_run` → `update_test_run_results` (Passed/Failed + comentário) → `attach_file_to_test_run` (PDF) → `complete_test_run`.
+
+**Criar Work Item — Fila / planilha:** `infrastructure/work_item_batch.py` (modelo XLSX/CSV gerado do projeto, leitura CSV/XLSX/TXT, validação linha a linha, ordenação pai→filho por `#Ref`) e `ui/work_item_batch_page.py` (mixin: fila, upload, envio com confirmação, resultado por item). `openpyxl` no requirements.
+
+**Próximas fases (não implementadas):** geração determinística a partir de Swagger/OpenAPI; criação de pai e filhos com imagens no lote.
 
 ---
 

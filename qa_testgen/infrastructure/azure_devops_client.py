@@ -1567,3 +1567,81 @@ class AzureDevOpsClient:
             if status in found:
                 return status
         return "Desconhecido"
+
+    # ------------------------------------------------------------------
+    # Test Runs (registro de execução) — usado pelos Testes de API depois
+    # que o Passo 7 criou os Test Cases num Test Plan.
+    # ------------------------------------------------------------------
+    def list_plan_suites(self, plan_id: int) -> list:
+        """[{'id', 'name'}] de todas as suítes do plano (raiz inclusive)."""
+        url = f"{self._base_url()}/testplan/Plans/{plan_id}/suites?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Suítes do Test Plan")
+        return [{"id": s.get("id"), "name": s.get("name", "")} for s in data.get("value", [])]
+
+    def list_test_points(self, plan_id: int, suite_id: int) -> list:
+        """[{'id', 'test_case_id'}] — um Test Point por Test Case dentro da suíte."""
+        url = f"{self._base_url()}/testplan/Plans/{plan_id}/Suites/{suite_id}/TestPoint?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar Test Points")
+        pontos = []
+        for p in data.get("value", []):
+            ref = p.get("testCaseReference") or {}
+            try:
+                pontos.append({"id": int(p.get("id")), "test_case_id": int(ref.get("id"))})
+            except (TypeError, ValueError):
+                continue
+        return pontos
+
+    def create_test_run(self, plan_id: int, name: str, point_ids: list, comment: str = "") -> dict:
+        """Cria um Test Run manual no plano com os Test Points dados. Retorna {'id', 'url'}."""
+        body = {"name": name, "plan": {"id": str(plan_id)}, "pointIds": list(point_ids), "automated": False}
+        if comment:
+            body["comment"] = comment
+        url = f"{self._base_url()}/test/runs?api-version={API_VERSION}"
+        response = self.session.post(url, headers=self.headers_json, json=body, timeout=60)
+        data = self._handle_response(response, "Criar Test Run")
+        run_id = data.get("id")
+        web = (f"https://dev.azure.com/{quote(self.organization, safe='')}/{quote(self.project, safe='')}"
+               f"/_testManagement/runs?runId={run_id}&_a=runCharts")
+        return {"id": run_id, "url": web}
+
+    def get_test_run_results(self, run_id: int) -> list:
+        """[{'id', 'test_case_id', 'test_point_id'}] dos resultados (um por ponto) do run."""
+        url = f"{self._base_url()}/test/Runs/{run_id}/results?api-version={API_VERSION}"
+        response = self.session.get(url, headers=self.headers_json, timeout=60)
+        data = self._handle_response(response, "Listar resultados do Test Run")
+        saida = []
+        for r in data.get("value", []):
+            try:
+                saida.append({"id": int(r.get("id")), "test_case_id": int((r.get("testCase") or {}).get("id")),
+                              "test_point_id": int((r.get("testPoint") or {}).get("id") or 0)})
+            except (TypeError, ValueError):
+                continue
+        return saida
+
+    def update_test_run_results(self, run_id: int, resultados: list) -> None:
+        """resultados: [{'id': result_id, 'outcome': 'Passed'|'Failed'|'NotApplicable', 'comment': str}]."""
+        if not resultados:
+            return
+        body = [{"id": r["id"], "outcome": r["outcome"], "state": "Completed", "comment": (r.get("comment") or "")[:1000]}
+                for r in resultados]
+        url = f"{self._base_url()}/test/Runs/{run_id}/results?api-version={API_VERSION}"
+        response = self.session.patch(url, headers=self.headers_json, json=body, timeout=60)
+        self._handle_response(response, "Gravar resultados do Test Run")
+
+    def complete_test_run(self, run_id: int, comment: str = "") -> None:
+        url = f"{self._base_url()}/test/Runs/{run_id}?api-version={API_VERSION}"
+        body = {"state": "Completed"}
+        if comment:
+            body["comment"] = comment[:1000]
+        response = self.session.patch(url, headers=self.headers_json, json=body, timeout=60)
+        self._handle_response(response, "Concluir Test Run")
+
+    def attach_file_to_test_run(self, run_id: int, filename: str, conteudo: bytes, comment: str = "") -> dict:
+        import base64
+        body = {"stream": base64.b64encode(conteudo).decode("ascii"), "fileName": filename,
+                "comment": comment or "", "attachmentType": "GeneralAttachment"}
+        url = f"{self._base_url()}/test/Runs/{run_id}/attachments?api-version=7.1-preview.1"
+        response = self.session.post(url, headers=self.headers_json, json=body, timeout=120)
+        return self._handle_response(response, "Anexar arquivo ao Test Run")

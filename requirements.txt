@@ -53,3 +53,4 @@ websockets==16.0
 wheel==0.47.0
 extra-streamlit-components>=0.1.60
 bcrypt>=4.0.0
+openpyxl>=3.1.0

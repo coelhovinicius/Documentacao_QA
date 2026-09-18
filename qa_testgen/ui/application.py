@@ -49,6 +49,7 @@ from qa_testgen.ui.dialogs import (
     aviso_pat_compartilhado_modal,
 )
 from qa_testgen.ui.api_tests_page import ApiTestsPageMixin
+from qa_testgen.ui.work_item_batch_page import WorkItemBatchMixin
 from qa_testgen.ui.auth import (
     require_login, render_logout_control, is_approver, has_permission,
     render_admin_panel, log_action, SESSION_USER_KEY,
@@ -161,9 +162,16 @@ AREA_HELP = {
         "1. Conecte ao Azure DevOps e escolha o Projeto (Area Path, Sprint e coluna são opcionais).\n"
         "2. Escolha o **tipo** — o formulário é montado com os campos do próprio projeto; os "
         "obrigatórios aparecem em destaque, o resto fica em \"Outros campos\".\n"
-        "3. Modo **Um Work Item** (com pai opcional) ou **Vários filhos de um Work Item**.\n"
+        "3. Modo **Um Work Item** (com pai opcional), **Vários filhos de um Work Item**, ou "
+        "**Fila / planilha** — vários itens de qualquer tipo enviados de uma vez.\n"
         "4. Tags (existentes ou novas), responsável, evidências em imagem → revise e clique em "
-        "**Criar Work Item**."
+        "**Criar Work Item** (ou **➕ Adicionar à fila** pra enviar depois, junto com outros).\n\n"
+        "**Fila / planilha:** baixe o **modelo** (.xlsx ou .csv, gerado com os tipos, Area Paths, "
+        "Iterations e pessoas deste projeto — a aba *Instruções* explica cada coluna), preencha uma "
+        "linha por item e suba o arquivo; o app valida linha a linha e mostra o que corrigir. "
+        "Na coluna **Pai** use o ID de um item existente ou `#Ref` de outra linha (o pai é criado "
+        "antes). Nada é criado até você clicar em **Enviar** e confirmar; o que falhar fica na fila "
+        "com o motivo, pra corrigir e reenviar."
     ),
 }
 
@@ -186,7 +194,7 @@ DOCUMENT_UPLOAD_DISABLED_MSG = (
 )
 
 
-class UserInterface(ApiTestsPageMixin):
+class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
     def __init__(self):
         page_icon = "🧪"
         if Path(SIMBOLO_PATH).exists():
@@ -3105,6 +3113,7 @@ class UserInterface(ApiTestsPageMixin):
             st.markdown("##### 📋 Resultado da integração")
             for line in log:
                 st.write(line)
+            self._api_render_registrar_test_run(ado_client)
 
     def _push_static_suites_azure_devops(self, ado_client, area_path: str, plan_name: str,
                                            initial_state: str, existing_plan_id: int = None):
@@ -3168,6 +3177,7 @@ class UserInterface(ApiTestsPageMixin):
         # 1) Test Plan: cria novo ou reaproveita existente.
         if existing_plan_id:
             plan_id = existing_plan_id
+            self.state.set('ado_last_plan_id', plan_id)
             try:
                 with st.spinner(f"Buscando suite raiz do Test Plan existente '{plan_name}'..."):
                     root_suite_id = ado_client.get_test_plan_root_suite(plan_id)
@@ -3184,6 +3194,7 @@ class UserInterface(ApiTestsPageMixin):
             try:
                 plan = ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen (modo sem Work Items)")
                 plan_id = plan["id"]
+                self.state.set('ado_last_plan_id', plan_id)
                 root_suite_id = plan.get("root_suite_id")
                 log.append(f"✅ Test Plan criado: **{plan_name}** (ID {plan_id})")
             except Exception as error:
@@ -4596,6 +4607,7 @@ class UserInterface(ApiTestsPageMixin):
                 st.markdown("##### 📋 Resultado da integração")
                 for line in log:
                     st.write(line)
+                self._api_render_registrar_test_run(ado_client)
 
         st.divider()
         self._render_step7_back_and_new("main")
@@ -6040,21 +6052,27 @@ class UserInterface(ApiTestsPageMixin):
             return
 
         st.divider()
+        n_fila = len(self.state.get('wi_fila') or [])
         modo = st.radio(
             "O que você quer criar?",
-            options=["📝 Um Work Item", "🧩 Vários filhos de um Work Item (quebrar em Tasks)"],
+            options=["📝 Um Work Item", "🧩 Vários filhos de um Work Item (quebrar em Tasks)",
+                     "📋 Fila / planilha (vários Work Items)" + (f" — {n_fila} na fila" if n_fila else "")],
             index=0,
             key="wi_modo_radio",
             horizontal=True,
             disabled=self.state.get('is_processing'),
             help=(
                 "O segundo modo é pro fluxo de quebrar uma User Story em Tasks: escolhe a Story, "
-                "lista as Tasks, e cria todas de uma vez já vinculadas como filhas dela."
+                "lista as Tasks, e cria todas de uma vez já vinculadas como filhas dela. "
+                "O terceiro monta uma fila de vários Work Items (de qualquer tipo) — pelo formulário "
+                "ou por planilha — e envia tudo de uma vez."
             ),
         )
 
         if modo.startswith("🧩"):
             self._wi_modo_filhos_em_lote(ado_client, ado_project, tipos, catalogo)
+        elif modo.startswith("📋"):
+            self._wi_modo_fila(ado_client, ado_project, tipos, catalogo)
         else:
             self._wi_modo_unico(ado_client, ado_project, tipos, catalogo)
 
@@ -6249,19 +6267,36 @@ class UserInterface(ApiTestsPageMixin):
             c["reference_name"] in valores for c in obrigatorios_extra
             if (catalogo.get(c["reference_name"]) or {}).get("type") != "boolean"
         )
-        if st.button("🧱 Criar Work Item", type="primary", width="stretch",
-                      disabled=self.state.get('is_processing') or not pode_criar,
-                      key="btn_wi_criar"):
-            self.state.set('wi_snapshot', {
-                "tipo": tipo_nome, "campos": valores, "parent_id": parent_id,
-                "state": coluna_info.get("state"), "coluna": coluna_info.get("coluna"),
-                "imagens": imagens,
-                # Só embute <img> na Descrição se o tipo realmente tem esse
-                # campo editável — senão o anexo formal ainda vale, mas a
-                # Descrição não é tocada.
-                "tem_descricao": "System.Description" in por_ref,
-            })
-            st.rerun()
+        snapshot_atual = {
+            "tipo": tipo_nome, "campos": valores, "parent_id": parent_id,
+            "state": coluna_info.get("state"), "coluna": coluna_info.get("coluna"),
+            "imagens": imagens,
+            # Só embute <img> na Descrição se o tipo realmente tem esse
+            # campo editável — senão o anexo formal ainda vale, mas a
+            # Descrição não é tocada.
+            "tem_descricao": "System.Description" in por_ref,
+        }
+        col_criar, col_fila = st.columns([2, 1])
+        with col_criar:
+            if st.button("🧱 Criar Work Item", type="primary", width="stretch",
+                          disabled=self.state.get('is_processing') or not pode_criar,
+                          key="btn_wi_criar"):
+                self.state.set('wi_snapshot', snapshot_atual)
+                st.rerun()
+        with col_fila:
+            # Alternativa ao "criar agora": guarda na fila pra enviar vários de
+            # uma vez (modo "Fila / planilha"), sem tocar no Azure DevOps ainda.
+            if st.button("➕ Adicionar à fila", width="stretch",
+                         disabled=self.state.get('is_processing') or not pode_criar, key="btn_wi_add_fila",
+                         help="Guarda este Work Item numa fila pra enviar vários de uma vez (modo \"Fila / planilha\")."):
+                self._wi_fila_adicionar(dict(snapshot_atual, ref="", parent_ref=None,
+                                             titulo=valores.get("System.Title", ""), origem="formulário"))
+                self._flash_success(
+                    f"'{valores.get('System.Title', '')}' adicionado à fila "
+                    f"({len(self.state.get('wi_fila') or [])} item(ns)). Preencha o próximo ou vá ao modo "
+                    "\"Fila / planilha\" pra enviar."
+                )
+                st.rerun()
         if not pode_criar:
             faltando = []
             if not titulo.strip():
@@ -9718,6 +9753,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         # "merge" — a pessoa escolheu isso no Passo 7).
         if existing_plan_id:
             plan_id = existing_plan_id
+            self.state.set('ado_last_plan_id', plan_id)
             try:
                 with st.spinner(f"Buscando suite raiz do Test Plan existente '{plan_name}'..."):
                     root_suite_id = ado_client.get_test_plan_root_suite(plan_id)
@@ -9745,6 +9781,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             try:
                 plan = ado_client.create_test_plan(plan_name, f"Gerado automaticamente pelo QA TestGen para {project_name}")
                 plan_id = plan["id"]
+                self.state.set('ado_last_plan_id', plan_id)
                 root_suite_id = plan.get("root_suite_id")
                 log.append(f"✅ Test Plan criado: **{plan_name}** (ID {plan_id})")
             except AzureDevOpsError as error:
@@ -10054,7 +10091,9 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "com o formulário montado a partir dos metadados do próprio projeto — campo "
             "customizado aparece sozinho. Aceita evidências em imagem (anexo + embutidas na "
             "Descrição), tem modo de criar **vários filhos de uma vez** sob um pai (quebrar "
-            "uma User Story em Tasks), e dá pra criar tag nova na hora\n"
+            "uma User Story em Tasks), modo **Fila / planilha** (vários itens de qualquer tipo, "
+            "pelo formulário ou por CSV/XLSX com modelo gerado do projeto, enviados de uma vez) "
+            "e dá pra criar tag nova na hora\n"
             "- **🔌 Testes de API**: executa testes de API direto do app, em Python (sem Node/Newman). "
             "Os casos podem ser gerados por IA a partir do(s) Work Item(s) do Azure DevOps (ou de texto colado) — "
             "o botão Reconhecer a API descobre antes as rotas reais e o formato de erro, e segredos nunca vão "
@@ -10066,8 +10105,9 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "protegida). Evidências: RELATORIO.md, RELATORIO.pdf no padrão QA TestGen e .zip com uma "
             "pasta por caso (request, response, resultado e prints), com opção de guardar em "
             "Documentos Armazenados. As chamadas saem do navegador de quem usa o app (padrão, contorna WAF) "
-            "ou do servidor — configuração global do administrador. Não depende do Azure DevOps — o vínculo "
-            "com Test Cases e o registro de resultado lá é a próxima fase"
+            "ou do servidor — configuração global do administrador. Ao final, \"Levar para o assistente\" "
+            "transforma a bateria em Matriz, Casos e Plano pro Passo 7, e depois dá pra registrar a execução "
+            "como Test Run oficial no Azure DevOps"
         )
         st.caption(
             "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "

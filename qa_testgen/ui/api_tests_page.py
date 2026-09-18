@@ -8,6 +8,7 @@ Documentos Armazenados). Sem integração com o Azure DevOps ainda (Fase 2).
 """
 import json
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -19,7 +20,9 @@ from qa_testgen.domain.models.api_test import (
 )
 from qa_testgen.infrastructure.api_discovery import montar_sondas, analisar as analisar_sondas
 from qa_testgen.infrastructure.api_evidence import ApiEvidenceBuilder
+from qa_testgen.infrastructure.api_to_assistant import converter_bateria, resultados_para_test_run
 from qa_testgen.infrastructure.api_test_runner import ApiTestRunner
+from qa_testgen.config import TZ_BR
 from qa_testgen.infrastructure.document_processor import DocumentProcessor
 from qa_testgen.infrastructure.document_store import (
     DocumentStore, DocumentStoreError, AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO,
@@ -57,6 +60,8 @@ API_TESTS_STATE_DEFAULTS = {
     'api_ia_especificacao_wi': '',  # texto montado a partir dos Work Items escolhidos
     'api_ia_observacoes': '',
     'api_baixado': False,       # algum download/salvamento já foi feito nesta geração
+    'api_test_run_pendente': None,
+    'api_test_run_registrado': None,  # {titulo: {outcome, comentario}} + meta, pra registrar Test Run apos o Passo 7
     'api_modo_execucao': None,  # cache da configuração global (navegador|servidor)
     'api_browser_job': None,    # execução em andamento no navegador {run_id, casos, variaveis, timeout_s}
     'api_probe_job': None,      # reconhecimento da API em andamento (navegador)
@@ -273,6 +278,11 @@ class ApiTestsPageMixin:
                 "se espera. Não altera a execução; é só documentação.\n\n"
                 "**De onde saem as chamadas:** conforme configuração do administrador — do **seu navegador** (padrão; "
                 "mesmo IP do Postman, contorna bloqueios de WAF que barram servidores em nuvem) ou do servidor do app.\n\n"
+                "**Levar para o Azure DevOps** (etapa 3, \"Levar para o assistente\"): cada caso vira um Caso de Teste, "
+                "com Matriz e um Plano (uma suíte por endpoint); você cai no Passo 5 e usa o Passo 7 como sempre — "
+                "vinculando a Work Items (o Work Item escolhido na geração já vem sugerido), sem Work Items ou "
+                "reconciliando. Depois do Passo 7, o app oferece registrar a execução como **Test Run** oficial "
+                "(Passed/Failed por caso + PDF anexado), visível na aba Execute do Test Plan.\n\n"
                 "**Regras:** um caso sem asserção é reprovado (o mínimo é o status HTTP esperado); casos "
                 "desabilitados não rodam e aparecem como \"Não Executado\"; nada é enviado ao Azure DevOps nesta versão."
             )
@@ -1187,6 +1197,158 @@ class ApiTestsPageMixin:
                     self._api_salvar_documentos()
             with st.expander("👁️ Pré-visualizar RELATORIO.md"):
                 st.markdown(self.state.get('api_md'))
+
+        st.divider()
+        self._api_render_levar_para_assistente()
+
+    def _api_render_levar_para_assistente(self):
+        """
+        Transforma a bateria em Matriz + Casos + Planos do assistente, pra
+        seguir pelo Passo 7 (vincular a Work Items, suítes estáticas ou
+        reconciliar) como qualquer outra documentação.
+        """
+        st.markdown("##### 🧱 Levar para o assistente (Matriz, Casos e Planos → Azure DevOps)")
+        st.caption(
+            "Cada caso da bateria vira um **Caso de Teste** (passos = requisição, resultado esperado = asserções), "
+            "com uma linha de **Matriz de Cobertura** e um **Plano** com uma suíte por endpoint. Você cai no Passo 5 "
+            "pra revisar e usa o Passo 7 normalmente pra criar tudo no Azure DevOps."
+        )
+        incluir_resultado = st.checkbox(
+            "Incluir o resultado da última execução no texto dos Casos de Teste (ex.: Última execução (HML): Aprovado — 6/6)",
+            value=True, key="apiw_levar_incluir_resultado",
+        )
+        st.caption("Independentemente disso, depois que o Passo 7 criar os Test Cases, o app oferece registrar a execução como **Test Run** oficial no Azure DevOps.")
+
+        existentes = len(self.state.get('test_cases') or []) + len(self.state.get('matriz') or []) + len(self.state.get('test_plans') or [])
+        modo = "substituir"
+        if existentes:
+            st.warning(
+                f"Há uma análise na sessão do assistente ({len(self.state.get('test_cases') or [])} caso(s), "
+                f"{len(self.state.get('matriz') or [])} linha(s) de Matriz, {len(self.state.get('test_plans') or [])} plano(s)). "
+                "Os casos já existentes são da **mesma funcionalidade** desta bateria? → *Acrescentar* (tudo vai junto no mesmo Test Plan). "
+                "São de **outra** funcionalidade? → *Substituir* (ou envie a análise anterior pelo Passo 7 antes)."
+            )
+            modo = st.radio("O que fazer com o que já está na sessão?", ["acrescentar", "substituir"],
+                            format_func=lambda m: "➕ Acrescentar (junta na mesma sessão)" if m == "acrescentar" else "♻️ Substituir (apaga o que está lá)",
+                            horizontal=True, key="apiw_levar_modo")
+        wis = self.state.get('api_work_items') or []
+        if wis:
+            st.caption("Pré-vínculo: os casos nascem marcados com o Work Item **#" + str(wis[0]['id']) + f" — {wis[0]['title']}**; no Passo 7 (modo Vincular) isso já vem sugerido.")
+        if st.button("🧱 Levar para o assistente", type="primary", key="btn_api_levar", width="stretch"):
+            self._api_levar_para_assistente(incluir_resultado, modo)
+            st.rerun()
+
+    def _api_levar_para_assistente(self, incluir_resultado: bool, modo: str):
+        casos = self.state.get('api_casos') or []
+        resultados = self.state.get('api_resultados') or []
+        matriz_atual = list(self.state.get('matriz') or []) if modo == "acrescentar" else []
+        casos_atuais = list(self.state.get('test_cases') or []) if modo == "acrescentar" else []
+        planos_atuais = list(self.state.get('test_plans') or []) if modo == "acrescentar" else []
+        # remove uma versão anterior desta mesma bateria (mesmos títulos, origem testes_api) pra não duplicar
+        titulos_api = {c.get('nome') for c in casos}
+        anteriores = [tc for tc in casos_atuais if tc.get('origem') == 'testes_api' and tc.get('titulo') in titulos_api]
+        ids_removidos = {rid for tc in anteriores for rid in (tc.get('requisitos_relacionados') or [])}
+        casos_atuais = [tc for tc in casos_atuais if tc not in anteriores]
+        matriz_atual = [m for m in matriz_atual if m.get('id') not in ids_removidos]
+        planos_atuais = [p for p in planos_atuais if not str(p.get('nome', '')).startswith("Testes de API — ")]
+
+        out = converter_bateria(
+            self.state.get('api_projeto') or 'API', self.state.get('api_ambiente'), self.state.get('api_base_url'),
+            casos, resultados, variaveis=self.state.get('api_variaveis') or [], work_items=self.state.get('api_work_items') or [],
+            incluir_resultado=incluir_resultado, mc_inicio=len(matriz_atual) + 1,
+        )
+        if not out["test_cases"]:
+            self._flash_error("Nenhum caso habilitado pra levar ao assistente.")
+            return
+        self.state.set('matriz', matriz_atual + out["matriz"])
+        self.state.set('test_cases', casos_atuais + out["test_cases"])
+        self.state.set('test_plans', planos_atuais + out["test_plans"])
+        if not self.state.get('project_name'):
+            self.state.set('project_name', self.state.get('api_projeto') or 'Testes de API')
+        if not self.state.get('ambiente_testes'):
+            self.state.set('ambiente_testes', self.state.get('api_ambiente') or '')
+        # resultado da execução guardado pra virar Test Run depois do Passo 7
+        self.state.set('api_test_run_pendente', {
+            "projeto": self.state.get('api_projeto'), "ambiente": self.state.get('api_ambiente'),
+            "resultados": resultados_para_test_run(casos, resultados), "pdf": self.state.get('api_pdf'),
+            "quando": datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M"),
+        })
+        self.state.set('api_baixado', True)   # levou pro assistente: não é "perda" ao sair da tela
+        # entra no assistente já no Passo 5 (Planos), com 1–4 marcados como feitos
+        self.state.set('completed_steps', sorted(set(self.state.get('completed_steps') or []) | {1, 2, 3, 4}))
+        self.state.set('max_step', max(self.state.get('max_step') or 1, 5))
+        self.state.set('step', 5)
+        self.state.set('show_api_tests_page', False)
+        self._flash_success(
+            f"{len(out['test_cases'])} caso(s) de API viraram Casos de Teste, {len(out['matriz'])} linha(s) de Matriz e "
+            f"1 plano com {len(out['test_plans'][0]['suites'])} suíte(s). Revise e siga pro Passo 6/7."
+        )
+
+    def _api_render_registrar_test_run(self, ado_client):
+        """
+        Aparece no Passo 7, abaixo do resultado da integração, quando a
+        sessão tem uma bateria de API executada e os Test Cases dela acabaram
+        de ser criados no plano: registra a execução como Test Run oficial
+        (Passed/Failed por caso) e anexa o PDF de evidências ao run.
+        """
+        pend = self.state.get('api_test_run_pendente')
+        plan_id = self.state.get('ado_last_plan_id')
+        case_ids = self.state.get('ado_test_case_ids') or {}
+        if not pend or not plan_id or not case_ids:
+            return
+        mapeados = {t: case_ids[t] for t in pend.get("resultados", {}) if t in case_ids}
+        if not mapeados:
+            return
+        st.divider()
+        st.markdown("##### 📤 Registrar a execução dos Testes de API como Test Run")
+        st.caption(
+            f"{len(mapeados)} Test Case(s) desta bateria estão no plano (ID {plan_id}). O app cria um Test Run, marca cada um "
+            f"como **Passed/Failed** conforme a execução de {pend.get('quando')} ({pend.get('ambiente')}) e anexa o PDF de evidências. "
+            "Isso aparece na aba *Execute* do Test Plan, com histórico."
+        )
+        ja = self.state.get('api_test_run_registrado')
+        if ja and ja.get("plan_id") == plan_id:
+            st.success(f"✅ Test Run #{ja['run_id']} registrado" + (f" — [abrir no Azure DevOps]({ja['url']})" if ja.get('url') else ""))
+            return
+        if st.button("📤 Registrar Test Run no Azure DevOps", key="azure_blue_btn_api_test_run", width="stretch",
+                     disabled=self.state.get('is_processing')):
+            try:
+                with st.spinner("Localizando os Test Points no plano..."):
+                    pontos = {}
+                    for suite in ado_client.list_plan_suites(plan_id):
+                        for pt in ado_client.list_test_points(plan_id, suite["id"]):
+                            pontos.setdefault(pt["test_case_id"], pt["id"])
+                point_ids = [pontos[cid] for cid in mapeados.values() if cid in pontos]
+                if not point_ids:
+                    self._flash_error("Nenhum Test Point encontrado pros Test Cases desta bateria — os casos precisam estar numa suíte do plano.")
+                    st.rerun()
+                nome_run = f"Testes de API — {pend.get('projeto')} — {pend.get('ambiente')} — {pend.get('quando')}"
+                with st.spinner("Criando o Test Run e gravando os resultados..."):
+                    run = ado_client.create_test_run(plan_id, nome_run, point_ids, comment="Registrado automaticamente pelo QA TestGen (Testes de API)")
+                    resultados_run = ado_client.get_test_run_results(run["id"])
+                    por_case = {r["test_case_id"]: r["id"] for r in resultados_run}
+                    payload = []
+                    for titulo, cid in mapeados.items():
+                        if cid in por_case:
+                            info = pend["resultados"][titulo]
+                            payload.append({"id": por_case[cid], "outcome": info["outcome"], "comment": info.get("comentario", "")})
+                    ado_client.update_test_run_results(run["id"], payload)
+                    aviso_anexo = ""
+                    if pend.get("pdf"):
+                        try:
+                            ado_client.attach_file_to_test_run(run["id"], "RELATORIO-testes-de-api.pdf", pend["pdf"], comment="Evidências (QA TestGen)")
+                        except Exception as error:
+                            aviso_anexo = f" (PDF não anexado: {error})"
+                    ado_client.complete_test_run(run["id"], comment=f"{sum(1 for x in payload if x['outcome'] == 'Passed')} aprovado(s) de {len(payload)}")
+                self.state.set('api_test_run_registrado', {"plan_id": plan_id, "run_id": run["id"], "url": run.get("url")})
+                try:
+                    self._log("Testes de API", "Registrar Test Run", f"Run #{run['id']} no plano {plan_id}: {len(payload)} resultado(s)")
+                except Exception:
+                    pass
+                self._flash_success(f"Test Run #{run['id']} criado com {len(payload)} resultado(s){aviso_anexo}.")
+            except Exception as error:
+                self._flash_error(f"Não foi possível registrar o Test Run: {error}")
+            st.rerun()
 
     def _api_gerar_relatorios(self):
         resultados = self.state.get('api_resultados') or []

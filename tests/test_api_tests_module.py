@@ -235,3 +235,47 @@ class ApiDiscoveryTests(unittest.TestCase):
         self.assertIn("CHAVE i18n", a["observacoes"])
         self.assertIn("errors.<campo>", a["observacoes"])
         self.assertIn("/api/v1/me", a["observacoes"].split("Rotas protegidas")[1])
+
+
+class ApiToAssistantTests(unittest.TestCase):
+    def _bateria(self):
+        col = PostmanImporter.parse_collection(json.dumps(COLLECTION).encode())
+        casos = [c.to_dict() for c in col["casos"]]
+        from qa_testgen.domain.models.api_test import ApiCaseResult, ApiAssertionResult
+        res = [ApiCaseResult(case_id=casos[0]["id"], nome=casos[0]["nome"], metodo="POST", url_final="u", request_headers={},
+                             request_body="", status_code=200, status_text="OK", response_headers={}, response_body="{}", tempo_ms=120,
+                             assercoes=[ApiAssertionResult("Status 200", True), ApiAssertionResult("token", False, "ausente")]),
+               ApiCaseResult(case_id=casos[1]["id"], nome=casos[1]["nome"], metodo="GET", url_final="u", request_headers={},
+                             request_body="", status_code=None, status_text="", response_headers={}, response_body="", tempo_ms=0, pulado=True)]
+        return casos, res
+
+    def test_converts_to_matrix_cases_and_plan_per_endpoint(self):
+        from qa_testgen.infrastructure.api_to_assistant import converter_bateria
+        casos, res = self._bateria()
+        out = converter_bateria("Login", "Homologação", "http://x", casos, res,
+                                variaveis=[{"nome": "valid_password", "secreto": True}, {"nome": "base_url", "secreto": False}],
+                                work_items=[{"id": 7040, "title": "RF-02"}], incluir_resultado=True, mc_inicio=3)
+        self.assertEqual([m["id"] for m in out["matriz"]], ["MC-003 HML", "MC-004 HML"])
+        self.assertEqual(out["matriz"][0]["funcionalidade"], "POST /login")
+        tc = out["test_cases"][0]
+        self.assertEqual(tc["requisitos_relacionados"], ["MC-003 HML"])
+        self.assertEqual(tc["work_item_relacionado"], "7040")
+        self.assertIn("Última execução (HML", tc["pre_condicoes"])
+        self.assertIn("Reprovado — 1/2", tc["pre_condicoes"])
+        self.assertNotIn("{{valid_password}}", tc["passos"][0]["acao"])      # segredo mascarado no passo
+        self.assertIn("HTTP 200", tc["passos"][0]["resultado_esperado"])
+        self.assertEqual(tc["passos"][1]["acao"], "Guardar 'data.token' da resposta como {{auth_token}}")
+        plano = out["test_plans"][0]
+        self.assertEqual([s["nome"] for s in plano["suites"]], ["POST /login", "GET /me"])
+        self.assertEqual(plano["suites"][0]["casos"], [casos[0]["nome"]])
+        # sem resultado no texto
+        out2 = converter_bateria("Login", "Homologação", "http://x", casos, res, incluir_resultado=False)
+        self.assertNotIn("Última execução", out2["test_cases"][0]["pre_condicoes"])
+
+    def test_results_for_test_run(self):
+        from qa_testgen.infrastructure.api_to_assistant import resultados_para_test_run
+        casos, res = self._bateria()
+        m = resultados_para_test_run(casos, res)
+        self.assertEqual(set(m), {casos[0]["nome"]})            # o pulado não entra
+        self.assertEqual(m[casos[0]["nome"]]["outcome"], "Failed")
+        self.assertIn("token: ausente", m[casos[0]["nome"]]["comentario"])
