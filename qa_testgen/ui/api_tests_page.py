@@ -394,7 +394,9 @@ class ApiTestsPageMixin:
             try:
                 especificacao = self._api_especificacao_efetiva().strip()
                 if docs_txt:
-                    especificacao += "\n\n=== DOCUMENTOS DE CONTEXTO ===\n" + docs_txt[:20000]
+                    # Limite curto de propósito: cada chamada à IA conta contra a
+                    # cota por minuto dos provedores — documento inteiro derruba a geração.
+                    especificacao += "\n\n=== DOCUMENTOS DE CONTEXTO (trecho) ===\n" + docs_txt[:6000]
                 with st.spinner("A IA está montando a bateria de testes (isso pode levar até um minuto)..."):
                     resp = self.client.trigger_api_test_generation(
                         especificacao, self.state.get('api_base_url'), self.state.get('api_ambiente'),
