@@ -295,16 +295,14 @@ class ApiTestsPageMixin:
             )
             if casos_atuais:
                 st.caption(f"Há {casos_atuais} caso(s) na lista agora.")
-            with st.container(key="azure_blue_btn_api_import"):
-                if st.button("📥 Importar", key="btn_api_import", disabled=col_file is None, width="stretch"):
-                    self._api_importar_postman(col_file, env_file, substituir)
-                    st.rerun()
+            if st.button("📥 Importar", key="azure_blue_btn_api_import", disabled=col_file is None, width="stretch"):
+                self._api_importar_postman(col_file, env_file, substituir)
+                st.rerun()
         elif origem.startswith("🧩"):
             def_file = st.file_uploader("Definição (.json exportado na etapa Evidências)", type=["json"], key="apiw_def_file")
-            with st.container(key="azure_blue_btn_api_import_def"):
-                if st.button("📥 Carregar definição", key="btn_api_import_def", disabled=def_file is None, width="stretch"):
-                    self._api_importar_definicao(def_file)
-                    st.rerun()
+            if st.button("📥 Carregar definição", key="azure_blue_btn_api_import_def", disabled=def_file is None, width="stretch"):
+                self._api_importar_definicao(def_file)
+                st.rerun()
         else:
             if st.button("➕ Adicionar caso", key="btn_api_add_case_top"):
                 self._api_adicionar_caso()
@@ -381,10 +379,9 @@ class ApiTestsPageMixin:
             (self.state.get('api_base_url') or '').startswith(('http://', 'https://'))
         if not pronto:
             st.info("Preencha a Base URL e escolha o(s) Work Item(s) — ou cole a especificação / anexe documentos — pra habilitar a geração.")
-        with st.container(key="azure_blue_btn_api_gen_ia"):
-            st.button("🤖 Gerar casos com IA", key="btn_api_gen_ia", width="stretch",
-                      disabled=(not pronto) or self.state.get('is_processing'),
-                      on_click=self.trigger_action, args=("api_generate_ai",))
+        st.button("🤖 Gerar casos com IA", key="azure_blue_btn_api_gen_ia", width="stretch",
+                  disabled=(not pronto) or self.state.get('is_processing'),
+                  on_click=self.trigger_action, args=("api_generate_ai",))
         if self.state.get('current_action') == 'api_generate_ai' and not self.state.get('show_interrupt_modal'):
             # Limpa a ação antes da chamada (que pode levar 1 min): se a pessoa
             # clicar de novo e o Streamlit reiniciar o script, não dispara outra
@@ -420,17 +417,16 @@ class ApiTestsPageMixin:
         st.markdown("**🔎 Reconhecer a API** — descobre rotas reais, formato de erro e rotas protegidas, e preenche as Observações sozinho.")
         c1, c2 = st.columns([1, 2])
         with c1:
-            with st.container(key="azure_blue_btn_api_probe"):
-                if st.button("🔎 Reconhecer a API", key="btn_api_probe", width="stretch",
-                             disabled=(not base_ok) or self.state.get('is_processing') or bool(self.state.get('api_probe_job'))):
-                    sondas = montar_sondas(espec, self.state.get('api_base_url'))
-                    if self._api_modo_execucao() == "navegador":
-                        self.state.set('api_probe_job', {"run_id": str(uuid.uuid4()), "sondas": sondas,
-                                                         "casos": [{k: s[k] for k in ("id", "nome", "metodo", "url", "headers", "body", "extrair")} for s in sondas],
-                                                         "variaveis": {}, "timeout_s": 20})
-                    else:
-                        self._api_concluir_reconhecimento(sondas, self._api_sondar_servidor(sondas))
-                    st.rerun()
+            if st.button("🔎 Reconhecer a API", key="azure_blue_btn_api_probe", width="stretch",
+                         disabled=(not base_ok) or self.state.get('is_processing') or bool(self.state.get('api_probe_job'))):
+                sondas = montar_sondas(espec, self.state.get('api_base_url'))
+                if self._api_modo_execucao() == "navegador":
+                    self.state.set('api_probe_job', {"run_id": str(uuid.uuid4()), "sondas": sondas,
+                                                     "casos": [{k: s[k] for k in ("id", "nome", "metodo", "url", "headers", "body", "extrair")} for s in sondas],
+                                                     "variaveis": {}, "timeout_s": 20})
+                else:
+                    self._api_concluir_reconhecimento(sondas, self._api_sondar_servidor(sondas))
+                st.rerun()
         with c2:
             if not base_ok:
                 st.caption("Informe a Base URL (acima) pra habilitar.")
@@ -510,9 +506,8 @@ class ApiTestsPageMixin:
             area_paths = st.multiselect("Area Path(s) (vazio = projeto inteiro)", options=area_path_options,
                                         disabled=self.state.get('is_processing'), key="apiw_wi_area_paths")
         with col_btn:
-            with st.container(key="azure_blue_btn_api_fetch_wi"):
-                st.button("🔄 Buscar Work Items do Board", disabled=self.state.get('is_processing'),
-                          key="btn_api_fetch_wi", on_click=self.trigger_action, args=("api_fetch_wi",), width="stretch")
+            st.button("🔄 Buscar Work Items do Board", disabled=self.state.get('is_processing'),
+                      key="azure_blue_btn_api_fetch_wi", on_click=self.trigger_action, args=("api_fetch_wi",), width="stretch")
         if self.state.get('current_action') == 'api_fetch_wi' and not self.state.get('show_interrupt_modal'):
             try:
                 paths = area_paths or [ado_project]
@@ -967,7 +962,7 @@ class ApiTestsPageMixin:
             if not v['secreto'] and v['nome'] in usados and v['nome'] not in extraidos and not (v.get('valor') or '').strip()
         ]
         if normais_vazias:
-            erros.append("Variáveis sem valor: " + ", ".join(normais_vazias) + " (preencha a coluna Valor na etapa Definição).")
+            erros.append("Variáveis sem valor: " + ", ".join(normais_vazias) + " — volte à etapa 1. Definição, seção 🔤 Variáveis, e preencha a coluna Valor (a IA declarou essas variáveis; os valores são seus).")
         # Variável usada por algum caso mas que não existe na tabela nem é extraída
         conhecidas = {v['nome'] for v in (self.state.get('api_variaveis') or [])} | extraidos | {'base_url'}
         desconhecidas = sorted(usados - conhecidas)
@@ -992,13 +987,12 @@ class ApiTestsPageMixin:
             st.caption("🖥️ As chamadas saem **do servidor do app** — configuração definida pelo administrador.")
 
         job = self.state.get('api_browser_job')
-        with st.container(key="azure_blue_btn_api_run"):
-            if st.button("▶️ Executar testes", key="btn_api_run", disabled=bool(erros) or bool(job), width="stretch"):
-                if modo == "navegador":
-                    self._api_iniciar_execucao_navegador()
-                else:
-                    self._api_executar()
-                st.rerun()
+        if st.button("▶️ Executar testes", key="azure_blue_btn_api_run", disabled=bool(erros) or bool(job), width="stretch"):
+            if modo == "navegador":
+                self._api_iniciar_execucao_navegador()
+            else:
+                self._api_executar()
+            st.rerun()
 
         if job:
             self._api_render_execucao_navegador(job)
@@ -1114,10 +1108,9 @@ class ApiTestsPageMixin:
             "Observações / divergências / próximos passos (entram no relatório)",
             value=self.state.get('api_observacoes') or '', height=120, key="apiw_obs"))
 
-        with st.container(key="azure_blue_btn_api_gen"):
-            if st.button("📝 Gerar relatórios (.md + .pdf + .zip)", key="btn_api_gen", width="stretch"):
-                self._api_gerar_relatorios()
-                st.rerun()
+        if st.button("📝 Gerar relatórios (.md + .pdf + .zip)", key="azure_blue_btn_api_gen", width="stretch"):
+            self._api_gerar_relatorios()
+            st.rerun()
 
         if self.state.get('api_md'):
             st.success("Relatórios gerados. Senhas, tokens e headers sensíveis saem mascarados.")
