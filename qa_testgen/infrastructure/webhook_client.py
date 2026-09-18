@@ -35,7 +35,7 @@ class WebhookClient:
                 raise requests.HTTPError(f"{error} — detalhe do servidor: {detalhe}", response=response) from None
             raise
 
-    # Chaves que os 10 workflows do n8n usam pra devolver o resultado de
+    # Chaves que os workflows de IA do n8n usam pra devolver o resultado de
     # verdade quando dá certo — se o JSON tem "error" mas NENHUMA dessas,
     # é o formato de erro comum a todos eles ({"error": "Todos os
     # provedores de IA falharam...", "detalhe": ...}), não uma resposta
@@ -66,7 +66,7 @@ class WebhookClient:
             raw = raw.replace("```", "").strip()
         data = json.loads(raw)
         if isinstance(data, dict) and "error" in data and not any(k in data for k in self._CHAVES_DE_SUCESSO):
-            # Formato usado pelos 10 workflows quando TODOS os provedores de
+            # Formato usado pelos workflows de IA quando TODOS os provedores de
             # IA falham (Respond to Webhook1) — mostra esse motivo real em
             # vez de deixar cair no erro genérico de "chave obrigatória não
             # encontrada" de _extract_required_list.

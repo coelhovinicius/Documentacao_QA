@@ -84,7 +84,7 @@ A aplicação é usada publicamente via navegador, protegida por login.
 
 ### 4.2 Workflows existentes
 
-O app depende de **11 workflows** publicados e **ativos** no n8n:
+O app depende de **12 workflows** publicados e **ativos** no n8n:
 
 | Workflow | Endpoint (webhook) | Função |
 |---|---|---|
@@ -238,7 +238,7 @@ projeto/
 │   │   ├── models/api_test.py          # modelos do módulo Testes de API (caso, asserção, resultado)
 │   │   └── validators/                 # validação de campos obrigatórios
 │   ├── infrastructure/
-│   │   ├── webhook_client.py           # chamadas aos 11 webhooks do n8n
+│   │   ├── webhook_client.py           # chamadas aos 12 webhooks do n8n
 │   │   ├── azure_devops_client.py      # cliente da API do Azure DevOps
 │   │   ├── access_control_client.py    # controle de acesso/logs/sessões (n8n)
 │   │   ├── csv_formatter.py            # exportação CSV (Azure DevOps import)
@@ -261,7 +261,7 @@ projeto/
 ## 8. Configuração (`secrets.toml`)
 
 ```toml
-# --- n8n (11 workflows) ---
+# --- n8n (12 workflows) ---
 N8N_WEBHOOK_URL_ANALYSIS = "http://seu-n8n/webhook/qa-testgen-analysis"
 N8N_WEBHOOK_URL_MATRIX = "http://seu-n8n/webhook/qa-testgen-matrix"
 N8N_WEBHOOK_URL_GENERATION = "http://seu-n8n/webhook/qa-testgen-generation"
@@ -328,7 +328,8 @@ Não existe mais `cookie_secret` — a sessão não usa assinatura local, valida
 - Disco do Streamlit Cloud é efêmero: evidências existem para download ou para o Documentos Armazenados (Turso).
 - WAF do HML (CloudFront) bloqueia IPs de provedores de nuvem (testado: Streamlit Cloud/AWS e n8n/Oracle SP recebem 403 "Request blocked"; IP residencial passa). Por isso o modo Navegador é o padrão; exige CORS na API (o HML já responde `Access-Control-Allow-Origin: *`).
 - `AppSettingsStore` (document_store.py): tabela chave/valor `app_config` no Turso para configurações globais; alteradas só pelo dono em Administração → Configurações.
-- Testes unitários em `tests/test_api_tests_module.py` (importador, runner com servidor HTTP local, mascaramento/zip).
+- Testes unitários em `tests/test_api_tests_module.py` (importador, runner com servidor HTTP local, avaliação de respostas externas, reconhecimento da API, mascaramento/zip).
+- Prompt do `Doc_QA_ApiTest_Generation` propositalmente curto (~3,3k caracteres, máx. 10 casos, `body` como objeto JSON): a versão longa estourava os limites por requisição/minuto dos provedores gratuitos (Gemini/OpenAI/Mistral 429, Groq truncando a saída). O nó de erro do workflow devolve o erro bruto de cada provedor no 502.
 
 **Próximas fases (não implementadas):** vínculo dos casos a Test Cases do Azure DevOps (existentes ou novos, com Projeto/Area Path/Tags/Atribuído a/Plano/Suíte) e registro de Test Runs com evidência anexada; geração determinística a partir de Swagger/OpenAPI.
 

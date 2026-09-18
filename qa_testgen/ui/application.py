@@ -10056,8 +10056,9 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "Descrição), tem modo de criar **vários filhos de uma vez** sob um pai (quebrar "
             "uma User Story em Tasks), e dá pra criar tag nova na hora\n"
             "- **🔌 Testes de API**: executa testes de API direto do app, em Python (sem Node/Newman). "
-            "Os casos podem ser gerados por IA a partir da User Story/Work Item (você cola a especificação e "
-            "informa a Base URL; segredos nunca vão pra IA), vir de uma collection do Postman (v2.1, com "
+            "Os casos podem ser gerados por IA a partir do(s) Work Item(s) do Azure DevOps (ou de texto colado) — "
+            "o botão Reconhecer a API descobre antes as rotas reais e o formato de erro, e segredos nunca vão "
+            "pra IA —, vir de uma collection do Postman (v2.1, com "
             "environment opcional — os `pm.test` mais comuns viram asserções automaticamente), de uma "
             "definição salva pelo próprio módulo, "
             "ou são criados na tela. Variáveis `{{nome}}`, segredos só em sessão (mascarados em toda "
@@ -10232,7 +10233,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             {node(20, 165, 200, "📊 Relatório de Testes", "Status real do board")}
             {node(240, 165, 200, "🐛 Criar Bug", "Com evidências em imagem")}
             {node(20, 240, 200, "🧱 Criar Work Item", "Qualquer tipo, campos dinâmicos")}
-            {node(240, 240, 200, "🔌 Testes de API", "Postman → execução → evidências")}
+            {node(240, 240, 200, "🔌 Testes de API", "IA/Postman → execução → evidências")}
             {node(130, 315, 200, "🛡️ Administração", "Permissões e Logs")}
         </svg>
         </div>

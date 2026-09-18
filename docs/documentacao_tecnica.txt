@@ -191,13 +191,19 @@ O app funciona em 7 etapas, uma de cada vez:
   pra anexar imagens como evidência.
 
   Também na barra lateral existe "Testes de API" (pra quem tem
-  permissão): você importa uma collection do Postman (ou monta os
-  casos na própria tela), o app chama a API de verdade, confere
-  status e campos da resposta e gera as evidências prontas —
-  relatório em .md e .pdf no padrão do app, e um .zip com uma
-  pasta por caso (o que foi enviado, o que voltou, e o resultado
-  de cada regra). Senhas e tokens saem mascarados. Nessa versão
-  isso ainda não é enviado pro Azure DevOps.
+  permissão): você escolhe o Work Item do Azure DevOps (ou cola a
+  descrição), clica em "Reconhecer a API" (o app descobre sozinho
+  as rotas reais e o formato das respostas) e em "Gerar casos com
+  IA" — a bateria de testes aparece pronta pra revisar. Também dá
+  pra importar uma collection do Postman ou montar os casos na
+  tela. Na execução, as chamadas saem do navegador de quem está
+  usando (o mesmo IP do Postman — por isso passam pelo bloqueio do
+  ambiente de homologação); o app confere status e campos da
+  resposta e gera as evidências prontas — relatório em .md e .pdf
+  no padrão do app, e um .zip com uma pasta por caso (o que foi
+  enviado, o que voltou, e o resultado de cada regra). Senhas e
+  tokens saem mascarados. Nessa versão isso ainda não é enviado
+  pro Azure DevOps.
 
 
 8. COMO FUNCIONA A ÁREA DE ADMINISTRAÇÃO?
