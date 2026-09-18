@@ -50,6 +50,7 @@ API_TESTS_STATE_DEFAULTS = {
     'api_pdf': None,
     'api_zip': None,
     'api_ia_especificacao': '',
+    'api_ia_ultimo_erro': None,
     'api_ia_fonte': '🎯 Work Item(s) do Azure DevOps',
     'api_wi_board_items': [],    # Work Items encontrados no board (pra escolher)
     'api_work_items': [],        # [{id, title, type}] escolhidos — também servem pra Fase 2 (vínculo)
@@ -406,7 +407,17 @@ class ApiTestsPageMixin:
         st.button("🤖 Gerar casos com IA", key="azure_blue_btn_api_gen_ia", width="stretch",
                   disabled=(not pronto) or self.state.get('is_processing'),
                   on_click=self.trigger_action, args=("api_generate_ai",))
+        erro_ia = self.state.get('api_ia_ultimo_erro')
+        if erro_ia:
+            amigavel = "limite de uso dos provedores de IA (cota por minuto/dia)" if any(t in erro_ia.lower() for t in ("too many", "rate limit", "429", "quota")) else "resposta fora do formato esperado"
+            st.error(
+                f"❌ A última geração falhou — {amigavel}. Espere 1–2 minutos e clique de novo em **Gerar casos com IA** "
+                "(a especificação e as observações continuam preenchidas)."
+            )
+            with st.expander("Detalhe técnico do erro (por provedor)"):
+                st.code(erro_ia, language="text")
         if self.state.get('current_action') == 'api_generate_ai' and not self.state.get('show_interrupt_modal'):
+            self.state.set('api_ia_ultimo_erro', None)
             # Limpa a ação antes da chamada (que pode levar 1 min): se a pessoa
             # clicar de novo e o Streamlit reiniciar o script, não dispara outra
             # chamada à IA por cima desta.
@@ -425,6 +436,7 @@ class ApiTestsPageMixin:
                     )
                 self._api_aplicar_geracao_ia(resp, substituir)
             except Exception as error:
+                self.state.set('api_ia_ultimo_erro', str(error))
                 self._flash_error(f"Não foi possível gerar os casos com IA: {error}")
             self.state.set('is_processing', False)
             st.rerun()
@@ -782,7 +794,7 @@ class ApiTestsPageMixin:
         casos = self.state.get('api_casos') or []
         st.markdown(f"##### 🧪 Casos de teste ({len(casos)})")
         if not casos:
-            st.info("Nenhum caso ainda. Importe uma collection do Postman ou adicione um caso manualmente.")
+            st.info("Nenhum caso ainda. Gere com IA (acima), importe uma collection do Postman ou adicione um caso manualmente.")
             return
 
         for idx, caso in enumerate(casos):
