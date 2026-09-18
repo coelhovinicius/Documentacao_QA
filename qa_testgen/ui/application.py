@@ -250,7 +250,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
         lista velha, causando "None - int" (TypeError) na próxima geração
         depois de uma tentativa interrompida no meio.
         """
-        for suffix in ('_lotes_pendentes', '_acumulado', '_erros', '_total', '_proxima_liberacao', '_tentativas_lote_atual'):
+        for suffix in ('_lotes_pendentes', '_acumulado', '_erros', '_total', '_proxima_liberacao', '_tentativas_lote_atual', '_motivo_espera'):
             self.state.delete(f'_{state_prefix}{suffix}')
         self.trigger_action(action_name)
 
@@ -1811,24 +1811,28 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
             lotes.append("\n\n".join(lote_atual))
         return lotes
 
-    # Intervalo mínimo entre o FIM de um lote e o INÍCIO do próximo, na
-    # geração de Matriz/Casos/Planos — dá tempo da cota por minuto (TPM) dos
-    # provedores de IA no n8n se recuperar entre uma chamada e outra.
-    # Motivo de existir: erro real capturado num lote (Groq, modelo
-    # openai/gpt-oss-20b): "Limit 8000, Used 2331, Requested 6285" — ou seja,
-    # UM ÚNICO lote já pede ~6285 tokens, quase 80% do limite de 8000/min
-    # inteiro. Não é "a soma de vários lotes estoura o limite" — é que um
-    # lote sozinho já deixa pouquíssima folga pro próximo dentro da MESMA
-    # janela de 60s. Por isso a espera aqui é alinhada à janela real do
-    # rate limit (60s), não um valor arbitrário menor.
-    _ESPERA_ENTRE_LOTES_SEGUNDOS = 62
+    # Intervalo entre o FIM de um lote que deu certo e o INÍCIO do próximo,
+    # na geração de Matriz/Casos/Planos. Curto de propósito: o n8n tem seis
+    # provedores em fallback, então na maioria das vezes o lote seguinte
+    # passa sem esperar a cota por minuto (TPM) de um provedor específico
+    # se recuperar — e esperar 1 minuto entre TODOS os lotes deixava a
+    # geração lenta demais quando não havia erro nenhum.
+    _ESPERA_ENTRE_LOTES_SEGUNDOS = 5
+
+    # Espera depois de um lote que FALHOU (antes de tentar o mesmo de novo
+    # e antes do próximo). Alinhada à janela real do rate limit (60s):
+    # erro real capturado num lote (Groq, modelo openai/gpt-oss-20b):
+    # "Limit 8000, Used 2331, Requested 6285" — UM ÚNICO lote já pede
+    # ~6285 tokens, quase 80% do limite de 8000/min. Se um lote falhou, é
+    # sinal de que a cota já estourou; só a espera cheia resolve.
+    _ESPERA_APOS_ERRO_SEGUNDOS = 62
 
     # Quantas vezes tenta de novo o MESMO lote antes de desistir e marcar
     # como falha de verdade. Motivo de existir: confirmado repetidas vezes
     # (inclusive com a mensagem exata "OpenAI: Rate limit reached" vinda do
     # próprio n8n) que essas falhas são rate limit passageiro dos
     # provedores de IA — na prática, tentar de novo depois da mesma espera
-    # de _ESPERA_ENTRE_LOTES_SEGUNDOS resolve na maioria das vezes. Sem
+    # de _ESPERA_APOS_ERRO_SEGUNDOS resolve na maioria das vezes. Sem
     # isso, o app desistia na PRIMEIRA falha e jogava o problema de volta
     # pra pessoa clicar "Gerar" de novo à mão.
     _MAX_TENTATIVAS_POR_LOTE = 3
@@ -1851,17 +1855,20 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
         resetando qualquer relógio de conexão que exista no meio do
         caminho, fora do meu controle via código Python.
 
-        Entre um lote e outro (a partir do 2º) também é respeitado
-        `_ESPERA_ENTRE_LOTES_SEGUNDOS` — mas SEM travar a execução inteira
-        num único `time.sleep(20)`: em vez disso, cada execução dorme só uns
-        2s por vez e dispara rerun() de novo até o relógio liberar. Isso
-        preserva o motivo do parágrafo acima (nenhuma execução individual
-        fica bloqueada por muito tempo) enquanto ainda espaça as chamadas de
-        verdade pro n8n.
+        Entre um lote e outro (a partir do 2º) também é respeitada uma
+        espera — `_ESPERA_ENTRE_LOTES_SEGUNDOS` (curta) depois de um lote
+        que deu certo, `_ESPERA_APOS_ERRO_SEGUNDOS` (janela cheia do rate
+        limit) depois de um lote que falhou — mas SEM travar a execução
+        inteira num único `time.sleep()`: em vez disso, cada execução dorme
+        só uns 2s por vez e dispara rerun() de novo até o relógio liberar.
+        Isso preserva o motivo do parágrafo acima (nenhuma execução
+        individual fica bloqueada por muito tempo) enquanto ainda espaça as
+        chamadas de verdade pro n8n.
 
         Um lote que FALHA tenta de novo automaticamente (até
-        `_MAX_TENTATIVAS_POR_LOTE` vezes, com a mesma espera entre
-        tentativas) antes de desistir e marcar como erro de verdade —
+        `_MAX_TENTATIVAS_POR_LOTE` vezes, esperando
+        `_ESPERA_APOS_ERRO_SEGUNDOS` entre tentativas) antes de desistir e
+        marcar como erro de verdade —
         confirmado repetidas vezes que essas falhas são rate limit
         passageiro dos provedores de IA no n8n, então esperar e tentar de
         novo resolve na maioria dos casos, sem precisar que a pessoa clique
@@ -1882,6 +1889,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
         key_total = f"_{state_prefix}_total"
         key_proxima_liberacao = f"_{state_prefix}_proxima_liberacao"
         key_tentativas = f"_{state_prefix}_tentativas_lote_atual"
+        key_motivo_espera = f"_{state_prefix}_motivo_espera"   # 'erro' quando a espera é a longa, pós-falha
 
         if self.state.get(key_pendentes) is None:
             lotes = montar_lotes_fn()
@@ -1904,20 +1912,23 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
             if proxima_liberacao:
                 faltam = proxima_liberacao - time.time()
                 if faltam > 0:
+                    motivo = ("(o lote anterior falhou — dando tempo da cota da IA no n8n se recuperar)"
+                              if self.state.get(key_motivo_espera) == 'erro' else "(intervalo curto entre lotes)")
                     status.update(
-                        label=f"Aguardando {int(faltam) + 1}s antes do lote {concluidos + 1} de {total} "
-                        "(dá tempo da cota da IA no n8n se recuperar)...",
+                        label=f"Aguardando {int(faltam) + 1}s antes do lote {concluidos + 1} de {total} {motivo}...",
                         state="complete",  # ver nota abaixo antes do 2º st.rerun() desta função
                     )
                     time.sleep(min(faltam, 2))
                     st.rerun()
                     return None
                 self.state.set(key_proxima_liberacao, None)
+                self.state.set(key_motivo_espera, None)
 
             if varios:
                 status.update(label=f"Processando lote {concluidos + 1} de {total}...")
             lote_atual = pendentes[0]
             itens, erro = processar_um_lote_fn(lote_atual)
+            deu_erro = bool(erro)
             if erro:
                 tentativas = (self.state.get(key_tentativas) or 0) + 1
                 if tentativas < self._MAX_TENTATIVAS_POR_LOTE:
@@ -1926,9 +1937,11 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
                     self.state.set(key_tentativas, tentativas)
                     status.write(
                         f"⚠️ Lote {concluidos + 1} de {total} falhou (tentativa {tentativas}/"
-                        f"{self._MAX_TENTATIVAS_POR_LOTE}): {erro} — tentando de novo..."
+                        f"{self._MAX_TENTATIVAS_POR_LOTE}): {erro} — tentando de novo em "
+                        f"{self._ESPERA_APOS_ERRO_SEGUNDOS}s..."
                     )
-                    self.state.set(key_proxima_liberacao, time.time() + self._ESPERA_ENTRE_LOTES_SEGUNDOS)
+                    self.state.set(key_proxima_liberacao, time.time() + self._ESPERA_APOS_ERRO_SEGUNDOS)
+                    self.state.set(key_motivo_espera, 'erro')
                     status.update(state="complete")
                     st.rerun()
                     return None
@@ -1950,7 +1963,12 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
             self.state.set(key_erros, erros)
 
             if novos_pendentes:
-                self.state.set(key_proxima_liberacao, time.time() + self._ESPERA_ENTRE_LOTES_SEGUNDOS)
+                # Deu certo → intervalo curto. Falhou (mesmo esgotando as
+                # tentativas) → espera cheia antes do próximo, porque a cota
+                # do provedor provavelmente ainda está estourada.
+                espera = self._ESPERA_APOS_ERRO_SEGUNDOS if deu_erro else self._ESPERA_ENTRE_LOTES_SEGUNDOS
+                self.state.set(key_proxima_liberacao, time.time() + espera)
+                self.state.set(key_motivo_espera, 'erro' if deu_erro else None)
                 # state="complete" aqui (e no rerun da espera acima) por um
                 # motivo puramente cosmético do Streamlit: st.rerun() levanta
                 # RerunException, que atravessa o "with st.status(...)" do
@@ -1972,6 +1990,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
         self.state.set(key_total, None)
         self.state.set(key_proxima_liberacao, None)
         self.state.set(key_tentativas, None)
+        self.state.set(key_motivo_espera, None)
         return acumulado, erros
 
     _TAMANHO_LOTE_PLANOS = 10
