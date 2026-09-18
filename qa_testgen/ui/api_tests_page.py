@@ -194,16 +194,39 @@ class ApiTestsPageMixin:
                         f"{rotulo}</div>",
                         unsafe_allow_html=True,
                     )
-                elif st.button(rotulo, key=f"api_nav_{etapa[0]}", width="stretch"):
-                    self.state.set('api_etapa', etapa)
-                    st.rerun()
+                else:
+                    pend = self._api_pendencias_para(etapa)
+                    if st.button(rotulo, key=f"api_nav_{etapa[0]}", width="stretch", disabled=bool(pend),
+                                 help=("Antes de ir para esta etapa: " + " · ".join(pend)) if pend else None):
+                        self.state.set('api_etapa', etapa)
+                        st.rerun()
+
+    def _api_pendencias_para(self, etapa: str) -> list:
+        """
+        O que ainda falta pra poder entrar em `etapa` — em linguagem de
+        usuário. Lista vazia = pode ir.
+        """
+        if etapa == _ETAPAS[1]:
+            pend = list(self._api_validar_definicao())
+            if self.state.get('api_browser_job'):
+                pend.append("Há uma execução em andamento no navegador — aguarde terminar ou cancele.")
+            return pend
+        if etapa == _ETAPAS[2]:
+            pend = []
+            if not self.state.get('api_resultados'):
+                pend.append("Execute os testes na etapa 2. Execução (as evidências são geradas a partir do resultado).")
+            return pend
+        return []
 
     def _api_tem_relatorio_nao_baixado(self) -> bool:
         return bool(self.state.get('api_md')) and not self.state.get('api_baixado')
 
     def _api_botao_proxima_etapa(self, destino: str, rotulo: str, key: str):
         st.divider()
-        if st.button(rotulo, key=key, type="primary", width="stretch"):
+        pend = self._api_pendencias_para(destino)
+        if pend:
+            st.warning("**Antes de seguir para " + destino + ", falta:**\n\n" + "\n".join(f"- {p}" for p in pend))
+        if st.button(rotulo, key=key, type="primary", width="stretch", disabled=bool(pend)):
             self.state.set('api_etapa', destino)
             st.rerun()
 
@@ -955,17 +978,17 @@ class ApiTestsPageMixin:
     def _api_validar_definicao(self) -> list:
         erros = []
         if not (self.state.get('api_projeto') or '').strip():
-            erros.append("Informe o nome do projeto / execução.")
+            erros.append("Dê um nome ao projeto / execução (campo no topo da etapa 1).")
         if not (self.state.get('api_base_url') or '').startswith(('http://', 'https://')):
-            erros.append("Informe uma Base URL válida (http:// ou https://).")
+            erros.append("Informe a Base URL da API começando com http:// ou https:// (campo no topo da etapa 1).")
         casos = [c for c in (self.state.get('api_casos') or []) if c.get('habilitado', True)]
         if not casos:
-            erros.append("Nenhum caso habilitado para executar.")
+            erros.append("Não há nenhum caso de teste habilitado — gere com IA, importe do Postman ou crie manualmente (seção Casos de teste).")
         for c in casos:
             if not (c.get('url') or '').strip():
-                erros.append(f"Caso '{c.get('nome')}': URL vazia.")
+                erros.append(f"O caso '{c.get('nome')}' está sem URL — preencha ou desabilite o caso.")
             if not c.get('assercoes'):
-                erros.append(f"Caso '{c.get('nome')}': sem asserções.")
+                erros.append(f"O caso '{c.get('nome')}' não tem nenhuma asserção — adicione ao menos o status esperado, ou desabilite o caso.")
         # Só cobra segredo que algum caso habilitado realmente usa e que
         # nenhum caso produz por extração (ex.: auth_token vem do login).
         usados, extraidos = self._api_uso_de_variaveis()
@@ -975,7 +998,7 @@ class ApiTestsPageMixin:
             and not (self.state.get('api_segredos') or {}).get(v['nome'])
         ]
         if secretas_vazias:
-            erros.append("Variáveis secretas sem valor: " + ", ".join(secretas_vazias) + " (preencha na etapa Definição).")
+            erros.append("Senhas/segredos sem valor: " + ", ".join(secretas_vazias) + " — preencha os campos 🔒 na seção Variáveis e clique em Salvar variáveis.")
         # Variáveis normais usadas por casos habilitados e sem valor: o request
         # sairia com "" no lugar (ex.: "email": "") e todo caso falharia.
         normais_vazias = [
@@ -983,12 +1006,12 @@ class ApiTestsPageMixin:
             if not v['secreto'] and v['nome'] in usados and v['nome'] not in extraidos and not (v.get('valor') or '').strip()
         ]
         if normais_vazias:
-            erros.append("Variáveis sem valor: " + ", ".join(normais_vazias) + " — volte à etapa 1. Definição, seção 🔤 Variáveis, e preencha a coluna Valor (a IA declarou essas variáveis; os valores são seus).")
+            erros.append("Variáveis sem valor: " + ", ".join(normais_vazias) + " — preencha a coluna Valor na seção 🔤 Variáveis e clique em Salvar variáveis.")
         # Variável usada por algum caso mas que não existe na tabela nem é extraída
         conhecidas = {v['nome'] for v in (self.state.get('api_variaveis') or [])} | extraidos | {'base_url'}
         desconhecidas = sorted(usados - conhecidas)
         if desconhecidas:
-            erros.append("Variáveis usadas nos casos mas não definidas: " + ", ".join(desconhecidas) + ".")
+            erros.append("Os casos usam variáveis que não existem na tabela: " + ", ".join(desconhecidas) + " — corrija o nome no caso ou crie a variável.")
         return erros
 
     def _api_render_execucao(self):
