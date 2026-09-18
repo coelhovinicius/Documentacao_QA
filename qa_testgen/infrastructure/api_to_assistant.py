@@ -4,7 +4,6 @@ formato do assistente de QA — Matriz de Cobertura, Casos de Teste e Planos
 — pra que ela siga pelo Passo 7 como qualquer outra documentação (vincular
 a Work Items, suítes estáticas, reconciliar).
 """
-import json
 import re
 from datetime import datetime
 from urllib.parse import urlparse
@@ -83,7 +82,6 @@ def converter_bateria(projeto: str, ambiente: str, base_url: str, casos: list, r
     sigla = _sigla(ambiente)
     secretas = {v["nome"] for v in (variaveis or []) if v.get("secreto")}
     valores_publicos = {v["nome"]: v.get("valor") for v in (variaveis or []) if v.get("nome") and not v.get("secreto")}
-    nomes_vars = sorted({v["nome"] for v in (variaveis or []) if v.get("nome")})
     res_por_id = {r.case_id: r for r in (resultados or [])}
     wi_id = str(work_items[0]["id"]) if work_items else ""
     agora = datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M")

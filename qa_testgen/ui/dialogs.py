@@ -479,6 +479,15 @@ def aviso_pat_compartilhado_modal(marcar_nao_mostrar_fn, tem_testes_api: bool = 
             "**Onde:** botão **🔌 Testes de API** na barra lateral — se ele não aparecer pra você, "
             "peça ao administrador a permissão *Testes de API*."
         )
+    st.markdown("#### 🆕 Também novo")
+    st.markdown(
+        "- **Testes de API → Azure DevOps**: no fim da etapa Evidências, *Levar para o assistente* transforma a "
+        "bateria em Matriz, Casos e Plano; você segue pelo Passo 7 como sempre e, depois, registra a execução "
+        "como **Test Run** (Passed/Failed por caso, com o PDF anexado).\n"
+        "- **Criar Work Item → Fila / planilha**: crie vários Work Items de uma vez — pelo botão *Adicionar à fila* "
+        "do formulário ou subindo uma planilha (o modelo é baixado na própria tela, já com os tipos, Area Paths e "
+        "pessoas do projeto). O app valida linha a linha antes de enviar."
+    )
     st.divider()
     st.markdown("#### 🔑 PAT compartilhado do Azure DevOps")
     st.markdown(

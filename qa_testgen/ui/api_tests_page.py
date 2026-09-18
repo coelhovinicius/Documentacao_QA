@@ -1274,6 +1274,7 @@ class ApiTestsPageMixin:
             "quando": datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M"),
         })
         self.state.set('api_baixado', True)   # levou pro assistente: não é "perda" ao sair da tela
+        self.state.set('api_test_run_registrado', None)
         # entra no assistente já no Passo 5 (Planos), com 1–4 marcados como feitos
         self.state.set('completed_steps', sorted(set(self.state.get('completed_steps') or []) | {1, 2, 3, 4}))
         self.state.set('max_step', max(self.state.get('max_step') or 1, 5))

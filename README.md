@@ -148,6 +148,7 @@ qa_testgen/
 ├── ui/
 │   ├── application.py              # UserInterface — toda a lógica de tela (7 passos + sidebar)
 │   ├── api_tests_page.py           # página Testes de API (mixin de UserInterface)
+│   ├── work_item_batch_page.py     # Criar Work Item — modo Fila / planilha (mixin)
 │   ├── auth.py                     # login, sessão (ID opaco), permissões, logout, Administração
 │   └── dialogs.py                  # modais de confirmação
 ├── domain/
@@ -164,7 +165,10 @@ qa_testgen/
 │   ├── manual_pdf.py               # PDF do Manual de Testes (UAT)
 │   ├── postman_importer.py         # collection/environment Postman -> casos do módulo Testes de API
 │   ├── api_test_runner.py          # executor dos Testes de API (requests, asserções, variáveis)
-│   └── api_evidence.py             # evidências dos Testes de API (mascaramento, .md, .zip)
+│   ├── api_evidence.py             # evidências dos Testes de API (mascaramento, .md, .zip)
+│   ├── api_discovery.py            # "Reconhecer a API" (sondagens sem credencial → Observações)
+│   ├── api_to_assistant.py         # bateria de API → Matriz/Casos/Planos do assistente
+│   └── work_item_batch.py          # modelo de planilha, leitura e validação de Work Items em lote
 ├── assets/                         # Guia_Usuario.pdf, Guia_Administrador.pdf (baixáveis em "Sobre o App")
 └── application/session.py          # SessionState (defaults do st.session_state)
 ```

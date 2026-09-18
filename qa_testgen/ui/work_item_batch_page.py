@@ -7,12 +7,10 @@ planilha gerado a partir do projeto e resultado por item.
 Mixin de UserInterface (mesmo padrão de ApiTestsPageMixin).
 """
 import uuid
-from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
-from qa_testgen.config import TZ_BR
 from qa_testgen.infrastructure import work_item_batch as wib
 from qa_testgen.infrastructure.azure_devops_client import AzureDevOpsClient
 

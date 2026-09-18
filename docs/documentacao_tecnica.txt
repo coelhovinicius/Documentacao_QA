@@ -202,8 +202,16 @@ O app funciona em 7 etapas, uma de cada vez:
   resposta e gera as evidências prontas — relatório em .md e .pdf
   no padrão do app, e um .zip com uma pasta por caso (o que foi
   enviado, o que voltou, e o resultado de cada regra). Senhas e
-  tokens saem mascarados. Nessa versão isso ainda não é enviado
-  pro Azure DevOps.
+  tokens saem mascarados. No fim, "Levar para o assistente"
+  transforma a bateria em Matriz, Casos e Plano — daí vai pro
+  Azure DevOps pelo Passo 7 como qualquer outra documentação, e
+  a execução pode ser registrada lá como Test Run (aprovado/
+  reprovado por caso, com o PDF anexado).
+
+  Em "Criar Work Item" também existe o modo "Fila / planilha":
+  dá pra juntar vários Work Items (pelo formulário ou por uma
+  planilha, com modelo baixado na própria tela) e enviar tudo de
+  uma vez, com validação linha a linha antes.
 
 
 8. COMO FUNCIONA A ÁREA DE ADMINISTRAÇÃO?

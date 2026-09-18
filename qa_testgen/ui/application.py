@@ -419,7 +419,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
     # pra anunciar — quem dispensou uma versão anterior volta a ver o modal
     # uma vez. O arquivo guarda {"dispensado": {usuario: versao}}; o formato
     # antigo ({"usuarios": [...]}) conta como "dispensou só a versão do PAT".
-    _NOTICE_VERSION = "2026-09-testes-api"
+    _NOTICE_VERSION = "2026-09-18-fila-testrun"
 
     @classmethod
     def _pat_notice_ja_dispensado(cls, username: str) -> bool:

@@ -2,7 +2,7 @@
 ## Documentação Técnica Completa
 
 **Projeto:** QA TestGen / QA Automation
-**Última atualização:** Julho de 2026
+**Última atualização:** Setembro de 2026
 
 ---
 
@@ -15,7 +15,8 @@ O **QA Automation – Azure DevOps** é uma aplicação web interna que usa Inte
 3. Permite revisão e edição manual de tudo antes de finalizar (CRUD completo em cada etapa)
 4. Exporta CSV e PDF prontos para uso
 5. Integra diretamente com o **Azure DevOps** via API — cria Test Cases, Test Plans, Requirement-based Suites, e vincula tudo automaticamente (com sugestão de vínculos via IA)
-6. Executa **testes de API** (módulo Testes de API): importa collections do Postman ou casos criados na tela, roda em Python puro e gera evidências (.md, .pdf, .zip) — sem depender do n8n nem do Azure DevOps
+6. Executa **testes de API** (módulo Testes de API): gera a bateria por IA a partir de Work Items (ou importa do Postman / cria na tela), roda pelo navegador do usuário ou pelo servidor, gera evidências (.md, .pdf, .zip) e, opcionalmente, leva tudo pro assistente e pro Azure DevOps (Test Cases + Test Run)
+7. Cria **Work Items em lote** (fila + planilha com modelo gerado do projeto)
 
 A aplicação é usada publicamente via navegador, protegida por login.
 
@@ -228,9 +229,12 @@ projeto/
 │   │   ├── constants.py                # cores, caminhos de logo, timezone
 │   │   └── settings.py                 # AppConfiguration (lê st.secrets)
 │   ├── ui/
-│   │   ├── application.py              # UI principal (fluxo de 7 passos)
-│   │   ├── auth.py                     # login/sessão
-│   │   └── dialogs.py                  # modais de confirmação
+│   │   ├── application.py              # UserInterface — 7 passos + sidebar + páginas
+│   │   ├── api_tests_page.py           # página Testes de API (mixin de UserInterface)
+│   │   ├── work_item_batch_page.py     # Criar Work Item — modo Fila / planilha (mixin)
+│   │   ├── components/api_browser_runner/index.html  # executor no navegador (WAF)
+│   │   ├── auth.py                     # login, sessão, Administração (inclui ⚙️ Configurações)
+│   │   └── dialogs.py                  # modais de confirmação e aviso de novidades
 │   ├── application/
 │   │   └── session.py                  # wrapper do st.session_state
 │   ├── domain/
@@ -248,7 +252,10 @@ projeto/
 │   │   ├── manual_pdf.py               # PDF do Manual de Testes (UAT)
 │   │   ├── postman_importer.py         # Postman v2.1 (collection/environment) -> casos de Testes de API
 │   │   ├── api_test_runner.py          # executor dos Testes de API (requests; variáveis; asserções)
-│   │   └── api_evidence.py             # evidências dos Testes de API (mascaramento, RELATORIO.md, .zip)
+│   │   ├── api_evidence.py             # evidências dos Testes de API (mascaramento, RELATORIO.md, .zip)
+│   │   ├── api_discovery.py            # "Reconhecer a API" (sondagens sem credencial -> Observações)
+│   │   ├── api_to_assistant.py         # bateria de API -> Matriz/Casos/Planos do assistente (+ resultados p/ Test Run)
+│   │   └── work_item_batch.py          # Work Items em lote: modelo XLSX/CSV, leitura, validação, ordem pai->filho
 │   └── (scripts auxiliares de teste/diagnóstico, fora do fluxo principal do app)
 └── docs/
     ├── documentacao_tecnica.md         # este documento
