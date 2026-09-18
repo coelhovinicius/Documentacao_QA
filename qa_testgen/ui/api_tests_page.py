@@ -425,8 +425,36 @@ class ApiTestsPageMixin:
 
     def _api_render_variaveis(self):
         st.markdown("##### 🔤 Variáveis (`{{nome}}` em URL, headers e body)")
-        st.caption("Marque **Secreto** para senhas/tokens: o valor é pedido abaixo, fica só nesta sessão e sai mascarado de toda evidência.")
         variaveis = self.state.get('api_variaveis') or []
+        origem = st.session_state.get('apiw_origem') or ''
+        if not variaveis:
+            # Quem chega aqui antes de ter casos não sabe se precisa digitar
+            # algo. Diz de onde as variáveis vão vir, conforme a origem escolhida.
+            if origem.startswith("🤖"):
+                st.info(
+                    "**Não precisa preencher nada aqui agora.** Ao clicar em **\"Gerar casos com IA\"** (acima), a IA "
+                    "cria as variáveis sozinha (ex.: `valid_email`, `valid_password`) e marca as senhas como secretas. "
+                    "Depois disso, volte aqui só pra informar os **valores**."
+                )
+            elif origem.startswith("📮"):
+                st.info(
+                    "**Não precisa preencher nada aqui agora.** As variáveis vêm da collection/environment do Postman ao "
+                    "clicar em **\"Importar\"**. Depois disso, volte aqui só pra informar os valores que estiverem vazios."
+                )
+            elif origem.startswith("🧩"):
+                st.info("**Não precisa preencher nada aqui agora.** As variáveis vêm junto da definição ao clicar em **\"Carregar definição\"** — só as senhas precisam ser digitadas de novo.")
+            else:
+                st.info(
+                    "Adicione aqui só o que você usar como `{{nome}}` nos casos (ex.: `valid_email`). "
+                    "`{{base_url}}` já existe (é o campo Base URL acima) — não precisa cadastrar."
+                )
+        else:
+            st.info(
+                "**O que fazer aqui:** preencha a coluna **Valor** das variáveis normais (ex.: `valid_email`) e os campos "
+                "🔒 de senha logo abaixo. Deixe em branco as marcadas como **opcional** — são preenchidas pelo próprio "
+                "teste (ex.: `auth_token`) ou usadas só por casos desabilitados."
+            )
+        st.caption("Marque **Secreto** para senhas/tokens: o valor é pedido abaixo, fica só nesta sessão e sai mascarado de toda evidência.")
         df = pd.DataFrame(variaveis or [{"nome": "", "valor": "", "secreto": False}], columns=["nome", "valor", "secreto"])
         df["valor"] = df.apply(lambda r: "" if r["secreto"] else r["valor"], axis=1)
         edit = st.data_editor(
