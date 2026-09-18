@@ -491,10 +491,21 @@ class ApiTestsPageMixin:
                 "teste (ex.: `auth_token`) ou usadas só por casos desabilitados."
             )
         st.caption("Marque **Secreto** para senhas/tokens: o valor é pedido abaixo, fica só nesta sessão e sai mascarado de toda evidência.")
+        # Só na origem "Criar manualmente" a pessoa define variáveis à mão.
+        # Nas outras (IA, Postman, definição) elas chegam prontas: a tabela
+        # não aceita linha nova e só a coluna Valor é editável — evita que
+        # alguém invente nome/segredo que nenhum caso usa.
+        manual = origem.startswith("✍️")
+        if not variaveis and not manual:
+            st.caption("A tabela aparece aqui assim que os casos forem gerados/importados.")
+            self.state.set('api_variaveis', [])
+            self.state.set('api_segredos', {})
+            return
         df = pd.DataFrame(variaveis or [{"nome": "", "valor": "", "secreto": False}], columns=["nome", "valor", "secreto"])
         df["valor"] = df.apply(lambda r: "" if r["secreto"] else r["valor"], axis=1)
         edit = st.data_editor(
-            df, num_rows="dynamic", width="stretch", hide_index=True, key="apiw_vars_editor",
+            df, num_rows="dynamic" if manual else "fixed", width="stretch", hide_index=True, key="apiw_vars_editor",
+            disabled=[] if manual else ["nome", "secreto"],
             column_config={
                 "nome": st.column_config.TextColumn("Nome", required=True),
                 "valor": st.column_config.TextColumn("Valor (vazio se secreto)"),
