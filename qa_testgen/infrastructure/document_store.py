@@ -179,3 +179,4 @@ class AppSettingsStore:
 
 # Chaves conhecidas de configuração global
 CONFIG_API_TESTS_MODO_EXECUCAO = "api_tests_modo_execucao"   # "navegador" | "servidor"
+CONFIG_API_ROTAS_PREFIXO = "api_rotas::"   # + host da Base URL -> JSON {"rotas": [{"metodo","caminho","origem","em"}]}

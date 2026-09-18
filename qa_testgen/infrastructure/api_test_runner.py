@@ -15,6 +15,7 @@ from typing import Callable, Optional
 import requests
 from requests.adapters import HTTPAdapter
 
+from qa_testgen.infrastructure.api_discovery import rota_nao_encontrada
 from qa_testgen.domain.models.api_test import (
     ApiAssertion, ApiAssertionResult, ApiCaseResult, ApiTestCase,
 )
@@ -229,6 +230,12 @@ class ApiTestRunner:
 
         for assercao in caso.assercoes:
             resultado.assercoes.append(self._avaliar(assercao, resposta, json_body, resultado.tempo_ms))
+        if rota_nao_encontrada(resposta.status_code, resultado.response_body):
+            # A API disse que a ROTA não existe: o problema é a definição do
+            # caso (rota presumida), não o comportamento da API — sai como
+            # Erro, com o motivo, em vez de "Reprovado" enganoso.
+            resultado.erro = (f"{aviso_vars}Rota inexistente: a API respondeu que {caso.metodo} {resultado.url_final} não existe "
+                              "(404 \"route could not be found\"). Confira o catálogo de rotas reais na etapa 1.")
         if not caso.assercoes:
             # Sem regra nenhuma o caso não prova nada — reprova de forma
             # explícita em vez de "passar" por omissão.

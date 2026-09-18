@@ -202,7 +202,12 @@ O app funciona em 7 etapas, uma de cada vez:
   resposta e gera as evidências prontas — relatório em .md e .pdf
   no padrão do app, e um .zip com uma pasta por caso (o que foi
   enviado, o que voltou, e o resultado de cada regra). Senhas e
-  tokens saem mascarados. No fim, "Levar para o assistente"
+  tokens saem mascarados. Antes de gerar com IA, o app monta um
+  "catálogo de rotas reais" da API (lendo o código do front, um
+  Swagger ou uma collection do Postman) e a IA só pode usar essas
+  rotas; caso com rota que não existe é desabilitado com aviso, e
+  um painel diz exatamente o que falta pra testar com precisão.
+  No fim, "Levar para o assistente"
   transforma a bateria em Matriz, Casos e Plano — daí vai pro
   Azure DevOps pelo Passo 7 como qualquer outra documentação, e
   a execução pode ser registrada lá como Test Run (aprovado/

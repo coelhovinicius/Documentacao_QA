@@ -18,6 +18,7 @@ import streamlit.components.v1 as components
 from qa_testgen.domain.models.api_test import (
     ASSERTION_TYPES, ASSERTION_LABELS, HTTP_METHODS, ApiTestCase,
 )
+from qa_testgen.infrastructure import api_discovery as disc
 from qa_testgen.infrastructure.api_discovery import montar_sondas, analisar as analisar_sondas
 from qa_testgen.infrastructure.api_evidence import ApiEvidenceBuilder
 from qa_testgen.infrastructure.api_to_assistant import converter_bateria, resultados_para_test_run
@@ -25,7 +26,7 @@ from qa_testgen.infrastructure.api_test_runner import ApiTestRunner
 from qa_testgen.config import TZ_BR
 from qa_testgen.infrastructure.document_processor import DocumentProcessor
 from qa_testgen.infrastructure.document_store import (
-    DocumentStore, DocumentStoreError, AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO,
+    DocumentStore, DocumentStoreError, AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO, CONFIG_API_ROTAS_PREFIXO,
 )
 from qa_testgen.infrastructure.pdf_report import PdfReportGenerator
 from qa_testgen.infrastructure.postman_importer import PostmanImporter, PostmanImportError
@@ -66,6 +67,9 @@ API_TESTS_STATE_DEFAULTS = {
     'api_browser_job': None,    # execução em andamento no navegador {run_id, casos, variaveis, timeout_s}
     'api_probe_job': None,      # reconhecimento da API em andamento (navegador)
     'api_reconhecimento': None, # último resultado do reconhecimento {observacoes, tabela, rotas_reais}
+    'api_catalogo': None,       # cache do catálogo de rotas reais da Base URL atual {host, rotas[], atualizado_em}
+    'api_verif_job': None,      # verificação das rotas dos casos em andamento (navegador)
+    'api_verificacao': None,    # último resultado da verificação {existem, inexistentes, sem_resposta}
     'show_new_api_run_modal': False,
     'show_leave_api_modal': False,
 }
@@ -135,6 +139,245 @@ class ApiTestsPageMixin:
 
     def _api_marcar_baixado(self):
         self.state.set('api_baixado', True)
+
+    # ------------------------------------------------------------------ catálogo de rotas reais
+    def _api_host(self) -> str:
+        base = (self.state.get('api_base_url') or '').strip()
+        return base.split('://', 1)[-1].split('/', 1)[0].lower() if base else ''
+
+    def _api_catalogo_store(self):
+        if not getattr(self.config, 'turso_database_url', ''):
+            return None
+        try:
+            store = AppSettingsStore(self.config.turso_database_url, self.config.turso_auth_token)
+            store.ensure_schema()
+            return store
+        except Exception:
+            return None
+
+    def _api_catalogo(self) -> list:
+        """Rotas reais conhecidas da Base URL atual — compartilhadas por todo mundo (Turso), com cache na sessão."""
+        host = self._api_host()
+        if not host:
+            return []
+        cache = self.state.get('api_catalogo')
+        if cache and cache.get('host') == host:
+            return cache.get('rotas') or []
+        rotas, quando = [], None
+        store = self._api_catalogo_store()
+        if store is not None:
+            try:
+                raw = store.get(CONFIG_API_ROTAS_PREFIXO + host)
+                if raw:
+                    dados = json.loads(raw)
+                    rotas, quando = dados.get('rotas') or [], dados.get('atualizado_em')
+            except Exception:
+                rotas = []
+        self.state.set('api_catalogo', {"host": host, "rotas": rotas, "atualizado_em": quando})
+        return rotas
+
+    def _api_catalogo_salvar(self, novas: list, origem: str) -> int:
+        """Junta (metodo, caminho) novas ao catálogo do host atual, persiste e devolve quantas entraram."""
+        host = self._api_host()
+        if not host:
+            return 0
+        atuais = list(self._api_catalogo())
+        vistos = {(r['metodo'], r['caminho']) for r in atuais}
+        agora = datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M")
+        n = 0
+        for metodo, caminho in novas:
+            par = (str(metodo).upper(), disc.normalizar_caminho(caminho))
+            if par in vistos or not par[1] or par[1] == '/':
+                continue
+            vistos.add(par)
+            atuais.append({"metodo": par[0], "caminho": par[1], "origem": origem, "em": agora})
+            n += 1
+        if n or not self.state.get('api_catalogo'):
+            self._api_catalogo_gravar(host, atuais, agora)
+        return n
+
+    def _api_catalogo_gravar(self, host: str, rotas: list, agora: str):
+        rotas = sorted(rotas, key=lambda r: (r['caminho'], r['metodo']))
+        self.state.set('api_catalogo', {"host": host, "rotas": rotas, "atualizado_em": agora})
+        store = self._api_catalogo_store()
+        if store is not None:
+            try:
+                store.set(CONFIG_API_ROTAS_PREFIXO + host, json.dumps({"rotas": rotas, "atualizado_em": agora}, ensure_ascii=False),
+                          st.session_state.get(SESSION_USER_KEY, ""))
+            except Exception as error:
+                self._flash_warning(f"Catálogo atualizado só nesta sessão (não foi possível gravar no banco: {error}).")
+
+    def _api_importar_catalogo_do_front(self) -> str:
+        """
+        Lê a página da Base URL, acha o(s) bundle(s) JS e extrai as rotas que
+        o front chama de verdade. Devolve mensagem de erro (ou "") — em
+        servidor bloqueado por WAF, a pessoa usa o upload do .js como saída.
+        """
+        base = self.state.get('api_base_url') or ''
+        sessao = ApiTestRunner({}, timeout=20).session
+        try:
+            pagina = sessao.get(base + "/", timeout=20)
+        except Exception as error:
+            return f"Não consegui abrir {base}/ a partir do servidor: {error}"
+        if pagina.status_code >= 400:
+            return (f"{base}/ respondeu HTTP {pagina.status_code} para o servidor do app (provável bloqueio de WAF a IPs de nuvem). "
+                    "Saída: abra a Base URL no seu navegador, F12 → aba *Sources* (ou *Network*, filtro JS), salve o arquivo "
+                    "`/assets/index-*.js` e envie no campo de upload abaixo.")
+        bundles = disc.descobrir_bundles(pagina.text, base)
+        if not bundles:
+            return "A página da Base URL não referencia nenhum arquivo .js — envie o bundle do front (ou um Swagger/Postman) pelo upload abaixo."
+        rotas, lidos = [], 0
+        for url in bundles[:6]:
+            try:
+                r = sessao.get(url, timeout=30)
+                if r.status_code == 200 and len(r.content) <= 8_000_000:
+                    rotas += disc.extrair_rotas_de_bundle(r.text)
+                    lidos += 1
+            except Exception:
+                continue
+        if not lidos:
+            return "Não consegui baixar os arquivos .js do front — envie o bundle pelo upload abaixo."
+        n = self._api_catalogo_salvar(rotas, "front")
+        self._flash_success(f"{lidos} arquivo(s) do front lido(s): {len(set(rotas))} rota(s) encontrada(s), {n} nova(s) no catálogo.")
+        return ""
+
+    def _api_importar_catalogo_arquivo(self, arquivo) -> str:
+        nome = (arquivo.name or '').lower()
+        conteudo = arquivo.getvalue()
+        try:
+            texto = conteudo.decode("utf-8-sig", errors="ignore")
+        except Exception:
+            return "Não consegui ler o arquivo."
+        rotas, origem = [], "arquivo"
+        if nome.endswith((".js", ".mjs")):
+            rotas, origem = disc.extrair_rotas_de_bundle(texto), "front"
+        elif nome.endswith((".json", ".yaml", ".yml")):
+            try:
+                doc = json.loads(texto)
+            except Exception:
+                doc = None
+            if isinstance(doc, dict) and doc.get("paths"):
+                rotas, origem = disc.extrair_rotas_de_openapi(doc), "openapi"
+            elif isinstance(doc, dict) and doc.get("item") is not None:
+                rotas, origem = disc.extrair_rotas_de_postman(doc), "postman"
+            else:
+                return "JSON não reconhecido: esperava um Swagger/OpenAPI (com `paths`) ou uma collection do Postman (com `item`)."
+        else:
+            rotas, origem = disc.extrair_rotas_de_texto(texto), "manual"
+        if not rotas:
+            return "Nenhuma rota encontrada nesse arquivo."
+        n = self._api_catalogo_salvar(rotas, origem)
+        self._flash_success(f"{len(rotas)} rota(s) lida(s) de {arquivo.name}; {n} nova(s) no catálogo.")
+        return ""
+
+    def _api_render_catalogo(self):
+        """
+        Catálogo de rotas reais da Base URL: é o que impede a IA de inventar
+        rota (entra nas Observações da geração e todo caso fora dele é
+        desabilitado) e o que faz a verificação "existe de verdade?".
+        """
+        host = self._api_host()
+        if not host:
+            return
+        rotas = self._api_catalogo()
+        cache = self.state.get('api_catalogo') or {}
+        st.markdown("##### 🗺️ Rotas reais da API (catálogo)")
+        if rotas:
+            st.success(f"**{len(rotas)} rota(s) conhecida(s)** para `{host}`"
+                       + (f" · atualizado em {cache.get('atualizado_em')}" if cache.get('atualizado_em') else "")
+                       + " — a IA só pode usar estas rotas e todo caso fora delas é desabilitado.")
+        else:
+            st.warning(f"**Nenhuma rota conhecida para `{host}`.** Sem catálogo, a IA só sabe o que o Work Item diz — e quando ele não cita "
+                       "endpoint, ela inventa. Importe as rotas reais antes de gerar (1 minuto):")
+        with st.expander("Importar / ver rotas", expanded=not rotas):
+            st.markdown(
+                "**Como o app descobre as rotas reais:** lendo o código do front (os arquivos `.js` da Base URL chamam a API com as rotas "
+                "verdadeiras), um **Swagger/OpenAPI**, uma **collection do Postman**, ou uma lista colada. Rotas que responderem como "
+                "API nas sondagens e nas execuções também entram sozinhas."
+            )
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                if st.button("📡 Importar do front (Base URL)", key="azure_blue_btn_api_cat_front", width="stretch",
+                             disabled=self.state.get('is_processing')):
+                    with st.spinner("Lendo a página e os arquivos .js do front..."):
+                        erro = self._api_importar_catalogo_do_front()
+                    if erro:
+                        self.state.set('api_catalogo_erro', erro)
+                    else:
+                        self.state.set('api_catalogo_erro', None)
+                    st.rerun()
+            with c2:
+                arq = st.file_uploader("…ou envie: bundle do front (.js), Swagger/OpenAPI (.json), collection Postman (.json) ou lista (.txt)",
+                                       type=["js", "mjs", "json", "txt"], key=f"apiw_cat_file_{len(rotas)}")
+                if arq is not None:
+                    erro = self._api_importar_catalogo_arquivo(arq)
+                    if erro:
+                        st.error(f"❌ {erro}")
+                    else:
+                        st.rerun()
+            if self.state.get('api_catalogo_erro'):
+                st.error(f"❌ {self.state.get('api_catalogo_erro')}")
+            manual = st.text_area("…ou cole rotas, uma por linha (`GET /api/v1/rota`, `{id}` para trechos variáveis)",
+                                  height=80, key=f"apiw_cat_manual_{len(rotas)}", placeholder="GET /api/v1/me\nPOST /api/v1/auth/login")
+            if manual.strip() and st.button("➕ Adicionar estas rotas", key="btn_api_cat_manual_add"):
+                n = self._api_catalogo_salvar(disc.extrair_rotas_de_texto(manual), "manual")
+                self._flash_success(f"{n} rota(s) adicionada(s) ao catálogo.")
+                st.rerun()
+            if rotas:
+                st.dataframe(pd.DataFrame([{"Método": r['metodo'], "Rota": r['caminho'], "Origem": r.get('origem', ''), "Em": r.get('em', '')} for r in rotas]),
+                             width="stretch", hide_index=True, height=min(400, 40 + 35 * len(rotas)))
+                if st.button("🗑️ Limpar catálogo deste host", key="btn_api_cat_limpar"):
+                    self._api_catalogo_gravar(host, [], datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M"))
+                    st.rerun()
+
+    def _api_prontidao(self) -> list:
+        """
+        O que falta pra gerar/testar COM PRECISÃO — cada item diz o que está
+        faltando e como resolver. [{ok, titulo, detalhe}]
+        """
+        itens = []
+        base = self.state.get('api_base_url') or ''
+        base_ok = base.startswith(('http://', 'https://'))
+        itens.append({"ok": base_ok, "titulo": "Base URL da API",
+                      "detalhe": f"`{base}`" if base_ok else "Informe a Base URL (só o host, ex.: https://360.hml.refuturiza.com.br — sem /login)."})
+        if base_ok and '/' in base.split('://', 1)[-1]:
+            itens.append({"ok": False, "titulo": "Base URL com caminho",
+                          "detalhe": f"`{base}` tem um caminho depois do host — normalmente a Base URL é só `https://{self._api_host()}`; o `/api/v1/...` vem dos casos."})
+        rotas = self._api_catalogo()
+        itens.append({"ok": bool(rotas), "titulo": "Catálogo de rotas reais",
+                      "detalhe": f"{len(rotas)} rota(s) conhecida(s) — a IA fica restrita a elas." if rotas else
+                      "Nenhuma rota conhecida: a IA vai chutar os endpoints. Importe do front, Swagger ou Postman em 🗺️ Rotas reais da API (acima)."})
+        espec = self._api_especificacao_efetiva()
+        fonte_wi = (self.state.get('api_ia_fonte') or '').startswith("🎯")
+        if fonte_wi:
+            wis = self.state.get('api_work_items') or []
+            if not wis:
+                itens.append({"ok": False, "titulo": "Work Item escolhido", "detalhe": "Escolha ao menos um Work Item que descreva a funcionalidade."})
+            else:
+                curto = len(espec.strip()) < 200
+                sem_rota = not disc.extrair_rotas(espec)
+                det = f"{len(wis)} Work Item(s), {len(espec)} caracteres lidos."
+                if curto:
+                    det += " **Pouco conteúdo** (Descrição/Critérios de Aceite quase vazios) — a IA não terá regras pra cobrir; anexe documentos em Contexto ou escreva nas Observações."
+                if sem_rota:
+                    det += " O card **não cita nenhum endpoint** — por isso o catálogo de rotas é obrigatório pra ter precisão."
+                itens.append({"ok": not curto and (bool(rotas) or not sem_rota), "titulo": "Especificação (conteúdo do Work Item)", "detalhe": det})
+        else:
+            itens.append({"ok": len(espec.strip()) >= 80, "titulo": "Especificação colada",
+                          "detalhe": f"{len(espec)} caracteres." if len(espec.strip()) >= 80 else "Cole a User Story / descrição do endpoint (regras, campos, retornos esperados)."})
+        rec = self.state.get('api_reconhecimento')
+        itens.append({"ok": bool(rec), "titulo": "Reconhecimento da API (formato de erro, status de validação, rotas protegidas)",
+                      "detalhe": f"{len(rec['rotas_reais'])} rota(s) confirmada(s); observações preenchidas." if rec else
+                      "Ainda não feito — clique em 🔎 Reconhecer a API (abaixo). Sem isso a IA presume 400/errors.message e a API pode responder 422/message."})
+        return itens
+
+    def _api_render_prontidao(self):
+        itens = self._api_prontidao()
+        faltas = [i for i in itens if not i['ok']]
+        titulo = "✅ Pronto pra gerar com precisão" if not faltas else f"⚠️ Falta(m) {len(faltas)} item(ns) pra gerar com precisão"
+        with st.expander(titulo, expanded=bool(faltas)):
+            for i in itens:
+                st.markdown(f"- {'✅' if i['ok'] else '❌'} **{i['titulo']}** — {i['detalhe']}")
 
     def _api_invalidar_evidencias(self):
         self.state.set('api_baixado', False)
@@ -269,6 +512,11 @@ class ApiTestsPageMixin:
                 "**💾 Salvar variáveis** (a tabela e as senhas só são gravadas com esse botão). Um caso pode **extrair** "
                 "um valor da resposta pra uma variável (ex.: `data.token` → `auth_token`) e os casos seguintes usam "
                 "`{{auth_token}}` — por isso a ordem importa.\n\n"
+                "**🗺️ Rotas reais da API (catálogo):** a lista de rotas que existem de verdade nessa Base URL — importada do "
+                "código do front, de um Swagger/OpenAPI, de uma collection do Postman ou colada. A IA só pode usar rotas do catálogo; "
+                "todo caso com rota fora dele é desabilitado com aviso, e **🔎 Verificar rotas dos casos** pergunta à API se cada rota "
+                "existe. Rotas que respondem nas execuções entram no catálogo sozinhas. Antes de gerar, o painel de prontidão diz "
+                "exatamente o que ainda falta.\n\n"
                 "**🔎 Reconhecer a API** (dentro de Gerar com IA): antes de gerar, o app faz chamadas sem credencial "
                 "nas rotas citadas na especificação e descobre a rota real (ex.: /api/v1/...), o formato dos erros "
                 "(chave i18n, errors.<campo>) e quais rotas exigem token — e escreve isso nas Observações pra IA não "
@@ -306,7 +554,11 @@ class ApiTestsPageMixin:
                                                                 value=int(self.state.get('api_timeout') or 30), key="apiw_timeout")))
         self.state.set('api_base_url', st.text_input(
             "Base URL * (vira a variável `{{base_url}}`)", value=self.state.get('api_base_url') or '',
-            placeholder="https://api.exemplo.com.br", key="apiw_base_url").strip().rstrip('/'))
+            placeholder="https://api.exemplo.com.br", key="apiw_base_url",
+            help="Só o host da API (ex.: https://360.hml.refuturiza.com.br). O caminho (/api/v1/...) fica em cada caso.").strip().rstrip('/'))
+
+        st.divider()
+        self._api_render_catalogo()
 
         st.divider()
         st.markdown("##### 📥 Origem dos testes")
@@ -416,6 +668,7 @@ class ApiTestsPageMixin:
             (self.state.get('api_base_url') or '').startswith(('http://', 'https://'))
         if not pronto:
             st.info("Preencha a Base URL e escolha o(s) Work Item(s) — ou cole a especificação / anexe documentos — pra habilitar a geração.")
+        self._api_render_prontidao()
         st.button("🤖 Gerar casos com IA", key="azure_blue_btn_api_gen_ia", width="stretch",
                   disabled=(not pronto) or self.state.get('is_processing'),
                   on_click=self._iniciar_geracao_em_lotes, args=("api_generate_ai", "api_geracao_ia"))
@@ -438,8 +691,12 @@ class ApiTestsPageMixin:
                     # Limite curto de propósito: cada chamada à IA conta contra a
                     # cota por minuto dos provedores — documento inteiro derruba a geração.
                     especificacao += "\n\n=== DOCUMENTOS DE CONTEXTO (trecho) ===\n" + docs_txt[:6000]
+                observacoes = self.state.get('api_ia_observacoes') or ''
+                bloco_rotas = disc.rotas_para_prompt(self._api_catalogo(), especificacao)
+                if bloco_rotas:
+                    observacoes = (observacoes.strip() + "\n\n" if observacoes.strip() else "") + bloco_rotas
                 return {"especificacao": especificacao, "base_url": self.state.get('api_base_url'),
-                        "ambiente": self.state.get('api_ambiente'), "observacoes": self.state.get('api_ia_observacoes') or '',
+                        "ambiente": self.state.get('api_ambiente'), "observacoes": observacoes,
                         "variaveis": self.state.get('api_variaveis') or []}
 
             # Mesma regra dos lotes de geração: se todos os provedores falharem,
@@ -687,12 +944,18 @@ class ApiTestsPageMixin:
             self.state.set('api_projeto', resp['nome_sugerido'])
             # o text_input guarda o valor vazio dele; sem isso, sobrescreve o nome no próximo render
             st.session_state.pop('apiw_projeto', None)
+        fora = self._api_aplicar_catalogo(novos)
         self.state.set('api_casos', novos if substituir else (self.state.get('api_casos') or []) + novos)
         self.state.set('api_resultados', None)
         self._api_invalidar_evidencias()
         msg = f"{len(novos)} caso(s) gerado(s) pela IA. Revise as asserções e preencha as variáveis secretas."
         if invalidos:
             msg += f" {invalidos} caso(s) vieram inválidos e foram descartados."
+        if fora is None:
+            msg += " ⚠️ Sem catálogo de rotas: não dá pra saber se as rotas existem — clique em 🔎 Verificar rotas dos casos antes de executar."
+        elif fora:
+            msg += (f" ⛔ {len(fora)} caso(s) usam rota que NÃO existe no catálogo e foram desabilitados: "
+                    + "; ".join(fora[:6]) + ("…" if len(fora) > 6 else "") + ". Corrija a URL ou importe a rota no catálogo.")
         if resp.get('observacoes'):
             msg += f" Observações da IA: {resp['observacoes']}"
         self._flash_success(msg)
@@ -814,12 +1077,113 @@ class ApiTestsPageMixin:
         extraidos = {e.get('nome') for c in casos for e in (c.get('extrair') or [])}
         return usados, extraidos
 
+    def _api_aplicar_catalogo(self, casos: list):
+        """
+        Confere cada caso contra o catálogo: rota desconhecida → desabilita
+        com aviso. Devolve a lista de nomes desabilitados, ou None se não há
+        catálogo (não dá pra afirmar nada).
+        """
+        rotas = self._api_catalogo()
+        if not rotas:
+            return None
+        fora = []
+        base = self.state.get('api_base_url') or ''
+        for c in casos:
+            avisos = [a for a in (c.get('avisos') or []) if not a.startswith("Rota fora do catálogo")]
+            if disc.casar_com_catalogo(c.get('metodo', 'GET'), c.get('url', ''), rotas, base):
+                c['avisos'] = avisos
+                continue
+            c['habilitado'] = False
+            caminho = disc.normalizar_caminho(c.get('url', ''), base)
+            c['avisos'] = avisos + [f"Rota fora do catálogo de rotas reais ({c.get('metodo')} {caminho}) — desabilitado pra não testar uma rota presumida. "
+                                    "Corrija a URL, ou importe/adicione a rota no catálogo, ou clique em 🔎 Verificar rotas dos casos."]
+            fora.append(f"{c.get('metodo')} {caminho}")
+        return fora
+
+    def _api_iniciar_verificacao_rotas(self):
+        casos = self.state.get('api_casos') or []
+        sondas = disc.montar_sondas_para_casos(casos, self.state.get('api_base_url'))
+        if not sondas:
+            self._flash_warning("Nenhum caso pra verificar.")
+            return
+        if self._api_modo_execucao() == "navegador":
+            self.state.set('api_verif_job', {"run_id": str(uuid.uuid4()), "sondas": sondas,
+                                             "casos": [{k: s[k] for k in ("id", "nome", "metodo", "url", "headers", "body", "extrair")} for s in sondas],
+                                             "variaveis": {}, "timeout_s": 20})
+        else:
+            self._api_concluir_verificacao_rotas(sondas, self._api_sondar_servidor(sondas))
+
+    def _api_concluir_verificacao_rotas(self, sondas: list, respostas: list):
+        """Rotas que responderam como API entram no catálogo; as inexistentes desabilitam os casos, com o motivo."""
+        veredito = disc.verificar_respostas_das_sondas(sondas, respostas)
+        base = self.state.get('api_base_url') or ''
+        existem = [k for k, v in veredito.items() if v is True]
+        inexistentes = [k for k, v in veredito.items() if v is False]
+        sem_resposta = [k for k, v in veredito.items() if v is None]
+        if existem:
+            self._api_catalogo_salvar(existem, "sondagem")
+        casos = self.state.get('api_casos') or []
+        for c in casos:
+            chave = (str(c.get('metodo', 'GET')).upper(), disc.normalizar_caminho(c.get('url', ''), base))
+            avisos = [a for a in (c.get('avisos') or []) if not a.startswith(("Rota fora do catálogo", "Rota inexistente", "Rota não verificada"))]
+            if chave in inexistentes:
+                c['habilitado'] = False
+                avisos.append(f"Rota inexistente (verificado na API agora: 404 \"route could not be found\" em {chave[0]} {chave[1]}) — desabilitado. "
+                              "Corrija a URL pra uma rota do catálogo.")
+            elif chave in sem_resposta:
+                avisos.append(f"Rota não verificada ({chave[0]} {chave[1]} não respondeu — rede/CORS). Confira manualmente.")
+            elif chave in existem and not c.get('habilitado', True) and any(a.startswith("Rota fora do catálogo") for a in (c.get('avisos') or [])):
+                c['habilitado'] = True   # estava fora do catálogo, mas existe de verdade
+            c['avisos'] = avisos
+        self.state.set('api_casos', casos)
+        self.state.set('api_verificacao', {"existem": [f"{m} {c}" for m, c in existem], "inexistentes": [f"{m} {c}" for m, c in inexistentes],
+                                           "sem_resposta": [f"{m} {c}" for m, c in sem_resposta],
+                                           "em": datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M")})
+        msg = f"Verificação na API: {len(existem)} rota(s) existem, {len(inexistentes)} não existem, {len(sem_resposta)} sem resposta."
+        if inexistentes:
+            self._flash_warning(msg + " Os casos com rota inexistente foram desabilitados (veja o aviso em cada um).")
+        else:
+            self._flash_success(msg)
+
+    def _api_render_verificacao_rotas(self, casos: list):
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button("🔎 Verificar rotas dos casos na API", key="azure_blue_btn_api_verif", width="stretch",
+                         disabled=self.state.get('is_processing') or bool(self.state.get('api_verif_job')) or not casos,
+                         help="Pergunta à API, sem credencial, se cada rota dos casos existe (404 \"route could not be found\" = não existe). Nada é gravado."):
+                self._api_iniciar_verificacao_rotas()
+                st.rerun()
+        with c2:
+            v = self.state.get('api_verificacao')
+            if v:
+                st.caption(f"Última verificação {v['em']}: ✅ {len(v['existem'])} existem · ⛔ {len(v['inexistentes'])} não existem · ❔ {len(v['sem_resposta'])} sem resposta")
+            else:
+                st.caption("Confirma na API real se as rotas dos casos existem — obrigatório quando não há catálogo.")
+        job = self.state.get('api_verif_job')
+        if job:
+            st.info("⏳ Verificando as rotas pelo seu navegador…")
+            retorno = _BROWSER_RUNNER(**{k: job[k] for k in ("run_id", "casos", "variaveis", "timeout_s")},
+                                      key=f"api_verif_runner_{job['run_id']}", default=None)
+            if retorno and retorno.get("run_id") == job["run_id"]:
+                self.state.set('api_verif_job', None)
+                self._api_concluir_verificacao_rotas(job["sondas"], retorno.get("respostas") or [])
+                st.rerun()
+            elif st.button("✖ Cancelar", key="btn_api_verif_cancel"):
+                self.state.set('api_verif_job', None)
+                st.rerun()
+
     def _api_render_casos(self):
         casos = self.state.get('api_casos') or []
         st.markdown(f"##### 🧪 Casos de teste ({len(casos)})")
         if not casos:
             st.info("Nenhum caso ainda. Gere com IA (acima), importe uma collection do Postman ou adicione um caso manualmente.")
             return
+        self._api_render_verificacao_rotas(casos)
+        desabilitados_por_rota = [c for c in casos if not c.get('habilitado', True) and any(str(a).startswith(("Rota fora do catálogo", "Rota inexistente")) for a in (c.get('avisos') or []))]
+        if desabilitados_por_rota:
+            st.error(f"⛔ **{len(desabilitados_por_rota)} caso(s) desabilitado(s) por rota presumida** (não existe no catálogo / na API): "
+                     + "; ".join(f"{c.get('metodo')} {disc.normalizar_caminho(c.get('url', ''), self.state.get('api_base_url') or '')}" for c in desabilitados_por_rota[:8])
+                     + ". Abra cada um e corrija a URL — ou importe a rota no catálogo se ela existir de verdade.")
 
         for idx, caso in enumerate(casos):
             cid = caso['id']
@@ -958,6 +1322,10 @@ class ApiTestsPageMixin:
         self.state.set('api_segredos', segredos)
 
         novos = [c.to_dict() for c in col['casos']]
+        base = self.state.get('api_base_url') or ''
+        if base:
+            # rotas de uma collection foram escritas por quem conhece a API — entram no catálogo
+            self._api_catalogo_salvar([(c['metodo'], disc.normalizar_caminho(c['url'], base)) for c in novos if '{{base_url}}' in c['url'] or c['url'].startswith(base)], "postman")
         self.state.set('api_casos', novos if substituir else (self.state.get('api_casos') or []) + novos)
         self._api_invalidar_evidencias()
         self.state.set('api_resultados', None)
@@ -1089,6 +1457,7 @@ class ApiTestsPageMixin:
             + (f" · {resumo['pulados']} não executado(s)" if resumo['pulados'] else "")
             + f" · asserções **{resumo['assercoes_ok']}/{resumo['assercoes']}** · tempo médio **{resumo['tempo_medio_ms']} ms**"
         )
+        self._api_render_diagnostico_execucao(resultados)
 
         segredos = self._api_lista_segredos()
         for idx, r in enumerate(resultados, start=1):
@@ -1146,6 +1515,13 @@ class ApiTestsPageMixin:
         self.state.set('api_resultados', resultados)
         self._api_invalidar_evidencias()
         resumo = ApiEvidenceBuilder.resumo(resultados)
+        # rotas que responderam como API entram no catálogo (aprendizado por execução)
+        try:
+            base = self.state.get('api_base_url') or ''
+            self._api_catalogo_salvar([(r.metodo, disc.normalizar_caminho(r.url_final, base)) for r in resultados
+                                       if r.status_code is not None and not disc.rota_nao_encontrada(r.status_code, r.response_body)], "execução")
+        except Exception:
+            pass
         try:
             log_action(self.config, st.session_state.get(SESSION_USER_KEY, ""), "Executar Testes de API",
                        "Testes de API", f"{self.state.get('api_projeto')} — {resumo['aprovados']}/{resumo['total'] - resumo['pulados']} aprovados")
@@ -1153,6 +1529,31 @@ class ApiTestsPageMixin:
             pass
         (self._flash_success if resumo['status_geral'] == 'Aprovado' else self._flash_warning)(
             f"Execução concluída: {resumo['aprovados']} aprovado(s), {resumo['reprovados'] + resumo['erros']} reprovado(s)/erro(s).")
+
+    def _api_render_diagnostico_execucao(self, resultados: list):
+        """
+        Separa o que é comportamento REAL da API do que é erro de definição
+        do teste — pra ninguém ler "Reprovado" e achar que a API quebrou.
+        """
+        rota_inexistente = [r for r in resultados if r.erro and r.erro.startswith("Rota inexistente")]
+        bloqueados = [r for r in resultados if r.bloqueado]
+        sem_resposta = [r for r in resultados if r.erro and not r.erro.startswith("Rota inexistente")]
+        reprovados = [r for r in resultados if not r.passou and not r.pulado and not r.erro]
+        if not (rota_inexistente or bloqueados or sem_resposta or reprovados):
+            return
+        linhas = []
+        if rota_inexistente:
+            linhas.append(f"⛔ **{len(rota_inexistente)} caso(s) com rota que NÃO existe na API** (erro do teste, não da API): "
+                          + "; ".join(r.nome for r in rota_inexistente[:6]) + ". Corrija a URL ou importe o catálogo de rotas na etapa 1.")
+        if bloqueados:
+            linhas.append(f"⏸️ **{len(bloqueados)} bloqueado(s)** porque dependem de variável que um caso anterior não conseguiu extrair: "
+                          + "; ".join(r.nome for r in bloqueados[:6]) + ".")
+        if sem_resposta:
+            linhas.append(f"🔌 **{len(sem_resposta)} sem resposta** (rede/timeout/CORS): " + "; ".join(r.nome for r in sem_resposta[:6]) + ".")
+        if reprovados:
+            linhas.append(f"❌ **{len(reprovados)} reprovado(s) de verdade** — a rota existe e a API respondeu diferente do esperado: "
+                          + "; ".join(r.nome for r in reprovados[:6]) + ". Abra cada um: o detalhe de cada asserção diz o que veio.")
+        st.warning("**Leitura do resultado**\n\n" + "\n\n".join(linhas))
 
     def _api_executar(self):
         casos = [ApiTestCase.from_dict(c) for c in (self.state.get('api_casos') or [])]
