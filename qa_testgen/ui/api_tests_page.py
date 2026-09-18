@@ -49,6 +49,10 @@ API_TESTS_STATE_DEFAULTS = {
     'api_pdf': None,
     'api_zip': None,
     'api_ia_especificacao': '',
+    'api_ia_fonte': '🎯 Work Item(s) do Azure DevOps',
+    'api_wi_board_items': [],    # Work Items encontrados no board (pra escolher)
+    'api_work_items': [],        # [{id, title, type}] escolhidos — também servem pra Fase 2 (vínculo)
+    'api_ia_especificacao_wi': '',  # texto montado a partir dos Work Items escolhidos
     'api_ia_observacoes': '',
     'api_baixado': False,       # algum download/salvamento já foi feito nesta geração
     'api_modo_execucao': None,  # cache da configuração global (navegador|servidor)
@@ -214,7 +218,8 @@ class ApiTestsPageMixin:
                 "(padrão QA TestGen), `.zip` com uma pasta por caso (request, response, resultado e seus prints) e "
                 "a definição `.json` para repetir a bateria depois.\n\n"
                 "**De onde vêm os casos** (etapa 1, \"Origem dos testes\"):\n"
-                "- 🤖 **Gerar com IA** — cole a User Story / descrição do Work Item (ou anexe documentos em Contexto), "
+                "- 🤖 **Gerar com IA** — escolha o(s) **Work Item(s) do Azure DevOps** (a Descrição e os Critérios de Aceite "
+                "viram a especificação) ou cole o texto / anexe documentos em Contexto, "
                 "informe a Base URL e clique em *Gerar casos com IA*: a bateria inteira (sucesso, validações, credenciais "
                 "inválidas, regras de negócio, token) aparece pronta no editor. Senhas nunca vão pra IA — ela só declara "
                 "as variáveis e você preenche.\n"
@@ -339,12 +344,20 @@ class ApiTestsPageMixin:
             "Obrigatório: **Base URL** (acima) e a **especificação**. A IA monta os casos (sucesso, validações, "
             "credenciais inválidas, regras de negócio, uso do token) e você só revisa e executa."
         )
-        self.state.set('api_ia_especificacao', st.text_area(
-            "Especificação (User Story, critérios de aceite, descrição do endpoint) *",
-            value=self.state.get('api_ia_especificacao') or '', height=220, key="apiw_ia_spec",
-            placeholder="Ex.: User Story — Login. Endpoint POST /api/auth/login. Dados: email (obrigatório, formato válido), "
-                        "password (obrigatório). Retorno 200: { data: { token, token_type, user } } ... 422 ... 401 ... 403 ...",
-        ))
+        fontes = ["🎯 Work Item(s) do Azure DevOps", "✍️ Texto colado"]
+        fonte = st.radio("Fonte da especificação", fontes,
+                         index=fontes.index(self.state.get('api_ia_fonte') or fontes[0]),
+                         horizontal=True, key="apiw_ia_fonte")
+        self.state.set('api_ia_fonte', fonte)
+        if fonte.startswith("🎯"):
+            self._api_render_fonte_work_items()
+        else:
+            self.state.set('api_ia_especificacao', st.text_area(
+                "Especificação (User Story, critérios de aceite, descrição do endpoint) *",
+                value=self.state.get('api_ia_especificacao') or '', height=220, key="apiw_ia_spec",
+                placeholder="Ex.: User Story — Login. Endpoint POST /api/auth/login. Dados: email (obrigatório, formato válido), "
+                            "password (obrigatório). Retorno 200: { data: { token, token_type, user } } ... 422 ... 401 ... 403 ...",
+            ))
         self.state.set('api_ia_observacoes', st.text_area(
             "Observações / dicas pra IA (opcional)",
             value=self.state.get('api_ia_observacoes') or '', height=80, key="apiw_ia_obs",
@@ -355,17 +368,18 @@ class ApiTestsPageMixin:
             st.caption(f"📄 {len(self.state.get('api_docs_nomes') or [])} documento(s) de contexto também serão enviados à IA ({len(docs_txt)} caracteres).")
         substituir = st.checkbox("Começar do zero: apagar os casos já listados e ficar só com os gerados", value=True,
                                  key="apiw_ia_replace", disabled=not (self.state.get('api_casos') or []))
-        pronto = bool((self.state.get('api_ia_especificacao') or '').strip() or docs_txt) and \
+        espec_base = self._api_especificacao_efetiva()
+        pronto = bool(espec_base.strip() or docs_txt) and \
             (self.state.get('api_base_url') or '').startswith(('http://', 'https://'))
         if not pronto:
-            st.info("Preencha a Base URL e a especificação (ou anexe documentos) pra habilitar a geração.")
+            st.info("Preencha a Base URL e escolha o(s) Work Item(s) — ou cole a especificação / anexe documentos — pra habilitar a geração.")
         with st.container(key="azure_blue_btn_api_gen_ia"):
             st.button("🤖 Gerar casos com IA", key="btn_api_gen_ia", width="stretch",
                       disabled=(not pronto) or self.state.get('is_processing'),
                       on_click=self.trigger_action, args=("api_generate_ai",))
         if self.state.get('current_action') == 'api_generate_ai' and not self.state.get('show_interrupt_modal'):
             try:
-                especificacao = (self.state.get('api_ia_especificacao') or '').strip()
+                especificacao = self._api_especificacao_efetiva().strip()
                 if docs_txt:
                     especificacao += "\n\n=== DOCUMENTOS DE CONTEXTO ===\n" + docs_txt[:20000]
                 with st.spinner("A IA está montando a bateria de testes (isso pode levar até um minuto)..."):
@@ -378,6 +392,97 @@ class ApiTestsPageMixin:
                 self._flash_error(f"Não foi possível gerar os casos com IA: {error}")
             self.clear_action()
             st.rerun()
+
+    def _api_especificacao_efetiva(self) -> str:
+        """Texto que vai pra IA: dos Work Items escolhidos ou colado, conforme a fonte."""
+        if (self.state.get('api_ia_fonte') or '').startswith("🎯"):
+            return self.state.get('api_ia_especificacao_wi') or ''
+        return self.state.get('api_ia_especificacao') or ''
+
+    def _api_render_fonte_work_items(self):
+        """
+        Escolha de Work Item(s) do Azure DevOps como especificação — mesmo
+        fluxo do Passo 1/Manual (conexão, Area Path, busca no board). A
+        Description + Critérios de Aceite viram o texto enviado à IA, e os
+        itens escolhidos ficam guardados (servem também pro vínculo com o
+        Azure DevOps na próxima fase).
+        """
+        conn = self._setup_azure_devops_connection(show_area_path_picker=False)
+        if conn is None:
+            return
+        ado_client, _ado_org, ado_project, _default_ap = conn
+
+        if self.state.get('ado_available_area_paths') and self.state.get('ado_area_paths_project') == ado_project:
+            area_path_options = self.state.get('ado_available_area_paths') or []
+        else:
+            try:
+                with st.spinner("Buscando Area Paths do projeto..."):
+                    area_path_options = ado_client.list_area_paths()
+                self.state.set('ado_available_area_paths', area_path_options)
+                self.state.set('ado_area_paths_project', ado_project)
+            except Exception as error:
+                st.error(f"❌ Não foi possível buscar Area Paths: {error}")
+                area_path_options = []
+
+        col_ap, col_btn = st.columns(2)
+        with col_ap:
+            area_paths = st.multiselect("Area Path(s) (vazio = projeto inteiro)", options=area_path_options,
+                                        disabled=self.state.get('is_processing'), key="apiw_wi_area_paths")
+        with col_btn:
+            with st.container(key="azure_blue_btn_api_fetch_wi"):
+                st.button("🔄 Buscar Work Items do Board", disabled=self.state.get('is_processing'),
+                          key="btn_api_fetch_wi", on_click=self.trigger_action, args=("api_fetch_wi",), width="stretch")
+        if self.state.get('current_action') == 'api_fetch_wi' and not self.state.get('show_interrupt_modal'):
+            try:
+                paths = area_paths or [ado_project]
+                with st.spinner(f"Buscando Work Items em {len(paths)} Area Path(s)..."):
+                    por_id = {}
+                    for ap in paths:
+                        for item in ado_client.fetch_work_items_by_area_path(ap, excluded_states=set()):
+                            por_id[item["id"]] = item
+                self.state.set('api_wi_board_items', list(por_id.values()))
+                if not por_id:
+                    self._flash_warning("Nenhum Work Item encontrado nessas Area Paths.")
+            except Exception as error:
+                self._flash_error(f"Não foi possível buscar Work Items: {error}")
+            self.clear_action()
+            st.rerun()
+
+        board_items = self.state.get('api_wi_board_items') or []
+        if not board_items:
+            st.caption("Busque os Work Items do board pra escolher qual(is) viram a especificação.")
+            return
+        rotulos = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
+        escolhidos = st.multiselect("Work Item(s) que descrevem a API a testar *", options=list(rotulos.keys()),
+                                    key="apiw_wi_select", disabled=self.state.get('is_processing'))
+        selecionados = [rotulos[r] for r in escolhidos]
+        ids = [wi['id'] for wi in selecionados]
+        if ids != [wi['id'] for wi in (self.state.get('api_work_items') or [])]:
+            texto = ""
+            if selecionados:
+                try:
+                    with st.spinner(f"Lendo {len(selecionados)} Work Item(s)..."):
+                        detalhes = ado_client.get_work_items_full_details(ids)
+                    partes = []
+                    for wi in detalhes:
+                        parte = f"===== WORK ITEM {wi['id']} - {wi['title']} ({wi['type']}) =====\n"
+                        if wi.get('description'):
+                            parte += f"Descrição:\n{wi['description']}\n"
+                        if wi.get('acceptance_criteria'):
+                            parte += f"\nCritérios de Aceite:\n{wi['acceptance_criteria']}\n"
+                        parte += f"===== FIM DO WORK ITEM {wi['id']} ====="
+                        partes.append(parte)
+                    texto = "\n\n".join(partes)
+                except Exception as error:
+                    self._flash_error(f"Não foi possível ler os Work Items: {error}")
+            self.state.set('api_work_items', [{"id": wi['id'], "title": wi['title'], "type": wi.get('type', '')} for wi in selecionados])
+            self.state.set('api_ia_especificacao_wi', texto)
+            if selecionados and not self.state.get('api_projeto'):
+                self.state.set('api_projeto', selecionados[0]['title'][:80])
+                st.session_state.pop('apiw_projeto', None)
+        if self.state.get('api_ia_especificacao_wi'):
+            with st.expander(f"👁️ Ver a especificação lida ({len(self.state.get('api_ia_especificacao_wi'))} caracteres)"):
+                st.text(self.state.get('api_ia_especificacao_wi')[:6000])
 
     def _api_aplicar_geracao_ia(self, resp: dict, substituir: bool):
         """Converte a resposta da IA em casos do módulo e mescla variáveis."""
