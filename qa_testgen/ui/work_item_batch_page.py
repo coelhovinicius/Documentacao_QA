@@ -13,6 +13,7 @@ from urllib.parse import quote
 import pandas as pd
 import streamlit as st
 
+from qa_testgen.config.constants import TZ_BR
 from qa_testgen.infrastructure import work_item_batch as wib
 from qa_testgen.infrastructure.azure_devops_client import AzureDevOpsClient
 
@@ -101,7 +102,7 @@ class WorkItemBatchMixin:
 
         st.dataframe(pd.DataFrame([{
             "Linha": v["linha"], "Ref": v["ref"], "Tipo": v["tipo"] or "?", "Título": v["titulo"],
-            "Pai": f"#{v['parent_ref']}" if v["parent_ref"] else (v["parent_id"] or ""),
+            "Pai": f"#{v['parent_ref']}" if v["parent_ref"] else (str(v["parent_id"]) if v["parent_id"] else ""),
             "Situação": _situacao(v),
         } for v in validadas]), width="stretch", hide_index=True)
 
@@ -334,7 +335,7 @@ class WorkItemBatchMixin:
             self.state.set('wi_fila', restantes)
             self.state.set('wi_fila_resultados', sucesso)
             self.state.set('wi_fila_falhas', falhas)
-            self.state.set('wi_fila_enviado_em', datetime.now().strftime("%d/%m/%Y %H:%M"))
+            self.state.set('wi_fila_enviado_em', datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M"))
             self.clear_action()
             if restantes:
                 self._flash_warning(f"{len(sucesso)} Work Item(s) criado(s); {len(restantes)} ficaram na fila com erro — corrija e envie de novo.")
@@ -358,6 +359,7 @@ class WorkItemBatchMixin:
             else:
                 st.error(f"❌ **Nenhum item foi criado{' em ' + quando if quando else ''}:** {len(falhas)} com erro (veja a fila abaixo).")
 
+            todos = ""
             if res:
                 st.dataframe(pd.DataFrame([{
                     "ID": r["id"], "Tipo": r["tipo"], "Título": r["titulo"],
@@ -380,7 +382,7 @@ class WorkItemBatchMixin:
 
             c1, c2 = st.columns([1, 1])
             with c1:
-                st.download_button("⬇️ Baixar este resumo (.md)", self._wi_fila_resumo_md(res, falhas, quando, todos if res else ""),
+                st.download_button("⬇️ Baixar este resumo (.md)", self._wi_fila_resumo_md(res, falhas, quando, todos),
                                    file_name="work-items-criados.md", mime="text/markdown", width="stretch", key="dl_wi_fila_resumo")
             with c2:
                 if st.button("Limpar este resumo", key="btn_wi_fila_limpar_res", width="stretch"):
@@ -404,7 +406,9 @@ class WorkItemBatchMixin:
         linhas = [f"# Work Items criados via QA TestGen{' — ' + quando if quando else ''}", ""]
         if res:
             linhas += ["| ID | Tipo | Título | Pai | Link |", "|---|---|---|---|---|"]
-            linhas += [f"| {r['id']} | {r['tipo']} | {r['titulo']} | {r.get('parent_id') or ''} | {r.get('url') or ''} |" for r in res]
+            for r in res:
+                titulo = str(r["titulo"]).replace("|", "\\|")   # '|' quebraria a tabela markdown
+                linhas.append(f"| {r['id']} | {r['tipo']} | {titulo} | {r.get('parent_id') or ''} | {r.get('url') or ''} |")
             if url_todos:
                 linhas += ["", f"Ver todos juntos: {url_todos}"]
         if falhas:
