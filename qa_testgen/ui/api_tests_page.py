@@ -386,6 +386,11 @@ class ApiTestsPageMixin:
                       disabled=(not pronto) or self.state.get('is_processing'),
                       on_click=self.trigger_action, args=("api_generate_ai",))
         if self.state.get('current_action') == 'api_generate_ai' and not self.state.get('show_interrupt_modal'):
+            # Limpa a ação antes da chamada (que pode levar 1 min): se a pessoa
+            # clicar de novo e o Streamlit reiniciar o script, não dispara outra
+            # chamada à IA por cima desta.
+            self.clear_action()
+            self.state.set('is_processing', True)
             try:
                 especificacao = self._api_especificacao_efetiva().strip()
                 if docs_txt:
@@ -398,7 +403,7 @@ class ApiTestsPageMixin:
                 self._api_aplicar_geracao_ia(resp, substituir)
             except Exception as error:
                 self._flash_error(f"Não foi possível gerar os casos com IA: {error}")
-            self.clear_action()
+            self.state.set('is_processing', False)
             st.rerun()
 
     def _api_render_reconhecimento(self, docs_txt_disponivel: bool = False):

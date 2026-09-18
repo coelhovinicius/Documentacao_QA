@@ -95,7 +95,7 @@ def analisar(sondas: list, respostas: list) -> dict:
         status = r.get("status")
         corpo = r.get("body") or ""
         ctype = ""
-        for k, v in (r.get("headers") or {}).items():
+        for k, v in (r.get("response_headers") or r.get("headers") or {}).items():
             if k.lower() == "content-type":
                 ctype = str(v).lower()
         js = _json_ou_none(corpo) if corpo else None

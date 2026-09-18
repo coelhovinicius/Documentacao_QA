@@ -263,7 +263,8 @@ class ApiTestRunner:
             elif r.get("status") is None:
                 resultado.erro = f"Falha na requisição: {r.get('erro') or 'sem detalhe'}"
             else:
-                resposta = self._RespostaExterna(int(r["status"]), r.get("status_text"), r.get("headers") or {}, r.get("body") or "")
+                resposta = self._RespostaExterna(int(r["status"]), r.get("status_text"),
+                                                 r.get("response_headers") or r.get("headers") or {}, r.get("body") or "")
                 self._concluir_resultado(caso, resultado, resposta)
             resultados.append(resultado)
         return resultados
