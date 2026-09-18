@@ -10064,8 +10064,9 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "evidência), encadeamento de valores extraídos da resposta (token do login → rota "
             "protegida). Evidências: RELATORIO.md, RELATORIO.pdf no padrão QA TestGen e .zip com uma "
             "pasta por caso (request, response, resultado e prints), com opção de guardar em "
-            "Documentos Armazenados. Não depende do Azure DevOps — o vínculo com Test Cases e o "
-            "registro de resultado lá é a próxima fase"
+            "Documentos Armazenados. As chamadas saem do navegador de quem usa o app (padrão, contorna WAF) "
+            "ou do servidor — configuração global do administrador. Não depende do Azure DevOps — o vínculo "
+            "com Test Cases e o registro de resultado lá é a próxima fase"
         )
         st.caption(
             "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "

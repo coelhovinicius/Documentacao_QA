@@ -8,9 +8,11 @@ Documentos Armazenados). Sem integração com o Azure DevOps ainda (Fase 2).
 """
 import json
 import uuid
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from qa_testgen.domain.models.api_test import (
     ASSERTION_TYPES, ASSERTION_LABELS, HTTP_METHODS, ApiTestCase,
@@ -18,7 +20,9 @@ from qa_testgen.domain.models.api_test import (
 from qa_testgen.infrastructure.api_evidence import ApiEvidenceBuilder
 from qa_testgen.infrastructure.api_test_runner import ApiTestRunner
 from qa_testgen.infrastructure.document_processor import DocumentProcessor
-from qa_testgen.infrastructure.document_store import DocumentStore, DocumentStoreError
+from qa_testgen.infrastructure.document_store import (
+    DocumentStore, DocumentStoreError, AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO,
+)
 from qa_testgen.infrastructure.pdf_report import PdfReportGenerator
 from qa_testgen.infrastructure.postman_importer import PostmanImporter, PostmanImportError
 from qa_testgen.ui.auth import SESSION_USER_KEY, log_action
@@ -47,11 +51,23 @@ API_TESTS_STATE_DEFAULTS = {
     'api_ia_especificacao': '',
     'api_ia_observacoes': '',
     'api_baixado': False,       # algum download/salvamento já foi feito nesta geração
+    'api_modo_execucao': None,  # cache da configuração global (navegador|servidor)
+    'api_browser_job': None,    # execução em andamento no navegador {run_id, casos, variaveis, timeout_s}
     'show_new_api_run_modal': False,
     'show_leave_api_modal': False,
 }
 
 _ETAPAS = ['1. Definição', '2. Execução', '3. Evidências']
+
+# Componente que executa as requisições NO NAVEGADOR do usuário (HTML puro em
+# ui/components/api_browser_runner). Motivo: WAFs como o CloudFront do HML
+# bloqueiam IPs de provedores de nuvem (Streamlit Cloud, n8n na Oracle) mas
+# aceitam o IP de quem usa o app — o mesmo do Postman.
+_BROWSER_RUNNER = components.declare_component(
+    "api_browser_runner", path=str(Path(__file__).resolve().parent / "components" / "api_browser_runner"),
+)
+MODOS_EXECUCAO = {"navegador": "Navegador do usuário (contorna bloqueio de WAF)", "servidor": "Servidor do app (chamada direta)"}
+MODO_EXECUCAO_PADRAO = "navegador"
 _AMBIENTES = ['Homologação', 'Produção']
 
 
@@ -85,6 +101,24 @@ class ApiTestsPageMixin:
                 if k.lower() == 'authorization' and v:
                     segredos.append(v.split(' ', 1)[-1])
         return segredos
+
+    def _api_modo_execucao(self) -> str:
+        """
+        Modo de execução dos Testes de API — configuração GLOBAL definida pelo
+        dono em Administração → Configurações (vale pra todos). Lida uma vez
+        por sessão; sem Turso configurado, cai no padrão.
+        """
+        if self.state.get('api_modo_execucao') is None:
+            modo = MODO_EXECUCAO_PADRAO
+            if getattr(self.config, 'turso_database_url', ''):
+                try:
+                    store = AppSettingsStore(self.config.turso_database_url, self.config.turso_auth_token)
+                    store.ensure_schema()
+                    modo = store.get(CONFIG_API_TESTS_MODO_EXECUCAO, MODO_EXECUCAO_PADRAO) or MODO_EXECUCAO_PADRAO
+                except Exception:
+                    modo = MODO_EXECUCAO_PADRAO
+            self.state.set('api_modo_execucao', modo if modo in MODOS_EXECUCAO else MODO_EXECUCAO_PADRAO)
+        return self.state.get('api_modo_execucao')
 
     def _api_marcar_baixado(self):
         self.state.set('api_baixado', True)
@@ -200,6 +234,8 @@ class ApiTestsPageMixin:
                 "**Contexto (opcional):** texto livre e documentos de apoio que entram no relatório como seção "
                 "\"Contexto\" — ex.: qual User Story está sendo testada, que credenciais/perfil foram usados, o que "
                 "se espera. Não altera a execução; é só documentação.\n\n"
+                "**De onde saem as chamadas:** conforme configuração do administrador — do **seu navegador** (padrão; "
+                "mesmo IP do Postman, contorna bloqueios de WAF que barram servidores em nuvem) ou do servidor do app.\n\n"
                 "**Regras:** um caso sem asserção é reprovado (o mínimo é o status HTTP esperado); casos "
                 "desabilitados não rodam e aparecem como \"Não Executado\"; nada é enviado ao Azure DevOps nesta versão."
             )
@@ -739,10 +775,23 @@ class ApiTestsPageMixin:
         for e in erros:
             st.warning(f"⚠️ {e}")
 
+        modo = self._api_modo_execucao()
+        if modo == "navegador":
+            st.caption("🌐 As chamadas saem **do seu navegador** (mesmo IP que você usa no Postman) — configuração definida pelo administrador.")
+        else:
+            st.caption("🖥️ As chamadas saem **do servidor do app** — configuração definida pelo administrador.")
+
+        job = self.state.get('api_browser_job')
         with st.container(key="azure_blue_btn_api_run"):
-            if st.button("▶️ Executar testes", key="btn_api_run", disabled=bool(erros), width="stretch"):
-                self._api_executar()
+            if st.button("▶️ Executar testes", key="btn_api_run", disabled=bool(erros) or bool(job), width="stretch"):
+                if modo == "navegador":
+                    self._api_iniciar_execucao_navegador()
+                else:
+                    self._api_executar()
                 st.rerun()
+
+        if job:
+            self._api_render_execucao_navegador(job)
 
         resultados = self.state.get('api_resultados')
         if not resultados:
@@ -773,6 +822,52 @@ class ApiTestsPageMixin:
                         st.code(ApiEvidenceBuilder.texto_response(r, segredos), language="http")
         self._api_botao_proxima_etapa(_ETAPAS[2], "➡️ Próxima etapa: 3. Evidências (gerar e baixar relatórios)", "btn_api_next_2")
 
+    def _api_iniciar_execucao_navegador(self):
+        casos = [c for c in (self.state.get('api_casos') or []) if c.get('habilitado', True)]
+        self.state.set('api_browser_job', {
+            "run_id": str(uuid.uuid4()),
+            "casos": [{"id": c['id'], "nome": c['nome'], "metodo": c['metodo'], "url": c['url'],
+                       "headers": c.get('headers') or {}, "body": c.get('body') or "", "extrair": c.get('extrair') or []} for c in casos],
+            "variaveis": self._api_variaveis_resolvidas(),
+            "timeout_s": int(self.state.get('api_timeout') or 30),
+        })
+        self.state.set('api_resultados', None)
+        self._api_invalidar_evidencias()
+
+    def _api_render_execucao_navegador(self, job: dict):
+        """
+        Renderiza o componente que executa no navegador e, quando ele devolve
+        as respostas, avalia tudo em Python (mesma lógica da execução direta).
+        """
+        st.info("⏳ Executando no seu navegador — não feche nem troque de aba até concluir.")
+        retorno = _BROWSER_RUNNER(**job, key=f"api_browser_runner_{job['run_id']}", default=None)
+        if not retorno or retorno.get("run_id") != job["run_id"]:
+            if st.button("✖ Cancelar execução", key="btn_api_cancel_browser"):
+                self.state.set('api_browser_job', None)
+                st.rerun()
+            return
+        self.state.set('api_browser_job', None)
+        if retorno.get("erro_geral"):
+            self._flash_error(f"Falha na execução pelo navegador: {retorno['erro_geral']}")
+            st.rerun()
+        runner = ApiTestRunner(job["variaveis"], timeout=job["timeout_s"])
+        casos = [ApiTestCase.from_dict(c) for c in (self.state.get('api_casos') or [])]
+        resultados = runner.avaliar_execucao_externa(casos, retorno.get("respostas") or [])
+        self._api_concluir_execucao(resultados)
+        st.rerun()
+
+    def _api_concluir_execucao(self, resultados: list):
+        self.state.set('api_resultados', resultados)
+        self._api_invalidar_evidencias()
+        resumo = ApiEvidenceBuilder.resumo(resultados)
+        try:
+            log_action(self.config, st.session_state.get(SESSION_USER_KEY, ""), "Executar Testes de API",
+                       "Testes de API", f"{self.state.get('api_projeto')} — {resumo['aprovados']}/{resumo['total'] - resumo['pulados']} aprovados")
+        except Exception:
+            pass
+        (self._flash_success if resumo['status_geral'] == 'Aprovado' else self._flash_warning)(
+            f"Execução concluída: {resumo['aprovados']} aprovado(s), {resumo['reprovados'] + resumo['erros']} reprovado(s)/erro(s).")
+
     def _api_executar(self):
         casos = [ApiTestCase.from_dict(c) for c in (self.state.get('api_casos') or [])]
         runner = ApiTestRunner(self._api_variaveis_resolvidas(), timeout=int(self.state.get('api_timeout') or 30))
@@ -784,16 +879,7 @@ class ApiTestsPageMixin:
         with st.spinner("Executando os casos..."):
             resultados = runner.executar(casos, on_progress=_prog)
         barra.empty()
-        self.state.set('api_resultados', resultados)
-        self._api_invalidar_evidencias()
-        resumo = ApiEvidenceBuilder.resumo(resultados)
-        try:
-            log_action(self.config, st.session_state.get(SESSION_USER_KEY, ""), "Executar Testes de API",
-                       "Testes de API", f"{self.state.get('api_projeto')} — {resumo['aprovados']}/{resumo['total'] - resumo['pulados']} aprovados")
-        except Exception:
-            pass
-        (self._flash_success if resumo['status_geral'] == 'Aprovado' else self._flash_warning)(
-            f"Execução concluída: {resumo['aprovados']} aprovado(s), {resumo['reprovados'] + resumo['erros']} reprovado(s)/erro(s).")
+        self._api_concluir_execucao(resultados)
 
     # ---------------------------------------------------------- 3. Evidências
     def _api_render_evidencias(self):

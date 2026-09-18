@@ -7,6 +7,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from qa_testgen.infrastructure.access_control_client import AccessControlClient, AccessControlError
+from qa_testgen.infrastructure.document_store import AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO
 
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
@@ -557,8 +558,8 @@ def render_admin_panel(config):
     client = AccessControlClient(config)
     st.divider()
 
-    aba_usuarios, aba_sessoes, aba_logs = st.tabs(
-        ["👤 Usuários", "🖥️ Sessões Ativas", "📜 Logs de Auditoria"]
+    aba_usuarios, aba_sessoes, aba_logs, aba_config = st.tabs(
+        ["👤 Usuários", "🖥️ Sessões Ativas", "📜 Logs de Auditoria", "⚙️ Configurações"]
     )
 
     with aba_usuarios:
@@ -569,6 +570,53 @@ def render_admin_panel(config):
 
     with aba_logs:
         _render_audit_logs(config, client)
+
+    with aba_config:
+        _render_app_settings(config, username)
+
+
+def _render_app_settings(config, current_username: str):
+    """
+    Configurações GLOBAIS do app (valem pra todos os usuários), guardadas no
+    banco Turso. Só o dono chega aqui.
+    """
+    st.subheader("⚙️ Configurações do app")
+    st.caption("Valem pra todos os usuários, imediatamente. Cada pessoa relê a configuração ao abrir uma nova sessão.")
+    if not getattr(config, "turso_database_url", ""):
+        st.warning("TURSO_DATABASE_URL / TURSO_AUTH_TOKEN não configurados — as configurações globais ficam no padrão.")
+        return
+    store = AppSettingsStore(config.turso_database_url, config.turso_auth_token)
+    try:
+        store.ensure_schema()
+        atual = store.get(CONFIG_API_TESTS_MODO_EXECUCAO, "navegador") or "navegador"
+    except Exception as error:
+        st.error(f"❌ Não foi possível ler as configurações: {error}")
+        return
+
+    st.markdown("##### 🔌 Testes de API — de onde saem as chamadas")
+    st.markdown(
+        "- **Navegador do usuário** (recomendado): as requisições são feitas pelo navegador de quem está usando o app — "
+        "mesmo IP do Postman. Contorna WAFs (ex.: CloudFront do HML) que bloqueiam servidores em nuvem. Exige que a API "
+        "permita CORS a partir do app.\n"
+        "- **Servidor do app**: as requisições saem do Streamlit Cloud. Funciona pra APIs sem bloqueio de origem; "
+        "não depende de CORS."
+    )
+    opcoes = {"navegador": "🌐 Navegador do usuário", "servidor": "🖥️ Servidor do app"}
+    escolha = st.radio("Modo de execução", list(opcoes.keys()), format_func=lambda k: opcoes[k],
+                       index=list(opcoes.keys()).index(atual if atual in opcoes else "navegador"),
+                       key="cfg_api_modo_execucao", horizontal=True)
+    if escolha != atual:
+        if st.button("💾 Salvar configuração", type="primary", key="btn_cfg_api_modo_save"):
+            try:
+                store.set(CONFIG_API_TESTS_MODO_EXECUCAO, escolha, current_username)
+                st.session_state['api_modo_execucao'] = escolha
+                log_action(config, current_username, "Alterar Configuração", "Administração",
+                           f"Testes de API: modo de execução = {escolha}")
+                st.success(f"✅ Salvo: {opcoes[escolha]}. Vale pra todos os usuários a partir da próxima sessão deles.")
+            except Exception as error:
+                st.error(f"❌ Não foi possível salvar: {error}")
+    else:
+        st.caption(f"Configuração atual: **{opcoes[atual]}**.")
 
 
 def _render_active_sessions(config, client):

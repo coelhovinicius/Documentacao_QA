@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; font-family: "Source Sans Pro", sans-serif; font-size: 14px; color: #3A3A3A; }
+  .box { padding: 10px 12px; border-radius: 6px; background: #FAE5DC; border-left: 4px solid #F15A24; }
+  .ok { background: #EAFAF1; border-left-color: #1E8449; }
+  .err { background: #FDECEA; border-left-color: #C0392B; }
+  .bar { height: 6px; background: #eee; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  .bar > div { height: 100%; background: #F15A24; width: 0%; transition: width .2s; }
+</style>
+</head>
+<body>
+<div id="status" class="box">Aguardando…</div>
+<div class="bar"><div id="fill"></div></div>
+<script>
+/*
+ * Executor dos Testes de API no NAVEGADOR de quem usa o app.
+ * Motivo: WAFs (ex.: CloudFront do HML) bloqueiam IPs de provedores de nuvem
+ * (Streamlit Cloud, n8n na Oracle), mas aceitam o IP do usuário. As chamadas
+ * saem daqui e os resultados brutos voltam pro Python, que avalia as asserções.
+ *
+ * Protocolo do componente Streamlit implementado à mão (sem build):
+ *   recebe  {type:"streamlit:render", args:{...}}
+ *   envia   streamlit:componentReady / setFrameHeight / setComponentValue
+ */
+const RE_VAR = /\{\{\s*([\w.-]+)\s*\}\}/g;
+let ultimoRunId = null;
+
+function send(type, data) { window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*"); }
+function setStatus(txt, cls) { const el = document.getElementById("status"); el.textContent = txt; el.className = "box " + (cls || ""); }
+function setFill(p) { document.getElementById("fill").style.width = Math.round(p * 100) + "%"; }
+
+function substituir(texto, vars) {
+  if (!texto) return texto || "";
+  return String(texto).replace(RE_VAR, (m, nome) => (nome in vars ? vars[nome] : m));
+}
+function obterCaminho(dado, caminho) {
+  let atual = dado;
+  if (!caminho) return atual;
+  const tokens = caminho.match(/[^.\[\]]+|\[\d+\]/g) || [];
+  for (const tok of tokens) {
+    if (tok.startsWith("[")) {
+      const idx = parseInt(tok.slice(1, -1), 10);
+      if (Array.isArray(atual) && idx >= 0 && idx < atual.length) atual = atual[idx]; else return undefined;
+    } else {
+      if (atual && typeof atual === "object" && tok in atual) atual = atual[tok]; else return undefined;
+    }
+  }
+  return atual;
+}
+
+async function executarCaso(caso, vars, timeoutMs) {
+  const url = substituir(caso.url, vars);
+  const headers = {};
+  for (const [k, v] of Object.entries(caso.headers || {})) headers[k] = substituir(v, vars);
+  const body = substituir(caso.body || "", vars);
+  const metodo = (caso.metodo || "GET").toUpperCase();
+  const t0 = performance.now();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const base = { case_id: caso.id, url_final: url, request_headers: headers, request_body: body };
+  try {
+    const opts = { method: metodo, headers, signal: ctrl.signal, redirect: "follow", mode: "cors" };
+    if (body && !["GET", "HEAD"].includes(metodo)) opts.body = body;
+    const r = await fetch(url, opts);
+    const text = await r.text();
+    const respHeaders = {};
+    r.headers.forEach((v, k) => { respHeaders[k] = v; });
+    return Object.assign(base, { status: r.status, status_text: r.statusText || "", response_headers: respHeaders, body: text, tempo_ms: Math.round(performance.now() - t0), erro: "" });
+  } catch (e) {
+    const msg = e.name === "AbortError" ? `tempo limite de ${Math.round(timeoutMs / 1000)}s excedido`
+      : `${e.message || e}. Se a API não permitir CORS a partir do navegador, peça ao administrador para usar o modo "Servidor".`;
+    return Object.assign(base, { status: null, status_text: "", response_headers: {}, body: "", tempo_ms: Math.round(performance.now() - t0), erro: msg });
+  } finally { clearTimeout(timer); }
+}
+
+async function executar(args) {
+  const casos = args.casos || [];
+  const vars = Object.assign({}, args.variaveis || {});
+  const timeoutMs = (args.timeout_s || 30) * 1000;
+  const respostas = [];
+  for (let i = 0; i < casos.length; i++) {
+    const caso = casos[i];
+    setStatus(`Executando ${i + 1}/${casos.length}: ${caso.nome}`); setFill(i / casos.length);
+    const r = await executarCaso(caso, vars, timeoutMs);
+    // extração de variáveis pros próximos casos (mesma regra do runner Python)
+    if (r.status !== null && caso.extrair && caso.extrair.length) {
+      let json = null; try { json = JSON.parse(r.body); } catch (_) {}
+      if (json !== null) for (const ex of caso.extrair) {
+        const v = obterCaminho(json, substituir(ex.caminho, vars));
+        if (v !== undefined) vars[ex.nome] = typeof v === "string" ? v : JSON.stringify(v);
+      }
+    }
+    respostas.push(r);
+  }
+  setFill(1); setStatus(`Concluído: ${casos.length} caso(s) executado(s) a partir deste navegador. Enviando os resultados…`, "ok");
+  send("streamlit:setComponentValue", { value: { run_id: args.run_id, respostas }, dataType: "json" });
+}
+
+window.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type !== "streamlit:render") return;
+  const args = data.args || {};
+  if (!args.run_id || args.run_id === ultimoRunId) return;   // roda uma vez por execução
+  ultimoRunId = args.run_id;
+  executar(args).catch((e) => {
+    setStatus("Falha inesperada: " + (e.message || e), "err");
+    send("streamlit:setComponentValue", { value: { run_id: args.run_id, erro_geral: String(e.message || e), respostas: [] }, dataType: "json" });
+  });
+});
+send("streamlit:componentReady", { apiVersion: 1 });
+send("streamlit:setFrameHeight", { height: 70 });
+</script>
+</body>
+</html>

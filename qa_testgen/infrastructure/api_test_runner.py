@@ -20,6 +20,15 @@ from qa_testgen.domain.models.api_test import (
 )
 
 
+class _HeadersCI(dict):
+    """dict com .get() insensível a maiúsculas — o suficiente pra header_contains."""
+    def get(self, chave, default=None):
+        for k, v in self.items():
+            if str(k).lower() == str(chave).lower():
+                return v
+        return default
+
+
 class _SystemTrustAdapter(HTTPAdapter):
     """
     Usa o repositório de certificados do sistema operacional em vez do
@@ -164,6 +173,15 @@ class ApiTestRunner:
             resultado.erro = f"{aviso_vars}Falha na requisição: {error}"
             return resultado
         resultado.tempo_ms = int((time.perf_counter() - inicio) * 1000)
+        self._concluir_resultado(caso, resultado, resposta, aviso_vars)
+        return resultado
+
+    def _concluir_resultado(self, caso: ApiTestCase, resultado: ApiCaseResult, resposta, aviso_vars: str = "") -> None:
+        """
+        Parte comum entre a execução direta (requests) e a execução externa
+        (navegador): preenche a resposta no resultado, avalia as asserções e
+        extrai as variáveis pros próximos casos.
+        """
         resultado.status_code = resposta.status_code
         resultado.status_text = resposta.reason or ""
         resultado.response_headers = dict(resposta.headers)
@@ -194,7 +212,61 @@ class ApiTestRunner:
             if valor is not self._AUSENTE:
                 self.variaveis[ext.nome] = valor if isinstance(valor, str) else json.dumps(valor, ensure_ascii=False)
 
-        return resultado
+    # ---- Execução externa (respostas obtidas fora daqui, ex.: navegador) ----
+    class _RespostaExterna:
+        """Mesma interface mínima de requests.Response usada em _avaliar."""
+        def __init__(self, status_code, reason, headers, text):
+            self.status_code = status_code
+            self.reason = reason or ""
+            self.headers = _HeadersCI(headers or {})
+            self.text = text or ""
+
+        def json(self):
+            return json.loads(self.text)
+
+    def avaliar_execucao_externa(self, casos: list, respostas: list) -> list:
+        """
+        Recebe as respostas brutas obtidas por outro executor (o componente
+        de navegador), na MESMA ordem dos casos, e produz os ApiCaseResult
+        exatamente como a execução direta faria — substituição de
+        variáveis, asserções e extração acontecem aqui, em Python, pra que
+        as duas formas de execução avaliem igual.
+
+        respostas: [{"status", "status_text", "headers", "body", "tempo_ms",
+                     "erro", "url_final", "request_headers", "request_body"}]
+        Casos desabilitados não vêm nas respostas (são pulados aqui).
+        """
+        resultados = []
+        idx = 0
+        for caso in casos:
+            if isinstance(caso, dict):
+                caso = ApiTestCase.from_dict(caso)
+            if not caso.habilitado:
+                resultados.append(ApiCaseResult(
+                    case_id=caso.id, nome=caso.nome, metodo=caso.metodo, url_final=caso.url,
+                    request_headers={}, request_body="", status_code=None, status_text="",
+                    response_headers={}, response_body="", tempo_ms=0, pulado=True,
+                ))
+                continue
+            r = respostas[idx] if idx < len(respostas) else None
+            idx += 1
+            url = self.substituir(caso.url)
+            headers = {k: self.substituir(v) for k, v in (caso.headers or {}).items()}
+            body = self.substituir(caso.body or "")
+            resultado = ApiCaseResult(
+                case_id=caso.id, nome=caso.nome, metodo=caso.metodo, url_final=url,
+                request_headers=headers, request_body=body, status_code=None, status_text="",
+                response_headers={}, response_body="", tempo_ms=int((r or {}).get("tempo_ms") or 0),
+            )
+            if r is None:
+                resultado.erro = "O navegador não devolveu resposta para este caso."
+            elif r.get("status") is None:
+                resultado.erro = f"Falha na requisição: {r.get('erro') or 'sem detalhe'}"
+            else:
+                resposta = self._RespostaExterna(int(r["status"]), r.get("status_text"), r.get("headers") or {}, r.get("body") or "")
+                self._concluir_resultado(caso, resultado, resposta)
+            resultados.append(resultado)
+        return resultados
 
     # ---- Asserções ---------------------------------------------------------
     def _avaliar(self, a: ApiAssertion, resposta, json_body, tempo_ms: int) -> ApiAssertionResult:

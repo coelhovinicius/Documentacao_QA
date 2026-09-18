@@ -142,3 +142,40 @@ class DocumentStore:
     def excluir_grupo(self, grupo_id: str) -> None:
         with self._client() as client:
             client.execute("DELETE FROM documentos WHERE grupo_id = ?", [grupo_id])
+
+
+class AppSettingsStore:
+    """
+    Configurações globais do app (valem pra todos os usuários), guardadas no
+    mesmo banco Turso dos Documentos Armazenados — tabela chave/valor.
+    Só o dono altera (tela de Administração); todo mundo lê.
+    """
+    def __init__(self, database_url: str, auth_token: str):
+        self._store = DocumentStore(database_url, auth_token)
+
+    def ensure_schema(self) -> None:
+        with self._store._client() as client:
+            client.execute(
+                "CREATE TABLE IF NOT EXISTS app_config ("
+                "chave TEXT PRIMARY KEY, valor TEXT NOT NULL, atualizado_em TEXT NOT NULL, atualizado_por TEXT)"
+            )
+
+    def get(self, chave: str, default: str = None) -> str:
+        with self._store._client() as client:
+            result = client.execute("SELECT valor FROM app_config WHERE chave = ?", [chave])
+            for row in result:
+                return row["valor"]
+        return default
+
+    def set(self, chave: str, valor: str, atualizado_por: str = "") -> None:
+        with self._store._client() as client:
+            client.execute(
+                "INSERT INTO app_config (chave, valor, atualizado_em, atualizado_por) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor, atualizado_em = excluded.atualizado_em, "
+                "atualizado_por = excluded.atualizado_por",
+                [chave, valor, datetime.now(timezone.utc).isoformat(), atualizado_por],
+            )
+
+
+# Chaves conhecidas de configuração global
+CONFIG_API_TESTS_MODO_EXECUCAO = "api_tests_modo_execucao"   # "navegador" | "servidor"

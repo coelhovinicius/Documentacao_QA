@@ -317,7 +317,7 @@ Não existe mais `cookie_secret` — a sessão não usa assinatura local, valida
 | Etapa | O que acontece |
 |---|---|
 | 1. Definição | Nome, Ambiente, Base URL (`{{base_url}}`), origem dos casos (geração por IA via `Doc_QA_ApiTest_Generation` a partir de especificação/documentos; collection Postman + environment opcional; definição `.json` do próprio módulo; criação manual), variáveis (secretas só em sessão), documentos de contexto opcionais, editor por caso (método, URL, headers, body, asserções declarativas, extração de variáveis) |
-| 2. Execução | `ApiTestRunner` roda os casos habilitados em ordem com `requests` (uma `Session` por execução, certificados do sistema operacional), resolve `{{variáveis}}`, avalia as asserções e propaga valores extraídos (ex.: token) |
+| 2. Execução | Modo **Navegador** (padrão; config global em `app_config` no Turso, chave `api_tests_modo_execucao`): o componente `ui/components/api_browser_runner/index.html` faz as chamadas no browser do usuário (fetch + substituição de variáveis + extração), devolve as respostas brutas e `ApiTestRunner.avaliar_execucao_externa` avalia em Python. Modo **Servidor**: `ApiTestRunner` roda os casos habilitados em ordem com `requests` (uma `Session` por execução, certificados do sistema operacional), resolve `{{variáveis}}`, avalia as asserções e propaga valores extraídos (ex.: token) |
 | 3. Evidências | `ApiEvidenceBuilder` gera `RELATORIO.md` e `.zip` (pasta por caso: `1_request.txt`, `2_response.txt`, `3_resultado.txt` + imagens); `PdfReportGenerator.generate_api_test_report` gera o PDF no padrão do app; opção de salvar no Documentos Armazenados (tipos `pdf`, `md`, `zip`) |
 
 **Decisões técnicas:**
@@ -326,6 +326,8 @@ Não existe mais `cookie_secret` — a sessão não usa assinatura local, valida
 - Caso sem asserção é reprovado explicitamente; caso desabilitado aparece como "Não Executado".
 - Segurança: valores de variáveis secretas, tokens Bearer, JWTs e campos `password`/`token`/`secret` em JSON saem mascarados (`***MASCARADO***`) de todas as evidências; a definição `.json` exportada nunca inclui valores secretos.
 - Disco do Streamlit Cloud é efêmero: evidências existem para download ou para o Documentos Armazenados (Turso).
+- WAF do HML (CloudFront) bloqueia IPs de provedores de nuvem (testado: Streamlit Cloud/AWS e n8n/Oracle SP recebem 403 "Request blocked"; IP residencial passa). Por isso o modo Navegador é o padrão; exige CORS na API (o HML já responde `Access-Control-Allow-Origin: *`).
+- `AppSettingsStore` (document_store.py): tabela chave/valor `app_config` no Turso para configurações globais; alteradas só pelo dono em Administração → Configurações.
 - Testes unitários em `tests/test_api_tests_module.py` (importador, runner com servidor HTTP local, mascaramento/zip).
 
 **Próximas fases (não implementadas):** vínculo dos casos a Test Cases do Azure DevOps (existentes ou novos, com Projeto/Area Path/Tags/Atribuído a/Plano/Suíte) e registro de Test Runs com evidência anexada; geração determinística a partir de Swagger/OpenAPI.

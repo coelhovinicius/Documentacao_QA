@@ -179,3 +179,33 @@ class ApiEvidenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExternalExecutionTests(unittest.TestCase):
+    """Respostas obtidas fora do runner (componente de navegador) avaliadas em Python."""
+
+    def test_external_responses_are_evaluated_like_direct_execution(self):
+        col = PostmanImporter.parse_collection(json.dumps(COLLECTION).encode())
+        casos = col["casos"]
+        token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnop"
+        respostas = [
+            {"status": 200, "status_text": "OK", "headers": {"Content-Type": "application/json"},
+             "body": json.dumps({"data": {"token": token, "token_type": "Bearer"}}), "tempo_ms": 120, "erro": ""},
+            {"status": 200, "status_text": "OK", "headers": {"content-type": "application/json"},
+             "body": json.dumps({"data": {"roles": {"tenant": [{"name": "Colaborador"}]}}}), "tempo_ms": 80, "erro": ""},
+        ]
+        runner = ApiTestRunner({"base_url": "http://x", "valid_password": "s3cr3t"})
+        res = runner.avaliar_execucao_externa(casos, respostas)
+        self.assertEqual([r.passou for r in res], [True, True], [[a.detalhe for a in r.assercoes] for r in res])
+        self.assertEqual(runner.variaveis["auth_token"], token)
+        self.assertEqual(res[1].request_headers["Authorization"], f"Bearer {token}")
+
+    def test_external_network_error_and_disabled_case(self):
+        col = PostmanImporter.parse_collection(json.dumps(COLLECTION).encode())
+        casos = col["casos"]
+        casos[1].habilitado = False
+        res = ApiTestRunner({"base_url": "http://x"}).avaliar_execucao_externa(
+            casos, [{"status": None, "erro": "Failed to fetch", "tempo_ms": 5}])
+        self.assertEqual(res[0].resultado_label, "Erro")
+        self.assertIn("Failed to fetch", res[0].erro)
+        self.assertTrue(res[1].pulado)
