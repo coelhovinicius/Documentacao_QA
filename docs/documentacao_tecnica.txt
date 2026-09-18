@@ -211,7 +211,10 @@ O app funciona em 7 etapas, uma de cada vez:
   Em "Criar Work Item" também existe o modo "Fila / planilha":
   dá pra juntar vários Work Items (pelo formulário ou por uma
   planilha, com modelo baixado na própria tela) e enviar tudo de
-  uma vez, com validação linha a linha antes.
+  uma vez. Ao subir a planilha, o app diz quantas linhas estão
+  prontas e, pra cada pendência, a linha, a coluna que falta e os
+  valores aceitos. Depois do envio, mostra o resumo com o link de
+  cada item criado e um link pra ver todos juntos no Azure DevOps.
 
 
 8. COMO FUNCIONA A ÁREA DE ADMINISTRAÇÃO?
