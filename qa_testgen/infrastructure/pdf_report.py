@@ -663,6 +663,7 @@ class PdfReportGenerator:
     _API_STATUS_COLORS = {
         'erro': (colors.HexColor('#B9770E'), colors.HexColor('#FEF5E7')),
         'não executado': (colors.HexColor('#7A7A7A'), colors.HexColor('#F0F0F0')),
+        'bloqueado': (colors.HexColor('#7A7A7A'), colors.HexColor('#F0F0F0')),
     }
 
     @classmethod
@@ -772,7 +773,7 @@ class PdfReportGenerator:
         story.append(Paragraph("1. Resumo da Execução", styles['section']))
         executados = resumo.get('total', 0) - resumo.get('pulados', 0)
         resumo_rows = [
-            ["Casos executados", f"{executados} de {resumo.get('total', 0)}" + (f" ({resumo.get('pulados')} desabilitado(s))" if resumo.get('pulados') else "")],
+            ["Casos executados", f"{executados} de {resumo.get('total', 0)}" + (f" ({resumo.get('pulados')} não executado(s) — desabilitado(s) ou bloqueado(s))" if resumo.get('pulados') else "")],
             ["Aprovados / Reprovados / Erros", f"{resumo.get('aprovados', 0)} / {resumo.get('reprovados', 0)} / {resumo.get('erros', 0)}"],
             ["Asserções", f"{resumo.get('assercoes', 0)} executadas · {resumo.get('assercoes_ok', 0)} passaram · {resumo.get('assercoes', 0) - resumo.get('assercoes_ok', 0)} falharam"],
             ["Tempo de resposta", f"médio {resumo.get('tempo_medio_ms', 0)} ms · mín. {resumo.get('tempo_min_ms', 0)} ms · máx. {resumo.get('tempo_max_ms', 0)} ms"],

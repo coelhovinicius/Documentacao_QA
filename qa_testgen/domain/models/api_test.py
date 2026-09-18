@@ -150,6 +150,7 @@ class ApiCaseResult:
     assercoes: List[ApiAssertionResult] = field(default_factory=list)
     erro: str = ""
     pulado: bool = False
+    motivo_pulo: str = ""   # vazio = caso desabilitado; preenchido = bloqueado por dependência (variável de caso anterior que falhou)
 
     @property
     def passou(self) -> bool:
@@ -158,7 +159,13 @@ class ApiCaseResult:
         return all(a.passou for a in self.assercoes)
 
     @property
+    def bloqueado(self) -> bool:
+        return self.pulado and bool(self.motivo_pulo)
+
+    @property
     def resultado_label(self) -> str:
+        if self.bloqueado:
+            return "Bloqueado"
         if self.pulado:
             return "Não Executado"
         if self.erro:

@@ -146,6 +146,36 @@ class ApiTestRunnerTests(unittest.TestCase):
         self.assertIn("Nenhuma asserção", res[0].assercoes[0].descricao)
         self.assertTrue(res[1].pulado)
 
+    def test_dependent_case_is_blocked_when_upstream_extraction_fails(self):
+        # caso 1 falha (senha errada) e não extrai auth_token; caso 2 usa {{auth_token}} -> Bloqueado
+        runner = ApiTestRunner({"base_url": self.base, "valid_password": "errada", "auth_token": ""})
+        res = runner.executar(self._casos())
+        self.assertFalse(res[0].passou)
+        self.assertTrue(res[1].bloqueado)
+        self.assertEqual(res[1].resultado_label, "Bloqueado")
+        self.assertIn("'auth_token'", res[1].motivo_pulo)
+        self.assertIn("\"Login\"", res[1].motivo_pulo)
+        self.assertEqual(res[1].status_code, None)   # não mandou a requisição
+        # variável preenchida à mão pela pessoa -> não bloqueia
+        runner2 = ApiTestRunner({"base_url": self.base, "valid_password": "errada", "auth_token": "manual"})
+        res2 = runner2.executar(self._casos())
+        self.assertFalse(res2[1].bloqueado)
+        self.assertEqual(res2[1].status_code, 401)
+        # variável que ninguém extrai (só faltou definir) -> não bloqueia, roda com o aviso de sempre
+        caso = ApiTestCase(id="z", nome="sem produtor", metodo="GET", url=self.base + "/me",
+                           headers={"Authorization": "Bearer {{outra}}"}, assercoes=[ApiAssertion(tipo="status", valor="401")])
+        self.assertFalse(ApiTestRunner({"base_url": self.base}).executar([caso])[0].bloqueado)
+
+    def test_external_blocked_case_is_evaluated_like_python(self):
+        casos = self._casos()
+        respostas = [
+            {"status": 401, "status_text": "Unauthorized", "headers": {}, "body": "{\"message\": \"invalid\"}", "tempo_ms": 5},
+            {"status": None, "bloqueado": "variável vazia: auth_token", "tempo_ms": 0},
+        ]
+        res = ApiTestRunner({"base_url": self.base, "valid_password": "errada", "auth_token": ""}).avaliar_execucao_externa(casos, respostas)
+        self.assertTrue(res[1].bloqueado)
+        self.assertIn("'auth_token'", res[1].motivo_pulo)
+
     def test_json_path_helpers(self):
         dado = {"errors": {"email": ["req"]}, "items": [{"id": 7}]}
         self.assertEqual(ApiTestRunner.obter_caminho(dado, "errors.email[0]"), "req")
@@ -175,6 +205,15 @@ class ApiEvidenceTests(unittest.TestCase):
         self.assertTrue(any(n.endswith("/RELATORIO.md") for n in nomes))
         self.assertTrue(any(n.endswith("/01_login/1_request.txt") for n in nomes))
         self.assertTrue(any(n.endswith("/indice.json") for n in nomes))
+
+    def test_zip_definition_keeps_header_templates_but_hides_secret_values(self):
+        definicao = json.dumps({"casos": [{"headers": {"Authorization": "Bearer {{auth_token}}"}}],
+                                "variaveis": [{"nome": "valid_password", "valor": "s3cr3t"}]})
+        z = ApiEvidenceBuilder.gerar_zip("Proj", [], "# md", segredos=["s3cr3t"], definicao_json=definicao)
+        zf = zipfile.ZipFile(__import__("io").BytesIO(z))
+        conteudo = zf.read([n for n in zf.namelist() if n.endswith("definicao-testes.json")][0]).decode()
+        self.assertIn("Bearer {{auth_token}}", conteudo)
+        self.assertNotIn("s3cr3t", conteudo)
 
 
 if __name__ == "__main__":

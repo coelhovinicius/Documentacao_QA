@@ -26,6 +26,7 @@
  *   envia   streamlit:componentReady / setFrameHeight / setComponentValue
  */
 const RE_VAR = /\{\{\s*([\w.-]+)\s*\}\}/g;
+const RE_VAR_G = /\{\{\s*([\w.-]+)\s*\}\}/g;
 let ultimoRunId = null;
 
 function send(type, data) { window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*"); }
@@ -81,10 +82,25 @@ async function executar(args) {
   const vars = Object.assign({}, args.variaveis || {});
   const timeoutMs = (args.timeout_s || 30) * 1000;
   const respostas = [];
+  const produtores = {};   // variável -> nome do caso anterior que deveria extraí-la
   for (let i = 0; i < casos.length; i++) {
     const caso = casos[i];
     setStatus(`Executando ${i + 1}/${casos.length}: ${caso.nome}`); setFill(i / casos.length);
-    const r = await executarCaso(caso, vars, timeoutMs);
+    // Mesma regra do runner Python: variável de caso anterior que ficou vazia
+    // (extração falhou) bloqueia este caso em vez de mandar a URL quebrada.
+    const usadas = new Set();
+    for (const txt of [caso.url, caso.body].concat(Object.values(caso.headers || {}))) {
+      for (const m of String(txt || "").matchAll(RE_VAR_G)) usadas.add(m[1]);
+    }
+    const faltando = [...usadas].filter((n) => n in produtores && !String(vars[n] || "").trim());
+    let r;
+    if (faltando.length) {
+      r = { case_id: caso.id, status: null, status_text: "", response_headers: {}, body: "", tempo_ms: 0, erro: "",
+            bloqueado: "variável vazia: " + faltando.join(", ") };
+    } else {
+      r = await executarCaso(caso, vars, timeoutMs);
+    }
+    for (const ex of (caso.extrair || [])) if (ex.nome && !(ex.nome in produtores)) produtores[ex.nome] = caso.nome;
     // extração de variáveis pros próximos casos (mesma regra do runner Python)
     if (r.status !== null && caso.extrair && caso.extrair.length) {
       let json = null; try { json = JSON.parse(r.body); } catch (_) {}

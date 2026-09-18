@@ -284,7 +284,9 @@ class ApiTestsPageMixin:
                 "reconciliando. Depois do Passo 7, o app oferece registrar a execução como **Test Run** oficial "
                 "(Passed/Failed por caso + PDF anexado), visível na aba Execute do Test Plan.\n\n"
                 "**Regras:** um caso sem asserção é reprovado (o mínimo é o status HTTP esperado); casos "
-                "desabilitados não rodam e aparecem como \"Não Executado\"; nada é enviado ao Azure DevOps nesta versão."
+                "desabilitados não rodam e aparecem como \"Não Executado\"; um caso que depende de uma variável que um caso "
+                "anterior deveria extrair (ex.: `{{survey_id}}`) e ficou vazia aparece como **Bloqueado**, com o motivo, em vez "
+                "de rodar com a URL quebrada."
             )
 
     # ------------------------------------------------------------ 1. Definição
@@ -1097,6 +1099,8 @@ class ApiTestsPageMixin:
                     st.markdown(f"- {'✅' if a.passou else '❌'} {a.descricao}" + (f" — _{a.detalhe}_" if (not a.passou and a.detalhe) else ""))
                 if r.erro:
                     st.error(r.erro)
+                if r.bloqueado:
+                    st.warning(f"⛔ {r.motivo_pulo}")
                 if not r.pulado:
                     with st.expander("📤 Request enviado"):
                         st.code(ApiEvidenceBuilder.texto_request(r, segredos), language="http")

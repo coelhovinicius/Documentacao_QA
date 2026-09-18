@@ -101,7 +101,24 @@ class ApiEvidenceBuilder:
         return "\n".join(linhas).rstrip() + "\n"
 
     @classmethod
+    def mascarar_somente_segredos(cls, texto: str, segredos: list = None) -> str:
+        """
+        Só troca os VALORES secretos conhecidos — sem as regras genéricas
+        (Bearer/JWT/campos sensíveis). Usada na definição da bateria que vai
+        no .zip: lá `Authorization: Bearer {{auth_token}}` é um modelo, não
+        um segredo, e mascará-lo inutilizava o arquivo pra repetir a bateria.
+        """
+        if not texto:
+            return texto or ""
+        saida = texto
+        for segredo in sorted({s for s in (segredos or []) if s and len(s) >= 3}, key=len, reverse=True):
+            saida = saida.replace(segredo, MASCARA)
+        return saida
+
+    @classmethod
     def texto_response(cls, r: ApiCaseResult, segredos: list = None) -> str:
+        if r.bloqueado:
+            return f"NÃO EXECUTADO — {r.motivo_pulo}\n"
         if r.pulado:
             return "Caso desabilitado — não executado.\n"
         if r.status_code is None:
@@ -122,6 +139,8 @@ class ApiEvidenceBuilder:
         ]
         if r.erro:
             linhas.append(f"Erro: {r.erro}")
+        if r.bloqueado:
+            linhas.append(f"Motivo: {r.motivo_pulo}")
         linhas.append("")
         linhas.append("Asserções:")
         for a in r.assercoes:
@@ -145,7 +164,7 @@ class ApiEvidenceBuilder:
             md.append(f"**Executor:** {autor}  ")
         md.append(f"**Status geral:** {'✅' if res['status_geral'] == 'Aprovado' else '❌'} **{res['status_geral']}**")
         md += ["", "---", "", "## 1. Resumo", "", "| Métrica | Valor |", "|---|---|"]
-        md.append(f"| Casos executados | {res['total'] - res['pulados']} de {res['total']}" + (f" ({res['pulados']} desabilitado(s))" if res['pulados'] else "") + " |")
+        md.append(f"| Casos executados | {res['total'] - res['pulados']} de {res['total']}" + (f" ({res['pulados']} não executado(s) — desabilitado(s) ou bloqueado(s))" if res['pulados'] else "") + " |")
         md.append(f"| Aprovados / Reprovados / Erros | {res['aprovados']} / {res['reprovados']} / {res['erros']} |")
         md.append(f"| Asserções | {res['assercoes']} executadas · {res['assercoes_ok']} passaram · {res['assercoes'] - res['assercoes_ok']} falharam |")
         md.append(f"| Tempo de resposta | médio {res['tempo_medio_ms']} ms · mín. {res['tempo_min_ms']} ms · máx. {res['tempo_max_ms']} ms |")
@@ -178,6 +197,8 @@ class ApiEvidenceBuilder:
                 md.append(f"- {'✅' if a.passou else '❌'} {a.descricao}" + (f" — _{a.detalhe}_" if (not a.passou and a.detalhe) else ""))
             if r.erro:
                 md.append(f"- ⚠️ Erro: {r.erro}")
+            if r.bloqueado:
+                md.append(f"- ⛔ {r.motivo_pulo}")
             md.append("")
             if not r.pulado:
                 md += ["<details><summary>Request</summary>", "", "```http", cls.texto_request(r, segredos).rstrip(), "```", "", "</details>", ""]
@@ -211,7 +232,7 @@ class ApiEvidenceBuilder:
             if relatorio_pdf:
                 z.writestr(f"{raiz}/RELATORIO.pdf", relatorio_pdf)
             if definicao_json:
-                z.writestr(f"{raiz}/definicao-testes.json", cls.mascarar(definicao_json, segredos).encode("utf-8"))
+                z.writestr(f"{raiz}/definicao-testes.json", cls.mascarar_somente_segredos(definicao_json, segredos).encode("utf-8"))
             for idx, r in enumerate(resultados, start=1):
                 pasta = f"{raiz}/{idx:02d}_{cls.slug(r.nome)}"
                 z.writestr(f"{pasta}/1_request.txt", cls.texto_request(r, segredos).encode("utf-8"))

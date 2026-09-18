@@ -129,21 +129,55 @@ class ApiTestRunner:
     def executar(self, casos: list, on_progress: Optional[Callable[[int, int, ApiCaseResult], None]] = None) -> list:
         resultados = []
         total = len(casos)
+        produtores = {}   # variável -> nome do caso anterior que deveria extraí-la
         for idx, caso in enumerate(casos, start=1):
             if isinstance(caso, dict):
                 caso = ApiTestCase.from_dict(caso)
             if not caso.habilitado:
-                res = ApiCaseResult(
-                    case_id=caso.id, nome=caso.nome, metodo=caso.metodo, url_final=caso.url,
-                    request_headers={}, request_body="", status_code=None, status_text="",
-                    response_headers={}, response_body="", tempo_ms=0, pulado=True,
-                )
+                res = self._resultado_pulado(caso)
             else:
-                res = self.executar_caso(caso)
+                motivo = self.motivo_bloqueio(caso, produtores)
+                res = self._resultado_pulado(caso, motivo) if motivo else self.executar_caso(caso)
+            self._registrar_produtores(caso, produtores)
             resultados.append(res)
             if on_progress:
                 on_progress(idx, total, res)
         return resultados
+
+    # ---- Dependência entre casos -------------------------------------------
+    @staticmethod
+    def _resultado_pulado(caso: ApiTestCase, motivo: str = "") -> ApiCaseResult:
+        return ApiCaseResult(
+            case_id=caso.id, nome=caso.nome, metodo=caso.metodo, url_final=caso.url,
+            request_headers={}, request_body="", status_code=None, status_text="",
+            response_headers={}, response_body="", tempo_ms=0, pulado=True, motivo_pulo=motivo,
+        )
+
+    @staticmethod
+    def _registrar_produtores(caso: ApiTestCase, produtores: dict) -> None:
+        for ex in (caso.extrair or []):
+            nome = getattr(ex, "nome", None) if not isinstance(ex, dict) else ex.get("nome")
+            if nome and nome not in produtores:
+                produtores[nome] = caso.nome
+
+    def motivo_bloqueio(self, caso: ApiTestCase, produtores: dict) -> str:
+        """
+        Um caso que usa `{{variavel}}` que um caso ANTERIOR deveria ter
+        extraído — e que continua vazia (a extração falhou) — não pode
+        rodar de verdade: iria com a URL quebrada (ex.: /surveys//questions)
+        e reprovaria por um motivo que não é dele. Devolve o motivo do
+        bloqueio, ou "" se pode executar.
+        """
+        usadas = set(self._RE_VAR.findall(caso.url or ""))
+        for v in (caso.headers or {}).values():
+            usadas.update(self._RE_VAR.findall(v or ""))
+        usadas.update(self._RE_VAR.findall(caso.body or ""))
+        faltando = sorted(n for n in usadas if n in produtores and not (self.variaveis.get(n) or "").strip())
+        if not faltando:
+            return ""
+        return "Bloqueado: " + "; ".join(
+            f"a variável '{n}' está vazia — o caso \"{produtores[n]}\" deveria extraí-la e não conseguiu" for n in faltando
+        ) + ". Corrija o caso anterior (ou preencha a variável) e execute de novo."
 
     def executar_caso(self, caso: ApiTestCase) -> ApiCaseResult:
         url = self.substituir(caso.url)
@@ -238,18 +272,24 @@ class ApiTestRunner:
         """
         resultados = []
         idx = 0
+        produtores = {}
         for caso in casos:
             if isinstance(caso, dict):
                 caso = ApiTestCase.from_dict(caso)
             if not caso.habilitado:
-                resultados.append(ApiCaseResult(
-                    case_id=caso.id, nome=caso.nome, metodo=caso.metodo, url_final=caso.url,
-                    request_headers={}, request_body="", status_code=None, status_text="",
-                    response_headers={}, response_body="", tempo_ms=0, pulado=True,
-                ))
+                resultados.append(self._resultado_pulado(caso))
+                self._registrar_produtores(caso, produtores)
                 continue
             r = respostas[idx] if idx < len(respostas) else None
             idx += 1
+            motivo = self.motivo_bloqueio(caso, produtores)
+            if motivo or (r or {}).get("bloqueado"):
+                # O navegador também pula o caso (sem mandar a requisição);
+                # o motivo é recalculado aqui pra ficar igual nos dois modos.
+                resultados.append(self._resultado_pulado(caso, motivo or str(r.get("bloqueado"))))
+                self._registrar_produtores(caso, produtores)
+                continue
+            self._registrar_produtores(caso, produtores)
             url = self.substituir(caso.url)
             headers = {k: self.substituir(v) for k, v in (caso.headers or {}).items()}
             body = self.substituir(caso.body or "")
