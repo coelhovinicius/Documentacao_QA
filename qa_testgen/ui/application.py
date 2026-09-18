@@ -170,8 +170,10 @@ AREA_HELP = {
         "Iterations e pessoas deste projeto — a aba *Instruções* explica cada coluna), preencha uma "
         "linha por item e suba o arquivo; o app valida linha a linha e mostra o que corrigir. "
         "Na coluna **Pai** use o ID de um item existente ou `#Ref` de outra linha (o pai é criado "
-        "antes). Nada é criado até você clicar em **Enviar** e confirmar; o que falhar fica na fila "
-        "com o motivo, pra corrigir e reenviar."
+        "antes). Nada é criado até você clicar em **Enviar** e confirmar. Ao terminar, aparece no topo "
+        "o **resumo do envio**: tabela com ID, tipo e título de cada item criado, link direto pra cada um, "
+        "link pra ver todos juntos numa consulta do Azure DevOps e download do resumo em .md; o que "
+        "falhar fica na fila com o motivo, pra corrigir e reenviar."
     ),
 }
 
@@ -6053,10 +6055,12 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
 
         st.divider()
         n_fila = len(self.state.get('wi_fila') or [])
+        # Os rótulos precisam ser fixos: se mudassem (ex.: "— 2 na fila"), o Streamlit trataria o rádio como
+        # um widget novo e voltaria pra primeira opção a cada mudança na fila — inclusive logo após o envio.
         modo = st.radio(
             "O que você quer criar?",
             options=["📝 Um Work Item", "🧩 Vários filhos de um Work Item (quebrar em Tasks)",
-                     "📋 Fila / planilha (vários Work Items)" + (f" — {n_fila} na fila" if n_fila else "")],
+                     "📋 Fila / planilha (vários Work Items)"],
             index=0,
             key="wi_modo_radio",
             horizontal=True,
@@ -6068,6 +6072,9 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
                 "ou por planilha — e envia tudo de uma vez."
             ),
         )
+
+        if n_fila and not modo.startswith("📋"):
+            st.caption(f"🧺 {n_fila} item(ns) esperando na fila — envie pelo modo **Fila / planilha**.")
 
         if modo.startswith("🧩"):
             self._wi_modo_filhos_em_lote(ado_client, ado_project, tipos, catalogo)

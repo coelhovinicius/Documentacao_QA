@@ -7,6 +7,8 @@ planilha gerado a partir do projeto e resultado por item.
 Mixin de UserInterface (mesmo padrão de ApiTestsPageMixin).
 """
 import uuid
+from datetime import datetime
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -18,6 +20,8 @@ from qa_testgen.infrastructure.azure_devops_client import AzureDevOpsClient
 WI_BATCH_STATE_DEFAULTS = {
     'wi_fila': [],                 # itens aguardando envio
     'wi_fila_resultados': [],      # itens já enviados (sucesso) na última rodada
+    'wi_fila_falhas': [],          # itens que falharam na última rodada (ficam também na fila, com o erro)
+    'wi_fila_enviado_em': None,    # quando foi a última rodada (texto)
     'wi_fila_listas': None,        # {"project", "area_paths", "iterations", "pessoas", "extras_por_tipo"}
     'wi_fila_prevalidado': None,   # linhas do último arquivo validado
     'wi_fila_confirmando': False,
@@ -143,6 +147,8 @@ class WorkItemBatchMixin:
         if not listas:
             return
 
+        self._wi_fila_resultados(ado_client)   # resumo da última rodada, sempre no topo
+
         # ---- Modelo + upload ----
         with st.expander("📄 Planilha: baixar o modelo e subir o arquivo preenchido", expanded=not (self.state.get('wi_fila') or [])):
             st.markdown(
@@ -212,7 +218,6 @@ class WorkItemBatchMixin:
         st.markdown(f"##### 🧺 Itens na fila ({len(fila)})")
         if not fila:
             st.info("A fila está vazia. Suba uma planilha acima ou volte ao modo \"Um Work Item\" e use **➕ Adicionar à fila**.")
-            self._wi_fila_resultados()
             return
 
         for idx, item in enumerate(fila):
@@ -256,7 +261,6 @@ class WorkItemBatchMixin:
 
         if self.state.get('wi_fila_confirmando'):
             self._wi_fila_confirmar_e_enviar(ado_client, fila)
-        self._wi_fila_resultados()
 
     # ---------------------------------------------------------------- envio
     def _wi_fila_confirmar_e_enviar(self, ado_client, fila: list):
@@ -281,7 +285,7 @@ class WorkItemBatchMixin:
 
         if self.state.get('current_action') == 'wi_fila_enviar' and not self.state.get('show_interrupt_modal'):
             self.state.set('wi_fila_confirmando', False)
-            criados_por_ref, sucesso, restantes = {}, [], []
+            criados_por_ref, sucesso, restantes, falhas = {}, [], [], []
             barra = st.progress(0.0, text="Criando Work Items...")
             for n, item in enumerate(ordenados, start=1):
                 barra.progress(n / len(ordenados), text=f"{n}/{len(ordenados)} — {item['tipo']}: {item['titulo']}")
@@ -313,12 +317,14 @@ class WorkItemBatchMixin:
                     if item.get("ref"):
                         criados_por_ref[item["ref"]] = resultado["id"]
                     sucesso.append({"tipo": item["tipo"], "titulo": item["titulo"], "id": resultado["id"],
-                                    "url": resultado.get("url", ""), "aviso": resultado.get("state_warning"),
-                                    "parent_id": parent_id})
+                                    "url": resultado.get("url") or ado_client.work_item_url(resultado["id"]),
+                                    "aviso": resultado.get("state_warning"), "parent_id": parent_id,
+                                    "ref": item.get("ref") or ""})
                 except Exception as error:
                     item = dict(item)
                     item["resultado"] = {"erro": str(error)}
                     restantes.append(item)
+                    falhas.append({"tipo": item["tipo"], "titulo": item["titulo"], "erro": str(error)})
             barra.empty()
             try:
                 self._log("Criar Work Item", "Criar Work Item (lote)",
@@ -327,6 +333,8 @@ class WorkItemBatchMixin:
                 pass
             self.state.set('wi_fila', restantes)
             self.state.set('wi_fila_resultados', sucesso)
+            self.state.set('wi_fila_falhas', falhas)
+            self.state.set('wi_fila_enviado_em', datetime.now().strftime("%d/%m/%Y %H:%M"))
             self.clear_action()
             if restantes:
                 self._flash_warning(f"{len(sucesso)} Work Item(s) criado(s); {len(restantes)} ficaram na fila com erro — corrija e envie de novo.")
@@ -334,20 +342,71 @@ class WorkItemBatchMixin:
                 self._flash_success(f"{len(sucesso)} Work Item(s) criado(s) no Azure DevOps.")
             st.rerun()
 
-    def _wi_fila_resultados(self):
+    def _wi_fila_resultados(self, ado_client=None):
+        """Resumo da última rodada de envio: o que foi criado (com link direto) e o que falhou."""
         res = self.state.get('wi_fila_resultados') or []
-        if not res:
+        falhas = self.state.get('wi_fila_falhas') or []
+        if not res and not falhas:
             return
-        st.markdown(f"##### ✅ Criados na última rodada ({len(res)})")
-        for r in res:
-            linha = f"- **{r['tipo']}** #{r['id']} — {r['titulo']}"
-            if r.get("parent_id"):
-                linha += f" (filho de {r['parent_id']})"
-            if r.get("url"):
-                linha += f" · [abrir no Azure DevOps]({r['url']})"
-            st.markdown(linha)
-            if r.get("aviso"):
-                st.caption(f"⚠️ {r['aviso']}")
-        if st.button("Limpar este resumo", key="btn_wi_fila_limpar_res"):
-            self.state.set('wi_fila_resultados', [])
-            st.rerun()
+        quando = self.state.get('wi_fila_enviado_em')
+        with st.container(border=True):
+            if res and not falhas:
+                st.success(f"✅ **Envio concluído{' em ' + quando if quando else ''}:** {len(res)} Work Item(s) criado(s) no Azure DevOps.")
+            elif res:
+                st.warning(f"⚠️ **Envio parcial{' em ' + quando if quando else ''}:** {len(res)} criado(s), {len(falhas)} com erro "
+                           "(continuam na fila abaixo — corrija e envie de novo).")
+            else:
+                st.error(f"❌ **Nenhum item foi criado{' em ' + quando if quando else ''}:** {len(falhas)} com erro (veja a fila abaixo).")
+
+            if res:
+                st.dataframe(pd.DataFrame([{
+                    "ID": r["id"], "Tipo": r["tipo"], "Título": r["titulo"],
+                    "Pai": str(r.get("parent_id") or ""), "Abrir": r.get("url") or "",
+                } for r in res]), width="stretch", hide_index=True,
+                    column_config={
+                        "ID": st.column_config.NumberColumn(format="%d", width="small"),
+                        "Pai": st.column_config.TextColumn(width="small"),
+                        "Abrir": st.column_config.LinkColumn("Abrir no Azure", display_text="🔗 abrir"),
+                    })
+                for r in res:
+                    if r.get("aviso"):
+                        st.caption(f"⚠️ #{r['id']}: {r['aviso']}")
+                links = " · ".join(f"[#{r['id']}]({r['url']})" for r in res if r.get("url"))
+                todos = self._wi_fila_url_consulta(ado_client, [r["id"] for r in res])
+                st.markdown(("**Links diretos:** " + links if links else "")
+                            + (f"  \n**🔎 [Ver todos juntos no Azure DevOps]({todos})** (consulta com os {len(res)} IDs)" if todos else ""))
+            if falhas:
+                st.markdown("**Não criados:**\n" + "\n".join(f"- {f['tipo']} — {f['titulo']}: {f['erro']}" for f in falhas))
+
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.download_button("⬇️ Baixar este resumo (.md)", self._wi_fila_resumo_md(res, falhas, quando, todos if res else ""),
+                                   file_name="work-items-criados.md", mime="text/markdown", width="stretch", key="dl_wi_fila_resumo")
+            with c2:
+                if st.button("Limpar este resumo", key="btn_wi_fila_limpar_res", width="stretch"):
+                    self.state.set('wi_fila_resultados', [])
+                    self.state.set('wi_fila_falhas', [])
+                    self.state.set('wi_fila_enviado_em', None)
+                    st.rerun()
+
+    @staticmethod
+    def _wi_fila_url_consulta(ado_client, ids: list) -> str:
+        """Link pra uma consulta temporária no Azure DevOps listando só os IDs criados."""
+        if ado_client is None or not ids or not getattr(ado_client, "organization", "") or not getattr(ado_client, "project", ""):
+            return ""
+        wiql = ("SELECT [System.Id], [System.WorkItemType], [System.Title], [System.State], [System.AssignedTo] "
+                f"FROM WorkItems WHERE [System.Id] IN ({', '.join(str(i) for i in ids)}) ORDER BY [System.Id]")
+        return (f"https://dev.azure.com/{quote(ado_client.organization, safe='')}/{quote(ado_client.project, safe='')}"
+                f"/_queries/query/?wiql={quote(wiql, safe='')}")
+
+    @staticmethod
+    def _wi_fila_resumo_md(res: list, falhas: list, quando, url_todos: str) -> bytes:
+        linhas = [f"# Work Items criados via QA TestGen{' — ' + quando if quando else ''}", ""]
+        if res:
+            linhas += ["| ID | Tipo | Título | Pai | Link |", "|---|---|---|---|---|"]
+            linhas += [f"| {r['id']} | {r['tipo']} | {r['titulo']} | {r.get('parent_id') or ''} | {r.get('url') or ''} |" for r in res]
+            if url_todos:
+                linhas += ["", f"Ver todos juntos: {url_todos}"]
+        if falhas:
+            linhas += ["", "## Não criados", ""] + [f"- {f['tipo']} — {f['titulo']}: {f['erro']}" for f in falhas]
+        return ("\n".join(linhas) + "\n").encode("utf-8")
