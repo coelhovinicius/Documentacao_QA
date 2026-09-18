@@ -17,6 +17,7 @@ import streamlit.components.v1 as components
 from qa_testgen.domain.models.api_test import (
     ASSERTION_TYPES, ASSERTION_LABELS, HTTP_METHODS, ApiTestCase,
 )
+from qa_testgen.infrastructure.api_discovery import montar_sondas, analisar as analisar_sondas
 from qa_testgen.infrastructure.api_evidence import ApiEvidenceBuilder
 from qa_testgen.infrastructure.api_test_runner import ApiTestRunner
 from qa_testgen.infrastructure.document_processor import DocumentProcessor
@@ -57,6 +58,8 @@ API_TESTS_STATE_DEFAULTS = {
     'api_baixado': False,       # algum download/salvamento já foi feito nesta geração
     'api_modo_execucao': None,  # cache da configuração global (navegador|servidor)
     'api_browser_job': None,    # execução em andamento no navegador {run_id, casos, variaveis, timeout_s}
+    'api_probe_job': None,      # reconhecimento da API em andamento (navegador)
+    'api_reconhecimento': None, # último resultado do reconhecimento {observacoes, tabela, rotas_reais}
     'show_new_api_run_modal': False,
     'show_leave_api_modal': False,
 }
@@ -236,6 +239,10 @@ class ApiTestsPageMixin:
                 "de senha, ficam só nesta sessão e saem **mascaradas** de toda evidência. Um caso pode **extrair** "
                 "um valor da resposta pra uma variável (ex.: `data.token` → `auth_token`) e os casos seguintes usam "
                 "`{{auth_token}}` — por isso a ordem importa.\n\n"
+                "**🔎 Reconhecer a API** (dentro de Gerar com IA): antes de gerar, o app faz chamadas sem credencial "
+                "nas rotas citadas na especificação e descobre a rota real (ex.: /api/v1/...), o formato dos erros "
+                "(chave i18n, errors.<campo>) e quais rotas exigem token — e escreve isso nas Observações pra IA não "
+                "inventar. Use sempre que a User Story não trouxer os endpoints.\n\n"
                 "**Contexto (opcional):** texto livre e documentos de apoio que entram no relatório como seção "
                 "\"Contexto\" — ex.: qual User Story está sendo testada, que credenciais/perfil foram usados, o que "
                 "se espera. Não altera a execução; é só documentação.\n\n"
@@ -358,6 +365,7 @@ class ApiTestsPageMixin:
                 placeholder="Ex.: User Story — Login. Endpoint POST /api/auth/login. Dados: email (obrigatório, formato válido), "
                             "password (obrigatório). Retorno 200: { data: { token, token_type, user } } ... 422 ... 401 ... 403 ...",
             ))
+        self._api_render_reconhecimento(docs_txt_disponivel=bool(self.state.get('api_docs_texto')))
         self.state.set('api_ia_observacoes', st.text_area(
             "Observações / dicas pra IA (opcional)",
             value=self.state.get('api_ia_observacoes') or '', height=80, key="apiw_ia_obs",
@@ -392,6 +400,72 @@ class ApiTestsPageMixin:
                 self._flash_error(f"Não foi possível gerar os casos com IA: {error}")
             self.clear_action()
             st.rerun()
+
+    def _api_render_reconhecimento(self, docs_txt_disponivel: bool = False):
+        """
+        "Reconhecer a API": sondagens sem credencial (corpo vazio) nas rotas
+        citadas na especificação — ou nas convencionais — pelo mesmo caminho
+        da bateria (navegador/servidor). O resultado vira texto nas
+        Observações, pra IA não inventar rota nem formato de erro.
+        """
+        base_ok = (self.state.get('api_base_url') or '').startswith(('http://', 'https://'))
+        espec = self._api_especificacao_efetiva()
+        st.markdown("**🔎 Reconhecer a API** — descobre rotas reais, formato de erro e rotas protegidas, e preenche as Observações sozinho.")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            with st.container(key="azure_blue_btn_api_probe"):
+                if st.button("🔎 Reconhecer a API", key="btn_api_probe", width="stretch",
+                             disabled=(not base_ok) or self.state.get('is_processing') or bool(self.state.get('api_probe_job'))):
+                    sondas = montar_sondas(espec, self.state.get('api_base_url'))
+                    if self._api_modo_execucao() == "navegador":
+                        self.state.set('api_probe_job', {"run_id": str(uuid.uuid4()), "sondas": sondas,
+                                                         "casos": [{k: s[k] for k in ("id", "nome", "metodo", "url", "headers", "body", "extrair")} for s in sondas],
+                                                         "variaveis": {}, "timeout_s": 20})
+                    else:
+                        self._api_concluir_reconhecimento(sondas, self._api_sondar_servidor(sondas))
+                    st.rerun()
+        with c2:
+            if not base_ok:
+                st.caption("Informe a Base URL (acima) pra habilitar.")
+            else:
+                st.caption("Sem credencial e sem gravar nada: só chamadas com corpo vazio pra ver como a API responde.")
+
+        job = self.state.get('api_probe_job')
+        if job:
+            st.info("⏳ Reconhecendo a API pelo seu navegador…")
+            retorno = _BROWSER_RUNNER(**{k: job[k] for k in ("run_id", "casos", "variaveis", "timeout_s")},
+                                      key=f"api_probe_runner_{job['run_id']}", default=None)
+            if retorno and retorno.get("run_id") == job["run_id"]:
+                self.state.set('api_probe_job', None)
+                self._api_concluir_reconhecimento(job["sondas"], retorno.get("respostas") or [])
+                st.rerun()
+            elif st.button("✖ Cancelar", key="btn_api_probe_cancel"):
+                self.state.set('api_probe_job', None)
+                st.rerun()
+
+        rec = self.state.get('api_reconhecimento')
+        if rec:
+            with st.expander(f"🔎 Resultado do reconhecimento ({len(rec['tabela'])} sondagem(ns))", expanded=False):
+                st.dataframe(pd.DataFrame(rec['tabela']), width="stretch", hide_index=True)
+
+    def _api_sondar_servidor(self, sondas: list) -> list:
+        runner = ApiTestRunner({}, timeout=20)
+        res = runner.executar([ApiTestCase(id=s['id'], nome=s['nome'], metodo=s['metodo'], url=s['url'],
+                                           headers=s['headers'], body=s['body']) for s in sondas])
+        return [{"status": r.status_code, "headers": r.response_headers, "body": r.response_body, "erro": r.erro} for r in res]
+
+    def _api_concluir_reconhecimento(self, sondas: list, respostas: list):
+        rec = analisar_sondas(sondas, respostas)
+        self.state.set('api_reconhecimento', rec)
+        atual = (self.state.get('api_ia_observacoes') or '').strip()
+        # substitui um bloco anterior de reconhecimento, preserva o que a pessoa escreveu
+        marcador = "[Reconhecimento automático da API]"
+        if marcador in atual:
+            atual = atual.split(marcador)[0].rstrip()
+        novo = (atual + "\n\n" if atual else "") + marcador + "\n" + rec["observacoes"]
+        self.state.set('api_ia_observacoes', novo)
+        st.session_state.pop('apiw_ia_obs', None)   # o text_area passa a mostrar o texto novo
+        self._flash_success(f"Reconhecimento concluído: {len(rec['rotas_reais'])} rota(s) confirmada(s). Observações preenchidas — revise e clique em Gerar casos com IA.")
 
     def _api_especificacao_efetiva(self) -> str:
         """Texto que vai pra IA: dos Work Items escolhidos ou colado, conforme a fonte."""

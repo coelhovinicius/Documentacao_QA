@@ -209,3 +209,29 @@ class ExternalExecutionTests(unittest.TestCase):
         self.assertEqual(res[0].resultado_label, "Erro")
         self.assertIn("Failed to fetch", res[0].erro)
         self.assertTrue(res[1].pulado)
+
+
+class ApiDiscoveryTests(unittest.TestCase):
+    def test_extracts_routes_and_builds_variants(self):
+        from qa_testgen.infrastructure.api_discovery import extrair_rotas, montar_sondas
+        rotas = extrair_rotas("Endpoint POST /api/auth/login. Depois GET /api/me. Também /api/v1/auth/logout")
+        self.assertEqual(rotas[:2], [("POST", "/api/auth/login"), ("GET", "/api/me")])
+        nomes = [s["nome"] for s in montar_sondas("POST /api/auth/login", "http://x/")]
+        self.assertEqual(nomes, ["POST /api/auth/login", "POST /api/v1/auth/login"])
+        self.assertTrue(montar_sondas("", "http://x")[0]["url"].startswith("http://x/api/v1/"))
+
+    def test_analysis_detects_real_route_i18n_errors_and_protected(self):
+        from qa_testgen.infrastructure.api_discovery import montar_sondas, analisar
+        sondas = montar_sondas("POST /api/auth/login e GET /api/me", "http://x")
+        resp = {
+            "POST /api/auth/login": {"status": 405, "headers": {"Content-Type": "application/xml"}, "body": "<Error/>"},
+            "POST /api/v1/auth/login": {"status": 422, "headers": {"Content-Type": "application/json"},
+                                        "body": json.dumps({"message": "api.errors.validation_failed", "errors": {"email": ["req"]}})},
+            "GET /api/me": {"status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html>"},
+            "GET /api/v1/me": {"status": 401, "headers": {"Content-Type": "application/json"}, "body": json.dumps({"message": "api.errors.unauthenticated"})},
+        }
+        a = analisar(sondas, [resp[s["nome"]] for s in sondas])
+        self.assertEqual(a["rotas_reais"], {"/api/auth/login": "/api/v1/auth/login", "/api/me": "/api/v1/me"})
+        self.assertIn("CHAVE i18n", a["observacoes"])
+        self.assertIn("errors.<campo>", a["observacoes"])
+        self.assertIn("/api/v1/me", a["observacoes"].split("Rotas protegidas")[1])
