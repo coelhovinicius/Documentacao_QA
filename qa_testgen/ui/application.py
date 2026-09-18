@@ -49,6 +49,7 @@ from qa_testgen.ui.dialogs import (
     aviso_pat_compartilhado_modal,
 )
 from qa_testgen.ui.api_tests_page import ApiTestsPageMixin
+from qa_testgen.ui.ia_retry import IaRetryMixin
 from qa_testgen.ui.work_item_batch_page import WorkItemBatchMixin
 from qa_testgen.ui.auth import (
     require_login, render_logout_control, is_approver, has_permission,
@@ -196,7 +197,7 @@ DOCUMENT_UPLOAD_DISABLED_MSG = (
 )
 
 
-class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
+class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
     def __init__(self):
         page_icon = "🧪"
         if Path(SIMBOLO_PATH).exists():
@@ -224,35 +225,6 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
         self.state.set('current_action', None)
         self.state.set('is_processing', False)
         self.state.set('processing_interrupted', False)
-
-    def _iniciar_geracao_em_lotes(self, action_name: str, state_prefix: str):
-        """
-        Callback dos botões "Gerar Matriz/Casos/Planos" — sempre limpa
-        qualquer estado de lote (`_{state_prefix}_lotes_pendentes/acumulado/
-        erros/total/proxima_liberacao/tentativas_lote_atual`) deixado por
-        uma tentativa anterior ANTES de disparar a ação de novo.
-
-        Por quê: _processar_um_lote_por_execucao usa "pendentes is None"
-        pra decidir se monta lotes novos ou continua de onde parou — o que
-        é certo ENQUANTO os reruns automáticos entre lotes de uma mesma
-        rodada acontecem, mas quebra se a sessão cair no meio (conexão,
-        timeout do navegador) e a pessoa clicar "Gerar" de novo: sem essa
-        limpeza, ele silenciosamente retoma da lista velha, pulando os
-        lotes já consumidos pela tentativa anterior — mesmo que ela nunca
-        tenha terminado de verdade. Foi exatamente isso que fez um
-        documento de 18 itens da Matriz gerar Casos só pros 2 últimos.
-
-        BUG histórico corrigido aqui: o sufixo usado abaixo pra apagar a
-        fila era '_pendentes', mas a chave DE VERDADE usada em
-        _processar_um_lote_por_execucao é '_lotes_pendentes' — ou seja,
-        essa limpeza NUNCA removia a fila antiga (só os outros 3 campos),
-        deixando `acumulado/erros/total` zerados mas `pendentes` com uma
-        lista velha, causando "None - int" (TypeError) na próxima geração
-        depois de uma tentativa interrompida no meio.
-        """
-        for suffix in ('_lotes_pendentes', '_acumulado', '_erros', '_total', '_proxima_liberacao', '_tentativas_lote_atual', '_motivo_espera'):
-            self.state.delete(f'_{state_prefix}{suffix}')
-        self.trigger_action(action_name)
 
     def interrupt_processing(self):
         self.state.set('current_action', None)
@@ -355,31 +327,6 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
     def _log(self, action_name: str, location: str, details: str = ""):
         username = st.session_state.get(SESSION_USER_KEY, "")
         log_action(self.config, username, action_name, location, details)
-
-    @staticmethod
-    def _erro_lote_amigavel(error: Exception) -> str:
-        """
-        Mensagem de erro de 1 lote de geração (Matriz/Casos/Planos) — pra
-        Timeout/ConnectionError/corpo vazio, acrescenta a causa mais comum
-        num setup com n8n self-hosted atrás de proxy reverso: o proxy
-        (Nginx/Nginx Proxy Manager etc.) derruba a conexão com um timeout
-        PRÓPRIO, mais curto que os 300s que o app espera, antes do n8n
-        terminar de chamar a IA — o app nunca chega a saber que era só
-        lentidão, e trata como falha. Ver n8n_workflows/nginx_docker_timeout.md
-        pra aumentar esse timeout no proxy.
-        """
-        msg = str(error)
-        dica = (
-            " 💡 Se isso se repete (principalmente em lotes maiores/documentos maiores), "
-            "suspeite do timeout do proxy reverso na frente do n8n — ele pode estar "
-            "encerrando a conexão antes da IA terminar de responder, mesmo dentro do "
-            "limite de 300s configurado aqui. Veja n8n_workflows/nginx_docker_timeout.md."
-        )
-        if isinstance(error, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
-            return msg + dica
-        if isinstance(error, ValueError) and "corpo vazio" in msg:
-            return msg + dica
-        return msg
 
     @staticmethod
     def _tag_criado_por(tags_existentes: str = None, username: str = None) -> str:
@@ -1710,19 +1657,25 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
             st.button(
                 "🔍 Executar Análise de Cobertura (IA)",
                 width="stretch",
-                on_click=self.trigger_action,
-                args=("analyze_docs",),
+                on_click=self._iniciar_geracao_em_lotes,
+                args=("analyze_docs", ("analise", "analise_imagens")),
                 disabled=self.state.get('is_processing'),
             )
 
         if self.state.get('current_action') == 'analyze_docs' and not self.state.get('show_interrupt_modal'):
-            with st.spinner("Extraindo texto dos documentos..."):
-                text = DocumentProcessor.extract_plain_text_multi(uploaded, self.state.get('step1_doc_work_item_map'))
-            if not text:
-                st.error("Não foi possível extrair texto.")
-                self.clear_action()
-                st.rerun()
-            else:
+            # A preparação (extrair texto + imagens, registrar no log) roda UMA
+            # vez e fica em '_analise_prep': as esperas de retentativa (imagens
+            # ou análise) disparam reruns, e sem esse cache tudo isso — inclusive
+            # o registro no log — se repetiria a cada rerun.
+            prep = self.state.get('_analise_prep')
+            if prep is None:
+                with st.spinner("Extraindo texto dos documentos..."):
+                    text = DocumentProcessor.extract_plain_text_multi(uploaded, self.state.get('step1_doc_work_item_map'))
+                if not text:
+                    st.error("Não foi possível extrair texto.")
+                    self.clear_action()
+                    st.rerun()
+                    return
                 doc_wi_map = self.state.get('step1_doc_work_item_map') or {}
                 log_detail = f"Projeto '{project}' — {len(uploaded)} documento(s): {', '.join(f.name for f in uploaded)}"
                 if doc_wi_map:
@@ -1730,35 +1683,52 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
                 self._log("Analisar Documento(s)", "Passo 1", log_detail)
 
                 # Extrai imagens relevantes do corpo dos documentos (ignora
-                # cabeçalho/rodapé, ícones pequenos e logos repetidos) e
-                # interpreta cada uma via IA, inserindo a descrição de volta
+                # cabeçalho/rodapé, ícones pequenos e logos repetidos) pra
+                # interpretar cada uma via IA, inserindo a descrição de volta
                 # no texto, na posição em que a imagem apareceu — assim a
                 # IA de análise/geração "vê" o conteúdo visual também.
                 img_result = DocumentProcessor.extract_images_with_context(uploaded)
-                images = img_result["images"]
-                for warn in img_result["warnings"]:
-                    st.caption(f"ℹ️ {warn}")
+                prep = {"text": text, "project": project, "images": img_result["images"], "warnings": img_result["warnings"]}
+                self.state.set('_analise_prep', prep)
 
-                if images:
-                    text += "\n\n===== DESCRIÇÕES DE IMAGENS DO DOCUMENTO (geradas por IA) =====\n"
-                    progress = st.progress(0, text=f"Interpretando imagens do documento... (0/{len(images)})")
-                    for idx, img in enumerate(images, start=1):
-                        try:
-                            descricao = self.client.interpret_image(
-                                img["bytes"], img["mime"], img["context"], project,
-                                source_file=img["source_file"], location=img["location"],
-                            )
-                            text += (
-                                f"\n[IMAGEM — {img['source_file']}, {img['location']}]: {descricao}\n"
-                            )
-                        except Exception as error:
-                            st.caption(
-                                f"⚠️ Não foi possível interpretar uma imagem de {img['source_file']} "
-                                f"({img['location']}), pulada: {error}"
-                            )
-                        progress.progress(idx / len(images), text=f"Interpretando imagens do documento... ({idx}/{len(images)})")
+            for warn in prep["warnings"]:
+                st.caption(f"ℹ️ {warn}")
+            text = prep["text"]
+            if prep["images"] and prep.get("descricoes") is None:
+                # Uma imagem por execução, com a regra de retentativa: sem
+                # espera entre imagens que deram certo; se uma falhar, espera
+                # a janela do rate limit e tenta a MESMA de novo (até 3x) antes
+                # de pulá-la. O resultado vai pro cache ('descricoes'): a
+                # espera de retentativa da ANÁLISE, logo abaixo, também gera
+                # reruns, e sem isso as imagens seriam interpretadas de novo.
+                def interpretar_imagem(img):
+                    try:
+                        descricao = self.client.interpret_image(
+                            img["bytes"], img["mime"], img["context"], prep["project"],
+                            source_file=img["source_file"], location=img["location"],
+                        )
+                        return [f"\n[IMAGEM — {img['source_file']}, {img['location']}]: {descricao}\n"], None
+                    except Exception as error:
+                        return [], f"{img['source_file']} ({img['location']}): {self._erro_lote_amigavel(error)}"
 
-                self._run_analysis(text, project)
+                with st.status(f"Interpretando {len(prep['images'])} imagem(ns) do documento...", expanded=True) as status_img:
+                    resultado_img = self._processar_um_lote_por_execucao(
+                        "analise_imagens", lambda: prep["images"], interpretar_imagem, status_img,
+                        nome_item="imagem", espera_entre_lotes=0,
+                    )
+                    if resultado_img is None:
+                        return  # rerun() já disparado (próxima imagem ou espera pós-erro)
+                    descricoes, erros_img = resultado_img
+                    status_img.update(label=f"{len(descricoes)} imagem(ns) interpretada(s)"
+                                      + (f", {len(erros_img)} pulada(s)" if erros_img else "") + ".", state="complete")
+                prep["descricoes"], prep["erros_img"] = descricoes, erros_img
+                self.state.set('_analise_prep', prep)
+            for _, erro in prep.get("erros_img") or []:
+                st.caption(f"⚠️ Não foi possível interpretar uma imagem, pulada: {erro}")
+            if prep.get("descricoes"):
+                text += "\n\n===== DESCRIÇÕES DE IMAGENS DO DOCUMENTO (geradas por IA) =====\n" + "".join(prep["descricoes"])
+
+            self._run_analysis(text, prep["project"])
 
     _TAMANHO_LOTE_GERACAO = 8
 
@@ -1810,188 +1780,6 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
         if lote_atual:
             lotes.append("\n\n".join(lote_atual))
         return lotes
-
-    # Intervalo entre o FIM de um lote que deu certo e o INÍCIO do próximo,
-    # na geração de Matriz/Casos/Planos. Curto de propósito: o n8n tem seis
-    # provedores em fallback, então na maioria das vezes o lote seguinte
-    # passa sem esperar a cota por minuto (TPM) de um provedor específico
-    # se recuperar — e esperar 1 minuto entre TODOS os lotes deixava a
-    # geração lenta demais quando não havia erro nenhum.
-    _ESPERA_ENTRE_LOTES_SEGUNDOS = 5
-
-    # Espera depois de um lote que FALHOU (antes de tentar o mesmo de novo
-    # e antes do próximo). Alinhada à janela real do rate limit (60s):
-    # erro real capturado num lote (Groq, modelo openai/gpt-oss-20b):
-    # "Limit 8000, Used 2331, Requested 6285" — UM ÚNICO lote já pede
-    # ~6285 tokens, quase 80% do limite de 8000/min. Se um lote falhou, é
-    # sinal de que a cota já estourou; só a espera cheia resolve.
-    _ESPERA_APOS_ERRO_SEGUNDOS = 62
-
-    # Quantas vezes tenta de novo o MESMO lote antes de desistir e marcar
-    # como falha de verdade. Motivo de existir: confirmado repetidas vezes
-    # (inclusive com a mensagem exata "OpenAI: Rate limit reached" vinda do
-    # próprio n8n) que essas falhas são rate limit passageiro dos
-    # provedores de IA — na prática, tentar de novo depois da mesma espera
-    # de _ESPERA_APOS_ERRO_SEGUNDOS resolve na maioria das vezes. Sem
-    # isso, o app desistia na PRIMEIRA falha e jogava o problema de volta
-    # pra pessoa clicar "Gerar" de novo à mão.
-    _MAX_TENTATIVAS_POR_LOTE = 3
-
-    def _processar_um_lote_por_execucao(self, state_prefix: str, montar_lotes_fn, processar_um_lote_fn, status):
-        """
-        Processa SÓ 1 lote por execução do script Streamlit, disparando
-        st.rerun() entre cada um — em vez de rodar um `for` com todos os
-        lotes dentro da MESMA execução.
-
-        Por quê: mesmo com cada chamada de IA individual OK (dentro do
-        timeout de 300s configurado no cliente), rodar VÁRIAS chamadas
-        seguidas dentro de uma única execução do script soma o tempo de
-        todas elas numa única "conexão" — se existir QUALQUER limite de
-        tempo entre o navegador e o servidor (proxy, load balancer, o
-        próprio Streamlit Cloud), é esse tempo SOMADO que estoura o
-        limite, não o de uma chamada isolada. Processando 1 lote por
-        execução, cada "perna" do processo dura só o tempo de 1 chamada,
-        e o rerun() devolve o controle ao navegador entre uma e outra —
-        resetando qualquer relógio de conexão que exista no meio do
-        caminho, fora do meu controle via código Python.
-
-        Entre um lote e outro (a partir do 2º) também é respeitada uma
-        espera — `_ESPERA_ENTRE_LOTES_SEGUNDOS` (curta) depois de um lote
-        que deu certo, `_ESPERA_APOS_ERRO_SEGUNDOS` (janela cheia do rate
-        limit) depois de um lote que falhou — mas SEM travar a execução
-        inteira num único `time.sleep()`: em vez disso, cada execução dorme
-        só uns 2s por vez e dispara rerun() de novo até o relógio liberar.
-        Isso preserva o motivo do parágrafo acima (nenhuma execução
-        individual fica bloqueada por muito tempo) enquanto ainda espaça as
-        chamadas de verdade pro n8n.
-
-        Um lote que FALHA tenta de novo automaticamente (até
-        `_MAX_TENTATIVAS_POR_LOTE` vezes, esperando
-        `_ESPERA_APOS_ERRO_SEGUNDOS` entre tentativas) antes de desistir e
-        marcar como erro de verdade —
-        confirmado repetidas vezes que essas falhas são rate limit
-        passageiro dos provedores de IA no n8n, então esperar e tentar de
-        novo resolve na maioria dos casos, sem precisar que a pessoa clique
-        em "Gerar" à mão outra vez.
-
-        montar_lotes_fn: função sem argumento, chamada só na primeira
-        execução, que retorna a lista de lotes já dividida.
-        processar_um_lote_fn: recebe 1 lote, retorna (lista_de_itens, erro_ou_None).
-
-        Retorna (resultado_acumulado, lista_de_erros) só na execução
-        FINAL (depois do último lote) — nas execuções intermediárias,
-        dispara st.rerun() e a função nunca chega a retornar de verdade
-        pro chamador (rerun() interrompe o script inteiro ali mesmo).
-        """
-        key_pendentes = f"_{state_prefix}_lotes_pendentes"
-        key_acumulado = f"_{state_prefix}_acumulado"
-        key_erros = f"_{state_prefix}_erros"
-        key_total = f"_{state_prefix}_total"
-        key_proxima_liberacao = f"_{state_prefix}_proxima_liberacao"
-        key_tentativas = f"_{state_prefix}_tentativas_lote_atual"
-        key_motivo_espera = f"_{state_prefix}_motivo_espera"   # 'erro' quando a espera é a longa, pós-falha
-
-        if self.state.get(key_pendentes) is None:
-            lotes = montar_lotes_fn()
-            self.state.set(key_pendentes, lotes)
-            self.state.set(key_acumulado, [])
-            self.state.set(key_erros, [])
-            self.state.set(key_total, len(lotes))
-            self.state.set(key_proxima_liberacao, None)
-            self.state.set(key_tentativas, 0)
-
-        pendentes = self.state.get(key_pendentes)
-        acumulado = self.state.get(key_acumulado)
-        erros = self.state.get(key_erros)
-        total = self.state.get(key_total)
-        concluidos = total - len(pendentes)
-        varios = total > 1
-
-        if pendentes:
-            proxima_liberacao = self.state.get(key_proxima_liberacao)
-            if proxima_liberacao:
-                faltam = proxima_liberacao - time.time()
-                if faltam > 0:
-                    motivo = ("(o lote anterior falhou — dando tempo da cota da IA no n8n se recuperar)"
-                              if self.state.get(key_motivo_espera) == 'erro' else "(intervalo curto entre lotes)")
-                    status.update(
-                        label=f"Aguardando {int(faltam) + 1}s antes do lote {concluidos + 1} de {total} {motivo}...",
-                        state="complete",  # ver nota abaixo antes do 2º st.rerun() desta função
-                    )
-                    time.sleep(min(faltam, 2))
-                    st.rerun()
-                    return None
-                self.state.set(key_proxima_liberacao, None)
-                self.state.set(key_motivo_espera, None)
-
-            if varios:
-                status.update(label=f"Processando lote {concluidos + 1} de {total}...")
-            lote_atual = pendentes[0]
-            itens, erro = processar_um_lote_fn(lote_atual)
-            deu_erro = bool(erro)
-            if erro:
-                tentativas = (self.state.get(key_tentativas) or 0) + 1
-                if tentativas < self._MAX_TENTATIVAS_POR_LOTE:
-                    # Falha, mas ainda sobra tentativa — NÃO avança pro
-                    # próximo lote: espera de novo e tenta O MESMO lote.
-                    self.state.set(key_tentativas, tentativas)
-                    status.write(
-                        f"⚠️ Lote {concluidos + 1} de {total} falhou (tentativa {tentativas}/"
-                        f"{self._MAX_TENTATIVAS_POR_LOTE}): {erro} — tentando de novo em "
-                        f"{self._ESPERA_APOS_ERRO_SEGUNDOS}s..."
-                    )
-                    self.state.set(key_proxima_liberacao, time.time() + self._ESPERA_APOS_ERRO_SEGUNDOS)
-                    self.state.set(key_motivo_espera, 'erro')
-                    status.update(state="complete")
-                    st.rerun()
-                    return None
-                erros.append((concluidos + 1, erro))
-                if varios:
-                    status.write(
-                        f"❌ Lote {concluidos + 1} de {total} falhou após "
-                        f"{self._MAX_TENTATIVAS_POR_LOTE} tentativas: {erro}"
-                    )
-            else:
-                acumulado.extend(itens)
-                if varios:
-                    status.write(f"✅ Lote {concluidos + 1} de {total}: {len(itens)} item(ns).")
-
-            self.state.set(key_tentativas, 0)  # zera pro próximo lote
-            novos_pendentes = pendentes[1:]
-            self.state.set(key_pendentes, novos_pendentes)
-            self.state.set(key_acumulado, acumulado)
-            self.state.set(key_erros, erros)
-
-            if novos_pendentes:
-                # Deu certo → intervalo curto. Falhou (mesmo esgotando as
-                # tentativas) → espera cheia antes do próximo, porque a cota
-                # do provedor provavelmente ainda está estourada.
-                espera = self._ESPERA_APOS_ERRO_SEGUNDOS if deu_erro else self._ESPERA_ENTRE_LOTES_SEGUNDOS
-                self.state.set(key_proxima_liberacao, time.time() + espera)
-                self.state.set(key_motivo_espera, 'erro' if deu_erro else None)
-                # state="complete" aqui (e no rerun da espera acima) por um
-                # motivo puramente cosmético do Streamlit: st.rerun() levanta
-                # RerunException, que atravessa o "with st.status(...)" do
-                # chamador ANTES do rerun de fato acontecer — e o __exit__ do
-                # StatusContainer (streamlit/elements/lib/mutable_status_
-                # container.py) força state="error" pra QUALQUER exceção em
-                # trânsito enquanto o status ainda estiver "running", sem
-                # distinguir uma RerunException intencional de um erro de
-                # verdade. Sem isso, o card de status pisca vermelho a cada
-                # lote/espera, mesmo quando está tudo certo — confirmado lendo
-                # o código-fonte do Streamlit instalado no venv do projeto.
-                status.update(state="complete")
-                st.rerun()
-                return None
-
-        self.state.set(key_pendentes, None)
-        self.state.set(key_acumulado, None)
-        self.state.set(key_erros, None)
-        self.state.set(key_total, None)
-        self.state.set(key_proxima_liberacao, None)
-        self.state.set(key_tentativas, None)
-        self.state.set(key_motivo_espera, None)
-        return acumulado, erros
 
     _TAMANHO_LOTE_PLANOS = 10
 
@@ -2246,20 +2034,35 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
         Roda a análise de IA (mesma do Passo 1) e navega pro Passo 2 se der
         certo. Reutilizado tanto pelo Passo 1 (documento enviado) quanto
         pela geração a partir de Work Items do Azure DevOps.
+
+        Com a regra de retentativa (_chamar_ia_com_retentativas): quem chama
+        precisa poder ser re-executado a cada rerun da espera sem refazer
+        trabalho caro — por isso os chamadores guardam a preparação em
+        '_analise_prep' e este método a limpa ao terminar.
         """
-        with st.spinner("Aguarde enquanto a análise é processada… Isso pode levar alguns minutos..."):
-            try:
-                resp = self.client.trigger_analysis(text, project)
-                self.state.set('doc_text', text)
-                self.state.set('project_name', project)
-                self.state.set('questions', resp.get('duvidas') or [])
-                self._set_step(2, allow_during_processing=True)
+        with st.status("Aguarde enquanto a análise é processada… Isso pode levar alguns minutos...", expanded=True) as status:
+            resultado = self._chamar_ia_com_retentativas(
+                "analise", lambda: {"text": text, "project": project},
+                lambda p: self.client.trigger_analysis(p["text"], p["project"]), status,
+            )
+            if resultado is None:
+                return  # rerun() já disparado (espera pós-erro)
+            payload, resp, erro = resultado
+            if erro:
+                status.update(label="Falha na análise.", state="error")
+                self.state.delete('_analise_prep')
+                self._err(erro)
                 self.clear_action()
                 st.rerun()
-            except Exception as error:
-                self._err(error)
-                self.clear_action()
-                st.rerun()
+                return
+            status.update(label="Análise concluída.", state="complete")
+        self.state.delete('_analise_prep')
+        self.state.set('doc_text', payload["text"])
+        self.state.set('project_name', payload["project"])
+        self.state.set('questions', resp.get('duvidas') or [])
+        self._set_step(2, allow_during_processing=True)
+        self.clear_action()
+        st.rerun()
 
     def step_2(self):
         st.subheader("Passo 2 – Resolução de Conflitos e Ambiguidade")
@@ -3504,24 +3307,36 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
                 "🤖 Sugerir Vínculos com IA", type="primary",
                 disabled=self.state.get('is_processing') or not selected_items,
                 key="btn_suggest_recon_links",
-                on_click=self.trigger_action,
-                args=("suggest_recon_links",),
+                on_click=self._iniciar_geracao_em_lotes,
+                args=("suggest_recon_links", "vinculos_recon"),
             )
         if self.state.get('current_action') == 'suggest_recon_links' and not self.state.get('show_interrupt_modal'):
-            try:
-                payload_cases = [{"titulo": c["rotulo"]} for c in old_cases]
-                with st.spinner("Consultando a IA para sugerir os vínculos..."):
-                    result = self.client.trigger_matching(selected_items, payload_cases, self.state.get('project_name'))
-                links = {}
-                for vinculo in result.get("vinculos", []):
-                    wid = str(vinculo.get("work_item_id"))
-                    links[wid] = vinculo.get("casos", [])
-                self.state.set('ado_recon_wi_case_links', links)
-                for item in selected_items:
-                    widget_key = f"ado_recon_multiselect_{item['id']}"
-                    st.session_state[widget_key] = [c for c in links.get(str(item['id']), []) if c in [oc['rotulo'] for oc in old_cases]]
-            except Exception as error:
-                self._flash_error(f"Não foi possível obter a sugestão da IA: {error}")
+            with st.status("Consultando a IA para sugerir os vínculos...", expanded=True) as status:
+                resultado = self._chamar_ia_com_retentativas(
+                    "vinculos_recon",
+                    lambda: {"items": selected_items, "cases": [{"titulo": c["rotulo"]} for c in old_cases],
+                             "project": self.state.get('project_name')},
+                    lambda p: self.client.trigger_matching(p["items"], p["cases"], p["project"]), status,
+                )
+                if resultado is None:
+                    return  # rerun() já disparado (espera pós-erro)
+                _payload, result, erro = resultado
+                status.update(label="Falha ao consultar a IA." if erro else "Sugestão recebida.",
+                              state="error" if erro else "complete")
+            if erro:
+                self._flash_error(f"Não foi possível obter a sugestão da IA: {erro}")
+            else:
+                try:
+                    links = {}
+                    for vinculo in result.get("vinculos", []):
+                        wid = str(vinculo.get("work_item_id"))
+                        links[wid] = vinculo.get("casos", [])
+                    self.state.set('ado_recon_wi_case_links', links)
+                    for item in selected_items:
+                        widget_key = f"ado_recon_multiselect_{item['id']}"
+                        st.session_state[widget_key] = [c for c in links.get(str(item['id']), []) if c in [oc['rotulo'] for oc in old_cases]]
+                except Exception as error:
+                    self._flash_error(f"Não foi possível obter a sugestão da IA: {error}")
             self.clear_action()
             st.rerun()
 
@@ -4279,8 +4094,8 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
                     type="primary",
                     disabled=self.state.get('is_processing') or not selected_board_items,
                     key="btn_suggest_links",
-                    on_click=self.trigger_action,
-                    args=("suggest_ado_links",),
+                    on_click=self._iniciar_geracao_em_lotes,
+                    args=("suggest_ado_links", "vinculos_ia"),
                 )
             if not selected_board_items:
                 st.caption("Selecione ao menos 1 Work Item acima para habilitar a sugestão da IA.")
@@ -4922,8 +4737,8 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
                 width="stretch",
                 disabled=self.state.get('is_processing') or not project_name.strip() or not ambiente or falta_tipo_documento,
                 key=f"btn_{confirm_action_key}",
-                on_click=self.trigger_action,
-                args=(confirm_action_key,),
+                on_click=self._iniciar_geracao_em_lotes,
+                args=(confirm_action_key, "analise"),
             )
         if not ambiente or falta_tipo_documento:
             msg = "Selecione o Ambiente dos Testes"
@@ -4931,6 +4746,12 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
             st.caption(f"{msg} para habilitar a confirmação.")
 
         if self.state.get('current_action') == confirm_action_key and not self.state.get('show_interrupt_modal'):
+            prep = self.state.get('_analise_prep')
+            if prep is not None:
+                # Rerun de uma espera de retentativa da análise: não busca os
+                # Work Items de novo nem registra no log outra vez.
+                self._run_analysis(prep["text"], prep["project"])
+                return
             try:
                 with st.spinner(f"Buscando detalhes completos de {len(selected_ids)} Work Item(s)..."):
                     details = ado_client.get_work_items_full_details(selected_ids)
@@ -4961,6 +4782,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin):
                             log_detail += f" + {len(uploaded_complementares)} documento(s) complementar(es)"
 
                     self._log(log_flow_label, "Passo 1", log_detail)
+                    self.state.set('_analise_prep', {"text": text, "project": project_name.strip()})
                     self._run_analysis(text, project_name.strip())
             except Exception as error:
                 self._flash_error(f"Erro ao buscar detalhes dos Work Items: {error}")
@@ -8296,14 +8118,25 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 width="stretch",
                 disabled=self.state.get('is_processing') or not nome_manual.strip(),
                 key="btn_generate_manual",
-                on_click=self.trigger_action,
-                args=("generate_manual",),
+                on_click=self._iniciar_geracao_em_lotes,
+                args=("generate_manual", "manual_ia"),
             )
         if self.state.get('current_action') == 'generate_manual' and not self.state.get('show_interrupt_modal'):
+            with st.status("Escrevendo o manual e sugerindo as imagens de cada passo (isso pode levar um minuto)...", expanded=True) as status:
+                resultado = self._chamar_ia_com_retentativas(
+                    "manual_ia",
+                    lambda: {"conteudo": conteudo_origem, "nome": nome_manual.strip(),
+                             "imagens": [{"filename": img["filename"], "context": img.get("context", "")} for img in imagens_coletadas]},
+                    lambda p: self.client.trigger_manual_generation(p["conteudo"], p["nome"], p["imagens"]), status,
+                )
+                if resultado is None:
+                    return  # rerun() já disparado (espera pós-erro)
+                _payload, resp, erro = resultado
+                status.update(label="Falha ao gerar o manual." if erro else "Manual gerado.",
+                              state="error" if erro else "complete")
             try:
-                imagens_payload = [{"filename": img["filename"], "context": img.get("context", "")} for img in imagens_coletadas]
-                with st.spinner("Escrevendo o manual e sugerindo as imagens de cada passo (isso pode levar um minuto)..."):
-                    resp = self.client.trigger_manual_generation(conteudo_origem, nome_manual.strip(), imagens_payload)
+                if erro:
+                    raise RuntimeError(erro)
                 self.state.set('manual_generated', resp)
                 # A IA já sugere quais imagens combinam com cada passo (via
                 # "imagens_sugeridas") — pré-popula a partir disso, mas só
@@ -8430,7 +8263,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             )
 
             self._render_document_storage_section(
-                "Manual de Testes (UAT)", titulo_manual or nome_manual,
+                "Manual de Testes (UAT)", titulo_manual or (generated.get("titulo_manual") or "Manual"),
                 [{"tipo": "pdf", "nome_arquivo": f"Manual_{safe_name}.pdf", "conteudo": pdf_bytes}],
             )
 
@@ -8474,14 +8307,25 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 width="stretch",
                 disabled=self.state.get('is_processing') or not descricao.strip(),
                 key="btn_generate_wiql",
-                on_click=self.trigger_action,
-                args=("generate_wiql",),
+                on_click=self._iniciar_geracao_em_lotes,
+                args=("generate_wiql", "wiql_ia"),
             )
 
         if self.state.get('current_action') == 'generate_wiql' and not self.state.get('show_interrupt_modal'):
+            with st.status("Traduzindo sua descrição em uma query WIQL...", expanded=True) as status:
+                resultado = self._chamar_ia_com_retentativas(
+                    "wiql_ia",
+                    lambda: {"descricao": descricao.strip(), "projeto": self.state.get('project_name') or ado_project},
+                    lambda p: self.client.trigger_wiql_generation(p["descricao"], p["projeto"]), status,
+                )
+                if resultado is None:
+                    return  # rerun() já disparado (espera pós-erro)
+                _payload, resp, erro = resultado
+                status.update(label="Falha ao gerar a query." if erro else "Query gerada.",
+                              state="error" if erro else "complete")
             try:
-                with st.spinner("Traduzindo sua descrição em uma query WIQL..."):
-                    resp = self.client.trigger_wiql_generation(descricao.strip(), self.state.get('project_name') or ado_project)
+                if erro:
+                    raise RuntimeError(erro)
                 self.state.set('wiql_generated', resp)
                 self.state.set('wiql_preview_result', None)
                 st.session_state['wiql_titulo_input'] = resp.get('titulo_sugerido', '')
@@ -8745,8 +8589,8 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 "🤖 Sugerir Contexto/Escopo/Conclusão com IA",
                 disabled=self.state.get('is_processing'),
                 key="btn_suggest_report_narrative_wi",
-                on_click=self.trigger_action,
-                args=("suggest_report_narrative_wi",),
+                on_click=self._iniciar_geracao_em_lotes,
+                args=("suggest_report_narrative_wi", "narrativa_wi"),
                 help="A IA analisa os Work Items selecionados e sugere os textos abaixo.",
             )
         if self.state.get('current_action') == 'suggest_report_narrative_wi' and not self.state.get('show_interrupt_modal'):
@@ -8792,9 +8636,11 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
     def _suggest_report_narrative_from_work_items(self, ado_client, work_items: list):
         EXCLUDE_TYPES = {"test plan", "test suite", "test case"}
-        try:
+
+        def montar_payload():
+            # Roda UMA vez (fica no estado durante as esperas de retentativa).
             wi_names = ", ".join(wi['title'] for wi in work_items)
-            with st.spinner("Analisando os Work Items selecionados para sugerir os textos..."):
+            if True:
                 total_casos = 0
                 for wi in work_items:
                     try:
@@ -8814,33 +8660,50 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                     if desc:
                         partes.append(f"[{d.get('type')}] {d.get('title')}: {desc[:500]}")
                 descricoes_texto = "\n\n".join(partes)
+            return dict(
+                nome_projeto=self.state.get('project_name') or wi_names,
+                nome_plano=wi_names,
+                resumo_resultados=resumo_resultados,
+                matriz=self.state.get('matriz') or [],
+                descricoes_work_items=descricoes_texto,
+            )
 
-                resp = self.client.trigger_execution_report_narrative(
-                    nome_projeto=self.state.get('project_name') or wi_names,
-                    nome_plano=wi_names,
-                    resumo_resultados=resumo_resultados,
-                    matriz=self.state.get('matriz') or [],
-                    descricoes_work_items=descricoes_texto,
-                )
-
-            contexto = resp.get('contexto', '')
-            escopo = resp.get('escopo_proposito', '')
-            conclusao = resp.get('conclusao', '')
-            proximos = resp.get('proximos_passos', '')
-
-            self.state.set('report_contexto', contexto)
-            self.state.set('report_escopo', escopo)
-            self.state.set('report_conclusao', conclusao)
-            self.state.set('report_proximos', proximos)
-            st.session_state['report_contexto_input'] = contexto
-            st.session_state['report_escopo_input'] = escopo
-            st.session_state['report_conclusao_input'] = conclusao
-            st.session_state['report_proximos_input'] = proximos
-        except Exception as error:
-            self._flash_error(f"Não foi possível gerar a sugestão da IA: {error}")
+        with st.status("Analisando os Work Items selecionados para sugerir os textos...", expanded=True) as status:
+            resultado = self._chamar_ia_com_retentativas(
+                "narrativa_wi", montar_payload,
+                lambda p: self.client.trigger_execution_report_narrative(**p), status,
+            )
+            if resultado is None:
+                return  # rerun() já disparado (espera pós-erro)
+            _payload, resp, erro = resultado
+            status.update(label="Falha ao gerar a sugestão." if erro else "Sugestão recebida.",
+                          state="error" if erro else "complete")
+        if erro:
+            self._flash_error(f"Não foi possível gerar a sugestão da IA: {erro}")
+        else:
+            self._aplicar_narrativa_sugerida(resp)
 
         self.clear_action()
         st.rerun()
+
+    def _aplicar_narrativa_sugerida(self, resp: dict):
+        """Leva os textos sugeridos pela IA pro estado e pros campos da tela."""
+        contexto = resp.get('contexto', '')
+        escopo = resp.get('escopo_proposito', '')
+        conclusao = resp.get('conclusao', '')
+        proximos = resp.get('proximos_passos', '')
+
+        self.state.set('report_contexto', contexto)
+        self.state.set('report_escopo', escopo)
+        self.state.set('report_conclusao', conclusao)
+        self.state.set('report_proximos', proximos)
+        # Streamlit só respeita "value=" na primeira renderização do
+        # widget — depois disso, precisa sobrescrever o session_state
+        # do próprio widget diretamente pra sugestão da IA aparecer.
+        st.session_state['report_contexto_input'] = contexto
+        st.session_state['report_escopo_input'] = escopo
+        st.session_state['report_conclusao_input'] = conclusao
+        st.session_state['report_proximos_input'] = proximos
 
     def _generate_execution_report_from_work_items(self, ado_client, work_items: list, contexto: str, ambiente: str,
                                                       escopo_proposito: str, conclusao: str, proximos_passos: str,
@@ -9147,9 +9010,10 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "Paused": "Pausado", "Blocked": "Bloqueado", "NotApplicable": "Não Aplicável",
             "Not Run": "Não Executado",
         }
-        try:
+        def montar_payload():
+            # Roda UMA vez (fica no estado durante as esperas de retentativa).
             plan_names = ", ".join(p['name'] for p in plans)
-            with st.spinner("Analisando resultados dos Test Plans para sugerir os textos..."):
+            if True:
                 total = 0
                 by_outcome = {}       # outcome bruto -> contagem
                 titles_by_outcome = {}  # outcome bruto -> [títulos dos casos]
@@ -9199,34 +9063,28 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                         if desc:
                             partes.append(f"[{d.get('type')}] {d.get('title')}: {desc[:500]}")
                     descricoes_texto = "\n\n".join(partes)
+            return dict(
+                nome_projeto=self.state.get('project_name') or plan_names,
+                nome_plano=plan_names,
+                resumo_resultados=resumo_resultados,
+                matriz=self.state.get('matriz') or [],
+                descricoes_work_items=descricoes_texto,
+            )
 
-                resp = self.client.trigger_execution_report_narrative(
-                    nome_projeto=self.state.get('project_name') or plan_names,
-                    nome_plano=plan_names,
-                    resumo_resultados=resumo_resultados,
-                    matriz=self.state.get('matriz') or [],
-                    descricoes_work_items=descricoes_texto,
-                )
-
-            contexto = resp.get('contexto', '')
-            escopo = resp.get('escopo_proposito', '')
-            conclusao = resp.get('conclusao', '')
-            proximos = resp.get('proximos_passos', '')
-
-            self.state.set('report_contexto', contexto)
-            self.state.set('report_escopo', escopo)
-            self.state.set('report_conclusao', conclusao)
-            self.state.set('report_proximos', proximos)
-
-            # Streamlit só respeita "value=" na primeira renderização do
-            # widget — depois disso, precisa sobrescrever o session_state
-            # do próprio widget diretamente pra sugestão da IA aparecer.
-            st.session_state['report_contexto_input'] = contexto
-            st.session_state['report_escopo_input'] = escopo
-            st.session_state['report_conclusao_input'] = conclusao
-            st.session_state['report_proximos_input'] = proximos
-        except Exception as error:
-            self._flash_error(f"Não foi possível gerar a sugestão da IA: {error}")
+        with st.status("Analisando resultados dos Test Plans para sugerir os textos...", expanded=True) as status:
+            resultado = self._chamar_ia_com_retentativas(
+                "narrativa_planos", montar_payload,
+                lambda p: self.client.trigger_execution_report_narrative(**p), status,
+            )
+            if resultado is None:
+                return  # rerun() já disparado (espera pós-erro)
+            _payload, resp, erro = resultado
+            status.update(label="Falha ao gerar a sugestão." if erro else "Sugestão recebida.",
+                          state="error" if erro else "complete")
+        if erro:
+            self._flash_error(f"Não foi possível gerar a sugestão da IA: {erro}")
+        else:
+            self._aplicar_narrativa_sugerida(resp)
 
         self.clear_action()
         st.rerun()
@@ -9419,16 +9277,21 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         # pra poder comparar qualidade contra um Caso novo que pareça
         # duplicado, além de servir de contexto pra IA evitar sugerir algo
         # que já existe.
-        existing_full_by_wid = {}
-        try:
-            with st.spinner("Verificando Casos de Teste já existentes nos Work Items..."):
-                for item in board_items:
-                    try:
-                        existing_full_by_wid[item["id"]] = ado_client.get_existing_test_cases_full(item["id"])
-                    except AzureDevOpsError:
-                        existing_full_by_wid[item["id"]] = []
-        except Exception:
-            existing_full_by_wid = {item["id"]: [] for item in board_items}
+        # Cache em '_vinculos_ia_prep': as esperas de retentativa da IA
+        # disparam reruns, e sem isso a busca no Azure se repetiria a cada um.
+        existing_full_by_wid = self.state.get('_vinculos_ia_prep')
+        if existing_full_by_wid is None:
+            existing_full_by_wid = {}
+            try:
+                with st.spinner("Verificando Casos de Teste já existentes nos Work Items..."):
+                    for item in board_items:
+                        try:
+                            existing_full_by_wid[item["id"]] = ado_client.get_existing_test_cases_full(item["id"])
+                        except AzureDevOpsError:
+                            existing_full_by_wid[item["id"]] = []
+            except Exception:
+                existing_full_by_wid = {item["id"]: [] for item in board_items}
+            self.state.set('_vinculos_ia_prep', existing_full_by_wid)
         existing_by_wid = {
             wid: [c["titulo"] for c in casos] for wid, casos in existing_full_by_wid.items()
         }
@@ -9457,10 +9320,22 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         ]
         try:
             if payload_cases:
-                with st.spinner("Consultando a IA (n8n) para sugerir os vínculos..."):
-                    result = self.client.trigger_matching(payload_items, payload_cases, self.state.get('project_name'))
+                with st.status("Consultando a IA (n8n) para sugerir os vínculos...", expanded=True) as status:
+                    resultado = self._chamar_ia_com_retentativas(
+                        "vinculos_ia",
+                        lambda: {"items": payload_items, "cases": payload_cases, "project": self.state.get('project_name')},
+                        lambda p: self.client.trigger_matching(p["items"], p["cases"], p["project"]), status,
+                    )
+                    if resultado is None:
+                        return  # rerun() já disparado (espera pós-erro)
+                    _payload, result, erro = resultado
+                    status.update(label="Falha ao consultar a IA." if erro else "Sugestão recebida.",
+                                  state="error" if erro else "complete")
+                if erro:
+                    raise ValueError(erro)
             else:
                 result = {"vinculos": []}
+            self.state.delete('_vinculos_ia_prep')
             links = {}
             skipped = 0
             for vinculo in result.get("vinculos", []):
@@ -9653,8 +9528,10 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 )
             self.state.set('ado_suggest_message', msg)
         except ValueError as error:
+            self.state.delete('_vinculos_ia_prep')
             self.state.set('ado_suggest_message', ("error", f"❌ {error}"))
         except Exception as error:
+            self.state.delete('_vinculos_ia_prep')
             self.state.set('ado_suggest_message', ("error", f"❌ Erro inesperado ao consultar sugestão da IA: {error}"))
 
     def _push_full_azure_devops(self, ado_client, area_path: str, plan_name: str, initial_state: str = None, existing_plan_id: int = None):

@@ -416,39 +416,51 @@ class ApiTestsPageMixin:
             st.info("Preencha a Base URL e escolha o(s) Work Item(s) — ou cole a especificação / anexe documentos — pra habilitar a geração.")
         st.button("🤖 Gerar casos com IA", key="azure_blue_btn_api_gen_ia", width="stretch",
                   disabled=(not pronto) or self.state.get('is_processing'),
-                  on_click=self.trigger_action, args=("api_generate_ai",))
+                  on_click=self._iniciar_geracao_em_lotes, args=("api_generate_ai", "api_geracao_ia"))
         erro_ia = self.state.get('api_ia_ultimo_erro')
         if erro_ia:
             amigavel = "limite de uso dos provedores de IA (cota por minuto/dia)" if any(t in erro_ia.lower() for t in ("too many", "rate limit", "429", "quota")) else "resposta fora do formato esperado"
             st.error(
-                f"❌ A última geração falhou — {amigavel}. Espere 1–2 minutos e clique de novo em **Gerar casos com IA** "
+                f"❌ A última geração falhou — {amigavel} — mesmo depois de tentar de novo automaticamente. "
+                "Espere alguns minutos e clique de novo em **Gerar casos com IA** "
                 "(a especificação e as observações continuam preenchidas)."
             )
             with st.expander("Detalhe técnico do erro (por provedor)"):
                 st.code(erro_ia, language="text")
         if self.state.get('current_action') == 'api_generate_ai' and not self.state.get('show_interrupt_modal'):
             self.state.set('api_ia_ultimo_erro', None)
-            # Limpa a ação antes da chamada (que pode levar 1 min): se a pessoa
-            # clicar de novo e o Streamlit reiniciar o script, não dispara outra
-            # chamada à IA por cima desta.
-            self.clear_action()
-            self.state.set('is_processing', True)
-            try:
+
+            def montar_payload():
                 especificacao = self._api_especificacao_efetiva().strip()
                 if docs_txt:
                     # Limite curto de propósito: cada chamada à IA conta contra a
                     # cota por minuto dos provedores — documento inteiro derruba a geração.
                     especificacao += "\n\n=== DOCUMENTOS DE CONTEXTO (trecho) ===\n" + docs_txt[:6000]
-                with st.spinner("A IA está montando a bateria de testes (isso pode levar até um minuto)..."):
-                    resp = self.client.trigger_api_test_generation(
-                        especificacao, self.state.get('api_base_url'), self.state.get('api_ambiente'),
-                        self.state.get('api_ia_observacoes') or '', self.state.get('api_variaveis') or [],
-                    )
+                return {"especificacao": especificacao, "base_url": self.state.get('api_base_url'),
+                        "ambiente": self.state.get('api_ambiente'), "observacoes": self.state.get('api_ia_observacoes') or '',
+                        "variaveis": self.state.get('api_variaveis') or []}
+
+            # Mesma regra dos lotes de geração: se todos os provedores falharem,
+            # espera a janela do rate limit e tenta de novo sozinho (até 3x).
+            with st.status("A IA está montando a bateria de testes (isso pode levar até um minuto)...", expanded=True) as status:
+                resultado = self._chamar_ia_com_retentativas(
+                    "api_geracao_ia", montar_payload,
+                    lambda p: self.client.trigger_api_test_generation(p["especificacao"], p["base_url"], p["ambiente"],
+                                                                      p["observacoes"], p["variaveis"]), status,
+                )
+                if resultado is None:
+                    return  # rerun() já disparado (espera pós-erro)
+                _payload, resp, erro = resultado
+                status.update(label="Falha na geração." if erro else "Bateria gerada.",
+                              state="error" if erro else "complete")
+            try:
+                if erro:
+                    raise RuntimeError(erro)
                 self._api_aplicar_geracao_ia(resp, substituir)
             except Exception as error:
                 self.state.set('api_ia_ultimo_erro', str(error))
                 self._flash_error(f"Não foi possível gerar os casos com IA: {error}")
-            self.state.set('is_processing', False)
+            self.clear_action()
             st.rerun()
 
     def _api_render_reconhecimento(self, docs_txt_disponivel: bool = False):

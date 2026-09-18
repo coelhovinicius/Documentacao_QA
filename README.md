@@ -148,6 +148,7 @@ qa_testgen/
 ├── ui/
 │   ├── application.py              # UserInterface — toda a lógica de tela (7 passos + sidebar)
 │   ├── api_tests_page.py           # página Testes de API (mixin de UserInterface)
+│   ├── ia_retry.py                 # regra única de retentativa das chamadas de IA (mixin)
 │   ├── work_item_batch_page.py     # Criar Work Item — modo Fila / planilha (mixin)
 │   ├── auth.py                     # login, sessão (ID opaco), permissões, logout, Administração
 │   └── dialogs.py                  # modais de confirmação
@@ -307,5 +308,5 @@ O Status **geral** do relatório é escolhido manualmente.
 
 - **Modelos de IA**: os workflows do n8n fixam versões de modelo — provedores mudam/depreciam modelos com frequência.
 - **Credenciais do n8n**: o fallback entre provedores cobre a maioria dos casos de expiração, mas vale monitorar os logs de execução do n8n.
-- **Rate limit dos provedores de IA**: a geração em lote (Matriz/Casos/Planos) espera só 5s entre lotes que deram certo; quando um lote falha, espera ~62s (a janela real do rate limit) antes de tentar o mesmo lote de novo — até 3 vezes — e também antes do lote seguinte. Confirmado, por teste real, que falhas do tipo "Todos os provedores de IA falharam" costumam ser rate limit passageiro, resolvido tentando de novo.
+- **Rate limit dos provedores de IA — regra única de retentativa** (`ui/ia_retry.py`, vale pra TODAS as chamadas de IA: Matriz/Casos/Planos em lote, imagens do documento, Análise, Vínculos com IA, Narrativa do relatório, WIQL, Manual e Testes de API): entre unidades que deram certo o intervalo é curto (5s nos lotes de geração; nenhum nas demais); quando uma chamada falha, o app espera ~62s (a janela real do rate limit), tenta a MESMA de novo — até 3 vezes — e ainda espera 62s antes da próxima. Só a comparação de duplicados (Passo 7) fica de fora: falhar ali não bloqueia nada. Confirmado, por teste real, que falhas do tipo "Todos os provedores de IA falharam" costumam ser rate limit passageiro, resolvido tentando de novo.
 - **Timeout do proxy na frente do n8n**: se o n8n estiver atrás de Nginx/Nginx Proxy Manager, aumente `proxy_read_timeout`/`proxy_connect_timeout`/`proxy_send_timeout` pra pelo menos 300s (mesmo valor do timeout do app pra cada chamada) — sem isso, o proxy pode cortar a conexão antes do n8n terminar, mesmo quando a IA responderia a tempo.

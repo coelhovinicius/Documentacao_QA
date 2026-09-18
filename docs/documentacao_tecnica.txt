@@ -244,7 +244,10 @@ O app funciona em 7 etapas, uma de cada vez:
     só um pico de uso passageiro (rate limit); o app já tenta de
     novo sozinho até 3 vezes, esperando cerca de 1 minuto entre as
     tentativas (entre lotes que deram certo o intervalo é de só 5
-    segundos - a espera longa só acontece depois de um erro)
+    segundos - a espera longa só acontece depois de um erro). Essa
+    regra vale pra toda chamada de IA do app: análise do documento,
+    imagens, Matriz/Casos/Planos, vínculos com IA, textos do
+    relatório, query WIQL, manual e testes de API
   - Se o n8n estiver atrás de um "nginx" (proxy), esse proxy precisa
     ter um tempo de espera (timeout) configurado de pelo menos 5
     minutos - senão ele pode cortar a conexão antes da IA terminar
