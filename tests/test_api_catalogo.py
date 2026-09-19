@@ -88,6 +88,45 @@ class CasamentoEVerificacaoTests(unittest.TestCase):
         self.assertIn("- GET /api/v1/psychosocial-dimensions", bloco.split("\n")[1])   # a mais parecida vem primeiro
         self.assertEqual(d.rotas_para_prompt([], "x"), "")
 
+    def test_relevance_is_accent_insensitive_and_generic(self):
+        # Card em português acentuado x rotas em inglês (ou português sem acento) de um front qualquer.
+        cat = [{"metodo": "POST", "caminho": "/api-candidate/candidate/importar-curriculo/arquivo"},
+               {"metodo": "POST", "caminho": "/api-central/portal/candidatar"},
+               {"metodo": "GET", "caminho": "/bff/iped/certificates"},
+               {"metodo": "POST", "caminho": "/bff/auth/login"},
+               {"metodo": "GET", "caminho": "/api-central/portal/vaga/{id}"}]
+        rel = d.rotas_relevantes(cat, "Candidatura à vaga com currículo importado", limite=4)
+        caminhos = [r["caminho"] for r in rel]
+        self.assertEqual(caminhos[0], "/bff/auth/login")                                   # login sempre primeiro
+        self.assertIn("/api-candidate/candidate/importar-curriculo/arquivo", caminhos)     # currículo -> curriculo
+        self.assertIn("/api-central/portal/candidatar", caminhos)                          # candidatura -> candidatar
+        self.assertIn("/api-central/portal/vaga/{id}", caminhos)
+        self.assertNotIn("/bff/iped/certificates", caminhos)                               # irrelevante fica de fora
+
+    def test_relevance_downweights_domain_wide_words_and_reads_glued_names(self):
+        # "candidato" bate em quase tudo num portal de candidatos -> pesa pouco; "experiência
+        # profissional" tem que achar candidateprofessionalexperience (nome colado, em inglês).
+        cat = [{"metodo": "POST", "caminho": c} for c in (
+            "/api-candidate/candidateprofessionalexperience", "/api-candidate/candidateacademicformation",
+            "/api-central/candidato/retomarcandidatura", "/api-candidate/jobcandidate/descandidatar",
+            "/api-candidate/candidate/id", "/api-candidate/candidate/update", "/api-avaliacao/disctest/candidate/{id}")]
+        rel = d.rotas_relevantes(cat, "Cadastro de experiência profissional e formação acadêmica no perfil do candidato.", limite=2)
+        self.assertEqual([r["caminho"] for r in rel],
+                         ["/api-candidate/candidateprofessionalexperience", "/api-candidate/candidateacademicformation"])
+
+    def test_probes_use_catalog_when_card_cites_no_route(self):
+        cat = [{"metodo": "POST", "caminho": "/bff/auth/login"}, {"metodo": "GET", "caminho": "/api-central/portal/vaga/{id}"},
+               {"metodo": "POST", "caminho": "/api-central/portal/candidatar"}]
+        sondas = d.montar_sondas("Candidatar-se a uma vaga", "https://h.com", cat)
+        urls = [s["url"] for s in sondas]
+        self.assertIn("https://h.com/bff/auth/login", urls)
+        self.assertIn("https://h.com/api-central/portal/vaga/1", urls)             # {id} vira 1
+        self.assertFalse(any("/api/v1" in u for u in urls))                       # rota real: sem variante inventada
+        # sem catálogo, continua sondando as convencionais
+        self.assertIn("https://h.com/api/v1/auth/login", [s["url"] for s in d.montar_sondas("texto sem rota", "https://h.com")])
+        # rota citada no card prevalece sobre o catálogo
+        self.assertIn("https://h.com/x/y", [s["url"] for s in d.montar_sondas("GET /x/y", "https://h.com", cat)])
+
 
 class RunnerRotaInexistenteTests(unittest.TestCase):
     def test_404_route_not_found_becomes_definition_error(self):

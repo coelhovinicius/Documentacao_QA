@@ -734,7 +734,8 @@ class ApiTestsPageMixin:
     def _api_render_reconhecimento(self, docs_txt_disponivel: bool = False):
         """
         "Reconhecer a API": sondagens sem credencial (corpo vazio) nas rotas
-        citadas na especificação — ou nas convencionais — pelo mesmo caminho
+        citadas na especificação — ou, sem citação, nas rotas do catálogo mais
+        parecidas com o card (login/logout/me sempre) — pelo mesmo caminho
         da bateria (navegador/servidor). O resultado vira texto nas
         Observações, pra IA não inventar rota nem formato de erro.
         """
@@ -745,7 +746,7 @@ class ApiTestsPageMixin:
         with c1:
             if st.button("🔎 Reconhecer a API", key="azure_blue_btn_api_probe", width="stretch",
                          disabled=(not base_ok) or self.state.get('is_processing') or bool(self.state.get('api_probe_job'))):
-                sondas = montar_sondas(espec, self.state.get('api_base_url'))
+                sondas = montar_sondas(espec, self.state.get('api_base_url'), self._api_catalogo())
                 if self._api_modo_execucao() == "navegador":
                     self.state.set('api_probe_job', {"run_id": str(uuid.uuid4()), "sondas": sondas,
                                                      "casos": [{k: s[k] for k in ("id", "nome", "metodo", "url", "headers", "body", "extrair")} for s in sondas],

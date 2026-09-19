@@ -9,6 +9,7 @@ caminho da bateria (navegador ou servidor), pra passar pelo WAF.
 """
 import json
 import re
+import unicodedata
 from urllib.parse import urlparse
 
 _RE_METODO_ROTA = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_\-/{}.:]+)", re.I)
@@ -51,16 +52,25 @@ def _variantes(caminho: str) -> list:
     return saida
 
 
-def montar_sondas(especificacao: str, base_url: str) -> list:
+def montar_sondas(especificacao: str, base_url: str, catalogo: list = None) -> list:
     """
     Lista de sondas no formato de caso do runner (sem asserções, sem
     credencial): [{"id","nome","metodo","url","headers","body","extrair","rota_original","variante"}].
+    Rotas citadas na especificação ganham variantes (/api/v1 na frente etc.);
+    sem rota citada, com catálogo, sonda as rotas reais mais parecidas com o
+    card (login/logout/me sempre) — sem variante, porque já são reais; sem
+    catálogo, as convencionais.
     """
     base = (base_url or "").rstrip("/")
-    rotas = extrair_rotas(especificacao) or list(_ROTAS_PADRAO)
+    rotas = extrair_rotas(especificacao)
+    exatas = False
+    if not rotas and catalogo:
+        rotas = [(r["metodo"], r["caminho"].replace("{id}", "1")) for r in rotas_relevantes(catalogo, especificacao, _MAX_ROTAS)]
+        exatas = True
+    rotas = rotas or list(_ROTAS_PADRAO)
     sondas = []
     for metodo, caminho in rotas:
-        for variante in _variantes(caminho):
+        for variante in ([caminho] if exatas else _variantes(caminho)):
             sondas.append({
                 "id": f"sonda-{len(sondas) + 1}",
                 "nome": f"{metodo} {variante}",
@@ -160,7 +170,7 @@ _RE_PREFIXO_API = re.compile(r"[=:(,]\s*[`\"'](/api(?:/v\d+)?)[`\"']")
 _RE_SCRIPT_SRC = re.compile(r"""<(?:script|link)[^>]+?(?:src|href)=["']([^"']+\.m?js(?:\?[^"']*)?)["']""", re.I)
 _RE_NAO_API = re.compile(r"\.(m?js|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|html?|json|xml|txt|pdf)$|^/(assets|static|public|images?|img|fonts?)/", re.I)
 _RE_SEG_ID = re.compile(r"^(\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\$\{[^}]*\}|\{[^}]*\}|:[A-Za-z_]+|\{\{[^}]*\}\})$", re.I)
-_MAX_ROTAS_NO_PROMPT = 24
+_MAX_ROTAS_NO_PROMPT = 40
 # Radicais em português -> pedaços de rota em inglês, pra achar as rotas que têm
 # a ver com a especificação (o card fala "pesquisa psicossocial", a rota é
 # psychosocial-surveys).
@@ -171,7 +181,19 @@ _SINONIMOS_ROTA = {
     "usuário": ["user", "me"], "perfil": ["me", "profile"], "colaborador": ["me", "employee"], "setor": ["department", "sector"],
     "departament": ["department"], "gestor": ["manager"], "resultado": ["result"], "dashboard": ["dashboard"], "mapa": ["heatmap"],
     "calor": ["heatmap"], "export": ["export"], "pulso": ["pulse"], "mensal": ["monthly"], "consent": ["consent", "response"],
-    "ciclo": ["survey"], "logout": ["logout"], "sair": ["logout"], "senha": ["password", "auth"], "cadastr": ["register", "create"],
+    "ciclo": ["survey"], "logout": ["logout"], "sair": ["logout"], "senha": ["password", "auth"], "cadastr": ["register", "create", "account"],
+    # genéricos, pra qualquer projeto (o card vem em português, a rota quase sempre em inglês)
+    "vaga": ["job", "vacancy", "position"], "candidat": ["candidate", "applicant", "candidato"], "curricul": ["curriculum", "resume", "cv"],
+    "empresa": ["company", "employer"], "endere": ["address"], "cidade": ["city"], "estado": ["state"], "pagament": ["payment", "checkout"],
+    "cupom": ["coupon"], "convite": ["invitation", "invite"], "foto": ["photo", "avatar"], "experienc": ["experience"],
+    "formac": ["formation", "education"], "profission": ["professional"], "academ": ["academic"], "curso": ["course"], "certific": ["certificate"], "trilha": ["trail", "track"],
+    "avalia": ["assessment", "test", "evaluation"], "teste": ["test"], "recomend": ["recommendation"], "favorit": ["favorite", "favoritar"],
+    "area": ["area"], "carreira": ["career"], "conta": ["account"], "dependente": ["dependent"], "cancel": ["cancel"], "token": ["auth", "refresh"],
+    "assinatura": ["subscription", "plan"], "notifica": ["notification"], "arquivo": ["file", "upload", "arquivo"], "relatorio": ["report"],
+    "produto": ["product"], "pedido": ["order"], "cliente": ["customer", "client"], "fatura": ["invoice"], "permiss": ["permission", "role"],
+    "papel": ["role"], "grupo": ["group"], "equipe": ["team"], "mensagem": ["message"], "comentario": ["comment"], "busca": ["search"],
+    "editar": ["update", "edit"], "excluir": ["delete", "remove"],
+    "remover": ["delete", "remove"], "criar": ["create", "store"], "atualiz": ["update"], "importa": ["import", "importar"], "exporta": ["export"],
 }
 _ROTAS_SEMPRE = ("/auth/login", "/auth/logout", "/me")
 
@@ -348,6 +370,73 @@ def rota_nao_encontrada(status, body: str) -> bool:
     return "route" in msg and ("could not be found" in msg or "not found" in msg)
 
 
+def _sem_acento(texto: str) -> str:
+    """'currículo' -> 'curriculo': o card vem acentuado, a rota nunca."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", texto or "") if not unicodedata.combining(ch))
+
+
+def rotas_relevantes(catalogo: list, especificacao: str = "", limite: int = None) -> list:
+    """
+    Rotas do catálogo ordenadas pela parecença com a especificação (login/
+    logout/me sempre na frente), cortadas em `limite`. Serve tanto pro bloco
+    do prompt quanto pras sondas do "Reconhecer a API".
+    """
+    if not catalogo:
+        return []
+    limite = limite or _MAX_ROTAS_NO_PROMPT
+    texto = _sem_acento((especificacao or "").lower())
+    palavras = {w for w in re.findall(r"[a-z]{4,}", texto)}
+    termos = set(palavras)
+    for radical, ingles in _SINONIMOS_ROTA.items():
+        if _sem_acento(radical) in texto:
+            termos.update(ingles)
+
+    termos = {t for t in termos if len(t) >= 4}
+
+    def parecenca(p, t):
+        # palavra igual (ou plural) vale mais que radical em comum, e palavra longa vale
+        # mais que curta: "favoritar" no card tem que puxar /jobcandidate/favoritar na
+        # frente de /city/lista (que só bate em "lista") e de /candidate/... (só "candi").
+        if p == t or p == t + "s" or t == p + "s":
+            return min(len(t), 6)
+        if len(p) >= 6 and len(t) >= 6 and (p.startswith(t) or t.startswith(p)):
+            return 3
+        if len(t) >= 7 and len(p) > len(t) and (t in p or t[:7] in p):
+            return min(max(3, len(t) // 2), 6)   # palavra colada: "experience" dentro de candidateprofessionalexperience
+        return 2 if p[:5] == t[:5] else 0
+
+    def pedacos_de(r):
+        # o 1º segmento é prefixo de serviço (/api, /api-candidate, /bff, /core), não conta —
+        # senão todo /api-candidate/... ganha ponto num card que fala "candidato"
+        segmentos = [seg for seg in _sem_acento(r["caminho"].lower()).split("/") if seg][1:]
+        return {p for seg in segmentos for p in re.findall(r"[a-z]+", seg)}
+
+    # peso de cada termo cai quando ele bate em boa parte do catálogo ("candidato" num
+    # portal de candidatos não distingue nada; "favoritar" distingue)
+    pecas = {r["caminho"]: pedacos_de(r) for r in catalogo}
+    peso = {}
+    for t in termos:
+        freq = sum(1 for ps in pecas.values() if any(parecenca(p, t) for p in ps)) / max(len(catalogo), 1)
+        peso[t] = 1.0 if freq <= 0.10 else 0.5 if freq <= 0.30 else 0.25
+
+    def pontos(r):
+        caminho = _sem_acento(r["caminho"].lower())
+        if any(caminho.endswith(fixa) for fixa in _ROTAS_SEMPRE):
+            return 100   # login/logout/me entram sempre: quase toda bateria precisa de token
+        total = 0.0
+        for p in pecas[r["caminho"]]:
+            contrib = sorted((parecenca(p, t) * peso[t] for t in termos), reverse=True)
+            total += sum(contrib[:2 if len(p) >= 14 else 1])   # pedaço colado (candidateacademicformation) soma 2 termos
+        return total
+
+    ordenado = sorted(catalogo, key=lambda r: (-pontos(r), r["caminho"], r["metodo"]))
+    # só as relevantes (pontuação > 0) mais as fixas; se sobrar espaço, completa com as demais
+    relevantes = [r for r in ordenado if pontos(r) > 0][:limite]
+    if len(relevantes) < limite:
+        relevantes += [r for r in ordenado if pontos(r) == 0][:limite - len(relevantes)]
+    return relevantes
+
+
 def rotas_para_prompt(catalogo: list, especificacao: str = "") -> str:
     """
     Bloco pras Observações da geração: as rotas do catálogo (as mais
@@ -356,26 +445,7 @@ def rotas_para_prompt(catalogo: list, especificacao: str = "") -> str:
     """
     if not catalogo:
         return ""
-    texto = (especificacao or "").lower()
-    palavras = {w for w in re.findall(r"[a-zà-ú]{4,}", texto)}
-    termos = set(palavras)
-    for radical, ingles in _SINONIMOS_ROTA.items():
-        if radical in texto:
-            termos.update(ingles)
-
-    def pontos(r):
-        caminho = r["caminho"].lower()
-        if any(caminho.endswith(fixa) for fixa in _ROTAS_SEMPRE):
-            return 100   # login/logout/me entram sempre: quase toda bateria precisa de token
-        pedacos = re.findall(r"[a-z]+", caminho)
-        return sum(1 for p in pedacos if any(p.startswith(t[:5]) or t.startswith(p[:5]) for t in termos if len(t) >= 4))
-
-    ordenado = sorted(catalogo, key=lambda r: (-pontos(r), r["caminho"], r["metodo"]))
-    # só as relevantes (pontuação > 0) mais as fixas; se sobrar espaço, completa com as demais
-    relevantes = [r for r in ordenado if pontos(r) > 0][:_MAX_ROTAS_NO_PROMPT]
-    if len(relevantes) < _MAX_ROTAS_NO_PROMPT:
-        relevantes += [r for r in ordenado if pontos(r) == 0][:_MAX_ROTAS_NO_PROMPT - len(relevantes)]
-    ordenado = relevantes
+    ordenado = rotas_relevantes(catalogo, especificacao, _MAX_ROTAS_NO_PROMPT)
     linhas = [f"{r['metodo']} {r['caminho']}" for r in ordenado]
     return ("ROTAS REAIS DESTA API (catálogo verificado). Gere casos SOMENTE com estas rotas, exatamente como escritas "
             "({id} = um id real vindo de um caso anterior). Se a especificação falar de algo que não está aqui, NÃO invente rota: "
