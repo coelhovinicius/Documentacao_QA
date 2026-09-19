@@ -159,7 +159,20 @@ _RE_LITERAL_API = re.compile(r"[`\"']((?:/api)?/v\d+/[A-Za-z0-9_\-/{}$.:]{1,120}
 _RE_PREFIXO_API = re.compile(r"[=:(,]\s*[`\"'](/api(?:/v\d+)?)[`\"']")
 _RE_SCRIPT_SRC = re.compile(r"""<(?:script|link)[^>]+?(?:src|href)=["']([^"']+\.m?js(?:\?[^"']*)?)["']""", re.I)
 _RE_SEG_ID = re.compile(r"^(\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\$\{[^}]*\}|\{[^}]*\}|:[A-Za-z_]+|\{\{[^}]*\}\})$", re.I)
-_MAX_ROTAS_NO_PROMPT = 60
+_MAX_ROTAS_NO_PROMPT = 24
+# Radicais em português -> pedaços de rota em inglês, pra achar as rotas que têm
+# a ver com a especificação (o card fala "pesquisa psicossocial", a rota é
+# psychosocial-surveys).
+_SINONIMOS_ROTA = {
+    "pesquis": ["survey"], "psicossoc": ["psychosocial"], "respost": ["response", "answer"], "pergunt": ["question"],
+    "dimens": ["dimension"], "humor": ["mood"], "diari": ["daily"], "plano": ["plan"], "acao": ["action"], "ação": ["action"],
+    "alert": ["alert"], "risco": ["risk"], "login": ["auth", "login"], "autentic": ["auth"], "usuari": ["user", "me"],
+    "usuário": ["user", "me"], "perfil": ["me", "profile"], "colaborador": ["me", "employee"], "setor": ["department", "sector"],
+    "departament": ["department"], "gestor": ["manager"], "resultado": ["result"], "dashboard": ["dashboard"], "mapa": ["heatmap"],
+    "calor": ["heatmap"], "export": ["export"], "pulso": ["pulse"], "mensal": ["monthly"], "consent": ["consent", "response"],
+    "ciclo": ["survey"], "logout": ["logout"], "sair": ["logout"], "senha": ["password", "auth"], "cadastr": ["register", "create"],
+}
+_ROTAS_SEMPRE = ("/auth/login", "/auth/logout", "/me")
 
 
 def descobrir_bundles(html: str, base_url: str) -> list:
@@ -339,12 +352,26 @@ def rotas_para_prompt(catalogo: list, especificacao: str = "") -> str:
     """
     if not catalogo:
         return ""
-    palavras = {w for w in re.findall(r"[a-zA-Zà-ú]{4,}", (especificacao or "").lower())}
+    texto = (especificacao or "").lower()
+    palavras = {w for w in re.findall(r"[a-zà-ú]{4,}", texto)}
+    termos = set(palavras)
+    for radical, ingles in _SINONIMOS_ROTA.items():
+        if radical in texto:
+            termos.update(ingles)
 
     def pontos(r):
-        return sum(1 for w in re.findall(r"[a-z]{4,}", r["caminho"].lower()) if w in palavras)
+        caminho = r["caminho"].lower()
+        if any(caminho.endswith(fixa) for fixa in _ROTAS_SEMPRE):
+            return 100   # login/logout/me entram sempre: quase toda bateria precisa de token
+        pedacos = re.findall(r"[a-z]+", caminho)
+        return sum(1 for p in pedacos if any(p.startswith(t[:5]) or t.startswith(p[:5]) for t in termos if len(t) >= 4))
 
-    ordenado = sorted(catalogo, key=lambda r: (-pontos(r), r["caminho"], r["metodo"]))[:_MAX_ROTAS_NO_PROMPT]
+    ordenado = sorted(catalogo, key=lambda r: (-pontos(r), r["caminho"], r["metodo"]))
+    # só as relevantes (pontuação > 0) mais as fixas; se sobrar espaço, completa com as demais
+    relevantes = [r for r in ordenado if pontos(r) > 0][:_MAX_ROTAS_NO_PROMPT]
+    if len(relevantes) < _MAX_ROTAS_NO_PROMPT:
+        relevantes += [r for r in ordenado if pontos(r) == 0][:_MAX_ROTAS_NO_PROMPT - len(relevantes)]
+    ordenado = relevantes
     linhas = [f"{r['metodo']} {r['caminho']}" for r in ordenado]
     return ("ROTAS REAIS DESTA API (catálogo verificado). Gere casos SOMENTE com estas rotas, exatamente como escritas "
             "({id} = um id real vindo de um caso anterior). Se a especificação falar de algo que não está aqui, NÃO invente rota: "
