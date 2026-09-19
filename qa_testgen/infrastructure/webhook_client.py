@@ -291,7 +291,12 @@ class WebhookClient:
         )
         self._levantar_erro_com_detalhe(response)
         data = self._parse(response)
-        descricao = data.get("descricao", "").strip() if isinstance(data, dict) else ""
+        # O fluxo responde {"descricao": ...}; se o nó Respond devolver a saída crua
+        # da chain ({"text": ...} ou {"output": ...}), aceita do mesmo jeito.
+        descricao = ""
+        if isinstance(data, dict):
+            bruto = data.get("descricao") or data.get("text") or data.get("output") or ""
+            descricao = bruto.strip() if isinstance(bruto, str) else ""
         if not descricao:
             # Diagnóstico: mostra o que voltou de verdade do n8n, em vez de
             # só "vazio" — ajuda a identificar se foi um provedor específico
