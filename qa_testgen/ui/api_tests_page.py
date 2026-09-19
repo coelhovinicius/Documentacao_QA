@@ -317,8 +317,10 @@ class ApiTestsPageMixin:
                         st.error(f"❌ {erro}")
                     else:
                         st.rerun()
-            if self.state.get('api_catalogo_erro'):
+            if self.state.get('api_catalogo_erro') and not rotas:
                 st.error(f"❌ {self.state.get('api_catalogo_erro')}")
+            elif rotas:
+                self.state.set('api_catalogo_erro', None)   # o erro era de antes de o catálogo existir
             manual = st.text_area("…ou cole rotas, uma por linha (`GET /api/v1/rota`, `{id}` para trechos variáveis)",
                                   height=80, key=f"apiw_cat_manual_{len(rotas)}", placeholder="GET /api/v1/me\nPOST /api/v1/auth/login")
             if manual.strip() and st.button("➕ Adicionar estas rotas", key="btn_api_cat_manual_add"):
