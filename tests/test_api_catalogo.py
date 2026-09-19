@@ -23,6 +23,19 @@ class ExtracaoTests(unittest.TestCase):
         self.assertIn(("GET", "/api/v1/literal/path"), rotas)
         self.assertEqual(d.descobrir_bundles(HTML, "https://h.com/"), ["https://h.com/assets/index-AB12.js", "https://h.com/assets/vendor.js"])
 
+    def test_bundle_routes_without_api_v1_prefix(self):
+        # Front do passaporte: chamadas explícitas em /api-candidate, /core/sso, /bff — nada de /api/v1.
+        js = """h.get(`/api-candidate/candidate/id`);h.post("/core/sso/api/v1/account/forgot-password",e);
+        h.delete(`/api-candidate/candidateacademicformation/${e}`);h.get(`/bff/iped/course-access?courseId=${encodeURIComponent(e)}`);
+        h.get(`/assets/logo.png`);h.get("/");h.get(`/index.html`);h.get(`/login`);"""
+        rotas = d.extrair_rotas_de_bundle(js)
+        self.assertIn(("GET", "/api-candidate/candidate/id"), rotas)
+        self.assertIn(("POST", "/core/sso/api/v1/account/forgot-password"), rotas)
+        self.assertIn(("DELETE", "/api-candidate/candidateacademicformation/{id}"), rotas)
+        self.assertIn(("GET", "/bff/iped/course-access"), rotas)               # query string cai fora
+        for fora in ("/assets/logo.png", "/", "/index.html", "/login"):         # asset, raiz, página, 1 segmento
+            self.assertNotIn(("GET", fora), rotas)
+
     def test_openapi_postman_and_text(self):
         openapi = {"basePath": "/api/v1", "paths": {"/users/{userId}": {"get": {}, "delete": {}}, "/login": {"post": {}}}}
         self.assertEqual(d.extrair_rotas_de_openapi(openapi), [("DELETE", "/api/v1/users/{id}"), ("GET", "/api/v1/users/{id}"), ("POST", "/api/v1/login")])

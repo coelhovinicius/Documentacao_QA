@@ -158,6 +158,7 @@ _RE_METODO_STRING = re.compile(r"method\s*:\s*[`\"'](GET|POST|PUT|PATCH|DELETE)[
 _RE_LITERAL_API = re.compile(r"[`\"']((?:/api)?/v\d+/[A-Za-z0-9_\-/{}$.:]{1,120})[`\"']")
 _RE_PREFIXO_API = re.compile(r"[=:(,]\s*[`\"'](/api(?:/v\d+)?)[`\"']")
 _RE_SCRIPT_SRC = re.compile(r"""<(?:script|link)[^>]+?(?:src|href)=["']([^"']+\.m?js(?:\?[^"']*)?)["']""", re.I)
+_RE_NAO_API = re.compile(r"\.(m?js|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|html?|json|xml|txt|pdf)$|^/(assets|static|public|images?|img|fonts?)/", re.I)
 _RE_SEG_ID = re.compile(r"^(\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\$\{[^}]*\}|\{[^}]*\}|:[A-Za-z_]+|\{\{[^}]*\}\})$", re.I)
 _MAX_ROTAS_NO_PROMPT = 24
 # Radicais em português -> pedaços de rota em inglês, pra achar as rotas que têm
@@ -240,7 +241,10 @@ def extrair_rotas_de_bundle(js: str) -> list:
         elif prefixo and not c.startswith(prefixo + "/") and not c.startswith("/api/"):
             c = prefixo + c
         c = normalizar_caminho(c)
-        if not re.search(r"/v\d+/|/api/", c):
+        # Chamada HTTP explícita (.get(`/x`), {method,url}) é rota do front seja qual
+        # for o prefixo (/api/v1, /api-candidate, /core/sso, /bff...). Fica de fora
+        # só o que claramente não é API: arquivo estático, página, raiz.
+        if _RE_NAO_API.search(c) or c == "/" or c.count("/") < 2:
             return
         par = (metodo.upper(), c)
         if par not in vistos:
