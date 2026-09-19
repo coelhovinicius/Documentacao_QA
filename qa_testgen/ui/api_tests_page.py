@@ -220,9 +220,11 @@ class ApiTestsPageMixin:
         except Exception as error:
             return f"Não consegui abrir {base}/ a partir do servidor: {error}"
         if pagina.status_code >= 400:
-            return (f"{base}/ respondeu HTTP {pagina.status_code} para o servidor do app (provável bloqueio de WAF a IPs de nuvem). "
-                    "Saída: abra a Base URL no seu navegador, F12 → aba *Sources* (ou *Network*, filtro JS), salve o arquivo "
-                    "`/assets/index-*.js` e envie no campo de upload abaixo.")
+            return (f"{base}/ respondeu HTTP {pagina.status_code} para o servidor do app (bloqueio de WAF a IPs de nuvem — o mesmo motivo "
+                    "de a execução sair pelo navegador). O catálogo é compartilhado, então basta importar UMA vez por um destes caminhos: "
+                    "**(a)** rode o app na sua máquina (`streamlit run app.py`) e clique neste mesmo botão — do seu IP a leitura passa; ou "
+                    f"**(b)** abra `view-source:{base}/` no navegador, procure `<script src=\"/assets/index-….js\">`, abra esse link, "
+                    "salve com Ctrl+S e envie o arquivo no upload ao lado.")
         bundles = disc.descobrir_bundles(pagina.text, base)
         if not bundles:
             return "A página da Base URL não referencia nenhum arquivo .js — envie o bundle do front (ou um Swagger/Postman) pelo upload abaixo."
