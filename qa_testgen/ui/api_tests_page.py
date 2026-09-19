@@ -317,10 +317,15 @@ class ApiTestsPageMixin:
                         st.error(f"❌ {erro}")
                     else:
                         st.rerun()
-            if self.state.get('api_catalogo_erro') and not rotas:
-                st.error(f"❌ {self.state.get('api_catalogo_erro')}")
-            elif rotas:
-                self.state.set('api_catalogo_erro', None)   # o erro era de antes de o catálogo existir
+            erro_import = self.state.get('api_catalogo_erro')
+            if erro_import:
+                if rotas:
+                    st.info(f"ℹ️ Não deu pra atualizar pelo servidor do app (HTTP 403 — bloqueio de WAF a IPs de nuvem), mas o catálogo atual "
+                            f"({len(rotas)} rotas) **continua valendo — não precisa fazer nada**. Só reimporte se a API ganhou rotas novas: "
+                            "aí use o upload do .js ao lado (ou o app rodando na sua máquina).")
+                else:
+                    st.error(f"❌ {erro_import}")
+                self.state.set('api_catalogo_erro', None)   # mostra uma vez, logo depois do clique
             manual = st.text_area("…ou cole rotas, uma por linha (`GET /api/v1/rota`, `{id}` para trechos variáveis)",
                                   height=80, key=f"apiw_cat_manual_{len(rotas)}", placeholder="GET /api/v1/me\nPOST /api/v1/auth/login")
             if manual.strip() and st.button("➕ Adicionar estas rotas", key="btn_api_cat_manual_add"):
