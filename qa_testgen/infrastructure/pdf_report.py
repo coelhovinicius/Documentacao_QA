@@ -7,7 +7,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
 from reportlab.platypus import (
     Paragraph, Spacer, Table, TableStyle, PageBreak, HRFlowable,
     KeepTogether, SimpleDocTemplate, Image as RLImage,
@@ -106,13 +106,15 @@ class PdfReportGenerator:
                 'RePTitle', parent=base['Normal'], fontSize=10, textColor=COR_BRANCO,
                 fontName='Helvetica-Bold',
             ),
+            # Texto corrido justificado (títulos, cabeçalhos e código seguem
+            # alinhados à esquerda — justificar código ou rótulo curto piora).
             'body': ParagraphStyle(
                 'ReBody', parent=base['Normal'], fontSize=9, textColor=COR_CINZA_ESC,
-                fontName='Helvetica', leading=13,
+                fontName='Helvetica', leading=13, alignment=TA_JUSTIFY,
             ),
             'cell': ParagraphStyle(
                 'ReCell', parent=base['Normal'], fontSize=8, textColor=COR_CINZA_ESC,
-                fontName='Helvetica', leading=11,
+                fontName='Helvetica', leading=11, alignment=TA_JUSTIFY,
             ),
             'cell_head': ParagraphStyle(
                 'ReCellH', parent=base['Normal'], fontSize=8, textColor=COR_BRANCO,
@@ -691,6 +693,7 @@ class PdfReportGenerator:
             linhas = linhas[:max_linhas] + [f"... ({len(linhas) - max_linhas} linhas omitidas - integra no .zip)"]
         estilo = ParagraphStyle(
             'ApiCode', parent=styles['cell'], fontName='Courier', fontSize=7, leading=9,
+            alignment=TA_LEFT,   # request/response é código: justificar embaralharia
         )
         corpo = "<br/>".join(cls._esc(l).replace(" ", "&nbsp;") for l in linhas) or "&nbsp;"
         t = Table([[Paragraph(corpo, estilo)]], colWidths=[largura])

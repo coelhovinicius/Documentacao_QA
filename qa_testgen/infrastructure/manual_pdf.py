@@ -16,7 +16,7 @@ from reportlab.platypus import (
     KeepTogether, HRFlowable,
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_LEFT, TA_CENTER
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
 from reportlab.pdfgen import canvas as _reportlab_canvas
 
 from qa_testgen.config import TZ_BR, LOGO_PATH, COR_LARANJA, COR_LARANJA_CLARO, COR_CINZA_ESC, COR_BRANCO
@@ -83,10 +83,10 @@ class ManualPdfGenerator:
         return {
             'title': ParagraphStyle('ManualTitle', parent=base['Title'], fontSize=24, leading=28, textColor=COR_CINZA_ESC, alignment=TA_LEFT),
             'subtitle': ParagraphStyle('ManualSubtitle', parent=base['Normal'], fontSize=13, leading=18, textColor=colors.HexColor('#6B6B6B')),
-            'intro': ParagraphStyle('ManualIntro', parent=base['Normal'], fontSize=13, leading=19, textColor=COR_CINZA_ESC, spaceAfter=10),
+            'intro': ParagraphStyle('ManualIntro', parent=base['Normal'], fontSize=13, leading=19, textColor=COR_CINZA_ESC, spaceAfter=10, alignment=TA_JUSTIFY),
             'passo_titulo': ParagraphStyle('PassoTitulo', parent=base['Normal'], fontSize=16, leading=20, textColor=colors.white, fontName='Helvetica-Bold'),
-            'passo_desc': ParagraphStyle('PassoDesc', parent=base['Normal'], fontSize=13, leading=19, textColor=COR_CINZA_ESC),
-            'aviso': ParagraphStyle('Aviso', parent=base['Normal'], fontSize=12, leading=17, textColor=colors.HexColor('#8A5A00')),
+            'passo_desc': ParagraphStyle('PassoDesc', parent=base['Normal'], fontSize=13, leading=19, textColor=COR_CINZA_ESC, alignment=TA_JUSTIFY),
+            'aviso': ParagraphStyle('Aviso', parent=base['Normal'], fontSize=12, leading=17, textColor=colors.HexColor('#8A5A00'), alignment=TA_JUSTIFY),
             'img_caption': ParagraphStyle('ImgCaption', parent=base['Normal'], fontSize=10, leading=13, textColor=colors.HexColor('#7A7A7A'), alignment=TA_CENTER),
         }
 

@@ -7895,11 +7895,43 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                                 self.state.set(delete_flag_key, False)
                                 st.rerun()
 
+    def _manual_limpar(self):
+        """
+        Zera tudo do manual anterior — estado do app E as chaves de widget do
+        Streamlit. Sem limpar as chaves de widget, os campos de título,
+        introdução e de cada passo continuam com o texto antigo mesmo depois
+        de gerar outro manual (elas só são inicializadas quando NÃO existem).
+        O uploader não aceita ser esvaziado por código: ganha uma key nova
+        (`manual_form_versao`) pra nascer vazio.
+        """
+        for chave in ('manual_generated', 'manual_passo_images', 'manual_pdf_bytes',
+                      'manual_collected_images', 'manual_uploaded_files', 'manual_nome',
+                      'manual_board_items'):
+            self.state.set(chave, None)
+        prefixos = ('manual_passo_',)
+        exatas = {'manual_titulo_input', 'manual_introducao_input', 'manual_nome_input',
+                  'manual_wi_select', 'manual_query_select', 'manual_area_paths_select'}
+        for chave in [k for k in list(st.session_state.keys())
+                      if k in exatas or any(k.startswith(p) for p in prefixos)]:
+            st.session_state.pop(chave, None)
+        self.state.set('manual_form_versao', (self.state.get('manual_form_versao') or 0) + 1)
+
     def _manual_generation_page(self):
         st.subheader("📘 Manual de Testes (UAT)")
-        if st.button("← Voltar", key="btn_manual_back"):
-            self.state.set('show_manual_page', False)
-            st.rerun()
+        col_voltar, col_novo = st.columns([1, 1])
+        with col_voltar:
+            if st.button("← Voltar", key="btn_manual_back", width="stretch"):
+                self.state.set('show_manual_page', False)
+                st.rerun()
+        with col_novo:
+            tem_algo = bool(self.state.get('manual_generated') or self.state.get('manual_uploaded_files')
+                            or self.state.get('manual_collected_images'))
+            if st.button("🆕 Novo manual", key="btn_manual_novo", width="stretch",
+                         disabled=(not tem_algo) or self.state.get('is_processing'),
+                         help="Limpa o manual atual (textos, imagens e PDF) pra começar outro do zero."):
+                self._manual_limpar()
+                self._flash_success("Tela limpa — pode montar um manual novo.")
+                st.rerun()
 
         if not self._get_permission_cached("manual_testes"):
             st.error("❌ Você não tem permissão pra acessar esta área.")
@@ -7943,7 +7975,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 "Documento(s) (PDF, DOCX, TXT ou CSV — pode anexar mais de um, de formatos diferentes)",
                 type=["pdf", "docx", "txt", "csv"],
                 accept_multiple_files=True,
-                key="manual_uploaded_files_input",
+                key=f"manual_uploaded_files_input_{self.state.get('manual_form_versao') or 0}",
                 disabled=(not DOCUMENT_UPLOAD_ENABLED) or self.state.get('is_processing'),
             )
             if uploaded_manual:
