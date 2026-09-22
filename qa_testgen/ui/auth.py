@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 
 from qa_testgen.infrastructure.access_control_client import AccessControlClient, AccessControlError
 from qa_testgen.infrastructure.document_store import (
-    AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO, CONFIG_IDENTIDADES_AZURE,
+    AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO, CONFIG_IDENTIDADES_AZURE, CONFIG_INTERPRETAR_IMAGENS,
 )
 
 TZ_BR = ZoneInfo("America/Sao_Paulo")
@@ -622,7 +622,47 @@ def _render_app_settings(config, current_username: str):
         st.caption(f"Configuração atual: **{opcoes[atual]}**.")
 
     st.divider()
+    _render_interpretacao_imagens(config, store, current_username)
+
+    st.divider()
     _render_identidades_azure(config, store, current_username)
+
+
+def _render_interpretacao_imagens(config, store, current_username: str):
+    """
+    Liga/desliga a leitura das imagens dos documentos pela IA (Passo 1).
+
+    Desligar existe por causa de cota: cada imagem é uma chamada aos provedores
+    que leem imagem — os MESMOS que geram Matriz/Casos/Planos — e a descrição
+    de cada uma passa a viajar junto do texto em todo lote seguinte.
+    """
+    st.markdown("##### 🖼️ Interpretação de imagens dos documentos (Passo 1)")
+    st.caption(
+        "Ligada, o app manda cada imagem do documento (fluxograma, print, protótipo) pra IA descrever, e a "
+        "descrição entra na especificação — o que está só no desenho também vira caso de teste. "
+        "Desligada, economiza cota: some **uma chamada de IA por imagem** e **~134 tokens por imagem** em "
+        "cada lote de Matriz e de Casos; em troca, o conteúdo visual é ignorado."
+    )
+    try:
+        ligado = (store.get(CONFIG_INTERPRETAR_IMAGENS, "1") or "1") != "0"
+    except Exception as error:
+        st.error(f"❌ Não foi possível ler a configuração: {error}")
+        return
+
+    escolha = st.toggle("Interpretar imagens com IA", value=ligado, key="cfg_interpretar_imagens")
+    if escolha != ligado:
+        if st.button("💾 Salvar", type="primary", key="btn_cfg_imagens_save"):
+            try:
+                store.set(CONFIG_INTERPRETAR_IMAGENS, "1" if escolha else "0", current_username)
+                st.session_state['interpretar_imagens'] = escolha
+                log_action(config, current_username, "Alterar Configuração", "Administração",
+                           f"Interpretação de imagens: {'ligada' if escolha else 'desligada'}")
+                st.success(f"✅ Salvo: interpretação de imagens **{'ligada' if escolha else 'desligada'}**. "
+                           "Vale pra todos a partir da próxima sessão de cada um.")
+            except Exception as error:
+                st.error(f"❌ Não foi possível salvar: {error}")
+    else:
+        st.caption(f"Configuração atual: **{'ligada' if ligado else 'desligada'}**.")
 
 
 def _render_identidades_azure(config, store, current_username: str):

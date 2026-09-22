@@ -181,3 +181,4 @@ class AppSettingsStore:
 CONFIG_API_TESTS_MODO_EXECUCAO = "api_tests_modo_execucao"   # "navegador" | "servidor"
 CONFIG_API_ROTAS_PREFIXO = "api_rotas::"   # + host da Base URL -> JSON {"rotas": [{"metodo","caminho","origem","em"}]}
 CONFIG_IDENTIDADES_AZURE = "identidades_azure"   # JSON {usuario_do_login: nome usado na tag criado-por do Azure}
+CONFIG_INTERPRETAR_IMAGENS = "interpretar_imagens"   # "1" (padrão) | "0" — ler imagens dos documentos com IA no Passo 1

@@ -25,6 +25,7 @@ from qa_testgen.infrastructure.pdf_report import PdfReportGenerator
 from qa_testgen.infrastructure.manual_pdf import ManualPdfGenerator
 from qa_testgen.infrastructure.document_store import (
     DocumentStore, DocumentStoreError, AppSettingsStore, CONFIG_IDENTIDADES_AZURE,
+    CONFIG_INTERPRETAR_IMAGENS,
 )
 from qa_testgen.infrastructure.webhook_client import WebhookClient
 from qa_testgen.infrastructure.azure_devops_client import AzureDevOpsClient, AzureDevOpsError
@@ -574,6 +575,29 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
                 """,
                 unsafe_allow_html=True
             )
+
+    def _interpretar_imagens_ligado(self) -> bool:
+        """
+        Interpretação de imagens dos documentos (Passo 1) — configuração GLOBAL
+        do dono, em Administração → Configurações. Padrão: ligada.
+
+        Desligar economiza cota de IA em dois pontos: some 1 chamada por imagem
+        (nos provedores que leem imagem, que são os MESMOS usados pela geração)
+        e o texto enviado em cada lote de Matriz/Casos deixa de carregar a
+        descrição de cada imagem (~134 tokens por imagem, repetidos por lote).
+        Em troca, o que está só no diagrama/print não vira caso de teste.
+        """
+        if self.state.get('interpretar_imagens') is None:
+            ligado = True
+            if getattr(self.config, 'turso_database_url', ''):
+                try:
+                    store = AppSettingsStore(self.config.turso_database_url, self.config.turso_auth_token)
+                    store.ensure_schema()
+                    ligado = (store.get(CONFIG_INTERPRETAR_IMAGENS, "1") or "1") != "0"
+                except Exception:
+                    ligado = True
+            self.state.set('interpretar_imagens', ligado)
+        return bool(self.state.get('interpretar_imagens'))
 
     def _render_aviso_ia(self) -> None:
         """
@@ -1749,12 +1773,21 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
                 # interpretar cada uma via IA, inserindo a descrição de volta
                 # no texto, na posição em que a imagem apareceu — assim a
                 # IA de análise/geração "vê" o conteúdo visual também.
-                img_result = DocumentProcessor.extract_images_with_context(uploaded)
-                prep = {"text": text, "project": project, "images": img_result["images"], "warnings": img_result["warnings"]}
+                if self._interpretar_imagens_ligado():
+                    img_result = DocumentProcessor.extract_images_with_context(uploaded)
+                else:
+                    # Desligado pelo dono em Administração → Configurações: nem
+                    # extrai (extrair sem interpretar só gastaria tempo aqui).
+                    img_result = {"images": [], "warnings": []}
+                prep = {"text": text, "project": project, "images": img_result["images"],
+                        "warnings": img_result["warnings"], "imagens_desligadas": not self._interpretar_imagens_ligado()}
                 self.state.set('_analise_prep', prep)
 
             for warn in prep["warnings"]:
                 st.caption(f"ℹ️ {warn}")
+            if prep.get("imagens_desligadas"):
+                st.info("🖼️ **Interpretação de imagens desligada** (Administração → Configurações). O que estiver "
+                        "só em diagramas, prints ou protótipos não entra na análise — só o texto dos documentos.")
             text = prep["text"]
             if prep["images"] and prep.get("descricoes") is None:
                 # Uma imagem por execução, com a regra de retentativa: sem
