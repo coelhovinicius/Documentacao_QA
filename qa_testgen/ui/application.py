@@ -575,6 +575,36 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
                 unsafe_allow_html=True
             )
 
+    def _render_aviso_ia(self) -> None:
+        """
+        Aviso FIXO, no topo da área principal, dizendo o que causou a falha da
+        geração por IA — em português e em uma frase.
+
+        Antes, a única pista era a label do st.status lá no fim da página
+        ("o lote anterior falhou") e o erro cru em inglês dentro dele; quem
+        está usando o app via "Aguardando 52s" e não tinha como saber que o
+        motivo era a cota por minuto do provedor gratuito. Fica na tela até a
+        pessoa dispensar ou começar outra geração (_iniciar_geracao_em_lotes
+        limpa), porque a geração continua rodando e ela precisa saber o que
+        está acontecendo enquanto espera.
+        """
+        aviso = self.state.get('ia_causa_visivel')
+        if not aviso:
+            return
+        st.markdown('<div id="aviso-ia-anchor"></div>', unsafe_allow_html=True)
+        titulo = aviso.get('causa') or "**A chamada à IA falhou.**"
+        onde = f" — em: {aviso['onde']}" if aviso.get('onde') else ""
+        extra = f" ({aviso['extra']})" if aviso.get('extra') else ""
+        st.error(f"⚠️ {titulo}{onde}{extra}")
+        col_detalhe, col_ok = st.columns([4, 1])
+        with col_detalhe:
+            with st.expander("🔍 Detalhe técnico (o que o provedor respondeu)"):
+                st.code(aviso.get('detalhe') or "(sem detalhe)", language="text")
+        with col_ok:
+            if st.button("Dispensar", key="btn_dispensar_aviso_ia", width="stretch"):
+                self.state.set('ia_causa_visivel', None)
+                st.rerun()
+
     def _render_area_help(self, area: str):
         """
         Expander padrão "ℹ️ O que é e como usar esta área", logo abaixo do
@@ -1815,6 +1845,47 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
 
     _TAMANHO_LOTE_PLANOS = 10
 
+    # Teto de tokens por minuto do provedor mais apertado da cascata (Groq
+    # gratuito: 8.000 TPM). Usamos 7.000 pra sobrar folga pro prompt fixo do
+    # workflow e pra resposta, que também contam no mesmo limite.
+    _TOKENS_POR_MINUTO = 7000
+
+    @staticmethod
+    def _matriz_do_lote(matriz: list, lote_casos: list) -> list:
+        """
+        Só as linhas da Matriz que os Casos DESTE lote referenciam
+        (`requisitos_relacionados`).
+
+        A Matriz inteira ia junto em TODO lote: com 48 linhas isso são ~2.900
+        tokens repetidos a cada chamada, contra um teto de 8.000 por minuto —
+        o que estourava a cota mesmo com o lote de Casos pequeno. O prompt dos
+        Planos usa a Matriz só como contexto dos Casos que está organizando,
+        então as linhas dos outros lotes não fazem falta.
+
+        Sem correspondência nenhuma (Casos sem `requisitos_relacionados`),
+        devolve a Matriz inteira — melhor mandar demais do que mandar vazio.
+        """
+        ids = {str(r).strip() for caso in (lote_casos or []) for r in (caso.get('requisitos_relacionados') or [])}
+        if not ids:
+            return matriz or []
+        do_lote = [linha for linha in (matriz or []) if str(linha.get('id', '')).strip() in ids]
+        return do_lote or (matriz or [])
+
+    @classmethod
+    def _espera_por_cota(cls, matriz: list, lote_exemplo: list) -> float:
+        """
+        Segundos entre lotes pra não estourar o teto de tokens POR MINUTO.
+
+        Estima o tamanho de uma chamada (1 token ≈ 4 caracteres) e devolve a
+        fração do minuto que ela ocupa da cota. Nunca menos que a espera curta
+        padrão, nunca mais que 30s (acima disso é melhor a pessoa ver o erro e
+        decidir do que o app ficar parado sozinho).
+        """
+        payload = json.dumps({"m": cls._matriz_do_lote(matriz, lote_exemplo), "c": lote_exemplo}, ensure_ascii=False)
+        tokens = max(len(payload) // 4, 1)
+        segundos = 60.0 * tokens / cls._TOKENS_POR_MINUTO
+        return max(IaRetryMixin._ESPERA_ENTRE_LOTES_SEGUNDOS, min(segundos, 30.0))
+
     @staticmethod
     def _normalizar_titulo_caso(titulo: str) -> str:
         """
@@ -1940,12 +2011,18 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
 
         def processar_um_lote(lote_casos):
             try:
-                resp = self.client.trigger_plans("", matriz, lote_casos, answers, project)
+                resp = self.client.trigger_plans("", self._matriz_do_lote(matriz, lote_casos), lote_casos, answers, project)
                 return resp.get('planos_de_teste') or [], None
             except Exception as error:
                 return None, self._erro_lote_amigavel(error)
 
-        resultado = self._processar_um_lote_por_execucao("geracao_planos", montar_lotes, processar_um_lote, status)
+        # O limite do Groq gratuito é por MINUTO (8.000 tokens somando TODAS as
+        # chamadas): com 5 lotes disparados em ~30s, o problema não é o tamanho
+        # de um lote, é a SOMA deles na mesma janela. Espaça os lotes pelo peso
+        # real do que vai ser enviado, em vez dos 5s fixos.
+        espera = self._espera_por_cota(matriz, test_cases[:tam])
+        resultado = self._processar_um_lote_por_execucao("geracao_planos", montar_lotes, processar_um_lote, status,
+                                                         espera_entre_lotes=espera)
         if resultado is None:
             return None
         planos_combinados, erros = resultado
@@ -10269,6 +10346,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         self._header()
         render_logout_control(self.config)
         self._render_flash_message()
+        self._render_aviso_ia()
 
         username = st.session_state.get(SESSION_USER_KEY, "")
         is_owner = username == self.config.owner_username

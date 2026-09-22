@@ -53,6 +53,7 @@ class IaRetryMixin:
         preparação (texto extraído, Work Items buscados) que alguns fluxos
         guardam pra não refazer o trabalho a cada rerun da espera.
         """
+        self.state.set('ia_causa_visivel', None)   # aviso da rodada anterior não fica na tela
         prefixos = [state_prefix] if isinstance(state_prefix, str) else list(state_prefix)
         for prefixo in prefixos:
             for suffix in ('_lotes_pendentes', '_acumulado', '_erros', '_total', '_proxima_liberacao',
@@ -84,6 +85,67 @@ class IaRetryMixin:
         if isinstance(error, ValueError) and "corpo vazio" in msg:
             return msg + dica
         return msg
+
+    @staticmethod
+    def _causa_da_falha(erro: str) -> str:
+        """
+        Traduz o erro CRU dos provedores de IA (que vem em inglês, dentro do
+        "detalhe" do 502 do n8n) na causa real, em uma frase.
+
+        Sem isso, a pessoa lê "Todos os provedores de IA falharam ... Request
+        too large for model openai/gpt-oss-120b ... tokens per minute (TPM):
+        Limit 8000" e não tem como saber que isso é cota gratuita estourada, e
+        não defeito do app ou do documento dela.
+        """
+        texto = (erro or "").lower()
+        if "tokens per minute" in texto or "request too large" in texto or "tpm" in texto:
+            return ("**Cota de IA estourada (tokens por minuto).** O provedor gratuito aceita um volume limitado "
+                    "por minuto e este envio passou do teto. Não é erro do seu documento nem do app — o app espera "
+                    "a cota voltar e tenta de novo sozinho.")
+        if "rate limit" in texto or "429" in texto or "too many requests" in texto:
+            return ("**Provedor de IA em rate limit (429).** Muitas chamadas em pouco tempo na conta gratuita. "
+                    "O app aguarda a janela do limite e repete o lote.")
+        if "quota" in texto or "resource_exhausted" in texto or "insufficient_quota" in texto:
+            return ("**Cota diária/mensal da conta de IA esgotada.** Diferente do limite por minuto, esperar não "
+                    "resolve: é preciso liberar cota no provedor (ou usar outra chave).")
+        if "invalid api key" in texto or "unauthorized" in texto or "401" in texto or "authentication" in texto:
+            return ("**Credencial de IA inválida ou expirada no n8n.** Conferir a credencial do provedor citado no "
+                    "erro, na tela de credenciais do n8n.")
+        if "timeout" in texto or "timed out" in texto or "connection" in texto or "corpo vazio" in texto:
+            return ("**A resposta não chegou a tempo.** Normalmente é o proxy na frente do n8n encerrando a conexão "
+                    "antes da IA terminar — ou o n8n fora do ar.")
+        if "model output doesn't fit" in texto or "json sem as chaves" in texto or "não é um objeto json" in texto:
+            return ("**A IA respondeu fora do formato esperado.** O app já tenta os outros provedores; se todos "
+                    "responderem assim, vale reduzir o tamanho do envio.")
+        return ""
+
+    # Resumo curto da causa, pra caber na label de espera do st.status.
+    _RESUMO_CAUSA = (
+        ("tokens per minute", "cota de IA por minuto estourada"),
+        ("request too large", "cota de IA por minuto estourada"),
+        ("rate limit", "provedor de IA em rate limit"),
+        ("429", "provedor de IA em rate limit"),
+        ("quota", "cota da conta de IA esgotada"),
+        ("timeout", "a IA não respondeu a tempo"),
+        ("corpo vazio", "a IA não respondeu a tempo"),
+    )
+
+    def _registrar_causa_visivel(self, rotulo: str, erro: str, resolvido: bool, detalhe_extra: str = "") -> None:
+        """
+        Guarda a causa da falha pra ser mostrada NA ÁREA PRINCIPAL da tela
+        (ver _render_aviso_ia), não só dentro do st.status — que fica no fim
+        da página, colapsado, e com o erro cru em inglês.
+        """
+        texto = (erro or "").lower()
+        resumo = next((curto for chave, curto in self._RESUMO_CAUSA if chave in texto), "falha ao chamar a IA")
+        self.state.set('ia_causa_visivel', {
+            "resumo": resumo,
+            "causa": self._causa_da_falha(erro),
+            "onde": rotulo,
+            "detalhe": (erro or "")[:1200],
+            "extra": detalhe_extra,
+            "resolvido": resolvido,
+        })
 
     # Intervalo entre o FIM de um lote que deu certo e o INÍCIO do próximo,
     # na geração de Matriz/Casos/Planos. Curto de propósito: o n8n tem seis
@@ -198,7 +260,8 @@ class IaRetryMixin:
                 if faltam > 0:
                     if self.state.get(key_motivo_espera) == 'erro':
                         quem = f"{'o' if nome_item == 'lote' else 'a'} {nome_item} anterior" if varios else "a tentativa anterior"
-                        motivo = f"({quem} falhou — dando tempo da cota da IA no n8n se recuperar)"
+                        causa = (self.state.get('ia_causa_visivel') or {}).get('resumo') or ''
+                        motivo = f"({quem} falhou — {causa or 'dando tempo da cota da IA no n8n se recuperar'})"
                     else:
                         motivo = f"(intervalo curto entre {nome_item}s)"
                     antes_de = f"do {rotulo_atual}" if varios else "de tentar de novo"
@@ -223,6 +286,8 @@ class IaRetryMixin:
                     # Falha, mas ainda sobra tentativa — NÃO avança pro
                     # próximo lote: espera de novo e tenta O MESMO lote.
                     self.state.set(key_tentativas, tentativas)
+                    self._registrar_causa_visivel(rotulo_atual, erro, resolvido=False,
+                                                  detalhe_extra=f"tentativa {tentativas} de {self._MAX_TENTATIVAS_POR_LOTE}")
                     status.write(
                         f"⚠️ {rotulo_atual[0].upper() + rotulo_atual[1:]} falhou (tentativa {tentativas}/"
                         f"{self._MAX_TENTATIVAS_POR_LOTE}): {erro} — tentando de novo em "
@@ -234,6 +299,8 @@ class IaRetryMixin:
                     st.rerun()
                     return None
                 erros.append((concluidos + 1, erro))
+                self._registrar_causa_visivel(rotulo_atual, erro, resolvido=False,
+                                              detalhe_extra=f"desistiu após {self._MAX_TENTATIVAS_POR_LOTE} tentativas")
                 status.write(
                     f"❌ {rotulo_atual[0].upper() + rotulo_atual[1:]} falhou após "
                     f"{self._MAX_TENTATIVAS_POR_LOTE} tentativas: {erro}"
