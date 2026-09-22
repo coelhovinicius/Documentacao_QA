@@ -23,7 +23,9 @@ from qa_testgen.infrastructure.csv_formatter import AzureCsvFormatter
 from qa_testgen.infrastructure.document_processor import DocumentProcessor
 from qa_testgen.infrastructure.pdf_report import PdfReportGenerator
 from qa_testgen.infrastructure.manual_pdf import ManualPdfGenerator
-from qa_testgen.infrastructure.document_store import DocumentStore, DocumentStoreError
+from qa_testgen.infrastructure.document_store import (
+    DocumentStore, DocumentStoreError, AppSettingsStore, CONFIG_IDENTIDADES_AZURE,
+)
 from qa_testgen.infrastructure.webhook_client import WebhookClient
 from qa_testgen.infrastructure.azure_devops_client import AzureDevOpsClient, AzureDevOpsError
 from qa_testgen.infrastructure.access_control_client import AccessControlClient
@@ -328,8 +330,38 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
         username = st.session_state.get(SESSION_USER_KEY, "")
         log_action(self.config, username, action_name, location, details)
 
-    @staticmethod
-    def _tag_criado_por(tags_existentes: str = None, username: str = None) -> str:
+    def _identidade_azure(self, username: str = None) -> str:
+        """
+        Nome que identifica a pessoa NO AZURE (tag criado-por). Por padrão é o
+        próprio usuário do login, mas o dono pode mapear outro em
+        Administração > Configurações (ex.: login "admin" -> "vinicius"), já
+        que o PAT é compartilhado e o Azure mostra sempre a conta do token.
+        Lido uma vez por sessão (o mapa é global, no Turso).
+        """
+        # st.session_state não existe dentro de ThreadPoolExecutor — quem cria
+        # itens em thread já passa o nome pronto; aqui só não deixamos estourar.
+        try:
+            if username is None:
+                username = st.session_state.get(SESSION_USER_KEY, "") or ""
+            mapa = st.session_state.get('identidades_azure_cache')
+        except Exception:
+            return username or ""
+        if mapa is None:
+            mapa = {}
+            if getattr(self.config, 'turso_database_url', ''):
+                try:
+                    store = AppSettingsStore(self.config.turso_database_url, self.config.turso_auth_token)
+                    store.ensure_schema()
+                    mapa = json.loads(store.get(CONFIG_IDENTIDADES_AZURE, "") or "{}")
+                except Exception:
+                    mapa = {}
+            try:
+                st.session_state['identidades_azure_cache'] = mapa
+            except Exception:
+                pass
+        return (mapa.get(username) or username).strip()
+
+    def _tag_criado_por(self, tags_existentes: str = None, username: str = None) -> str:
         """
         Acrescenta "criado-por:<usuário logado>" à lista de tags — usada em
         toda criação de Bug/Test Case no Azure DevOps.
@@ -348,7 +380,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
         outras tags que a pessoa já tenha escolhido manualmente, se houver.
         """
         if username is None:
-            username = st.session_state.get(SESSION_USER_KEY, "") or "desconhecido"
+            username = self._identidade_azure() or "desconhecido"
         username_tag = username.strip().replace(";", "").replace(" ", "-").lower()
         tag_autor = f"criado-por:{username_tag}"
         if tags_existentes:
@@ -8076,27 +8108,38 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                             text_parts.append(part)
                         texto_work_items = "\n\n".join(text_parts)
 
+                        # As imagens quase nunca estão no Work Item escolhido: elas
+                        # ficam DENTRO dos Casos de Teste vinculados (anexo de passo
+                        # ou <img> colada no texto). Buscar só anexo do próprio Work
+                        # Item devolvia zero imagem num card que tem dezenas delas.
+                        # Os passos desses Casos também entram no conteúdo de origem:
+                        # é o que faz o manual descrever o fluxo REAL em vez de um
+                        # roteiro genérico.
+                        partes_casos, falhas_imagens = [], []
                         for wi in selected_wis:
                             try:
-                                imgs, _warns = ado_client.get_test_case_attachments(wi['id'])
-                                # Sem isso, a imagem chegava pra IA sem NENHUM
-                                # contexto — só o nome do arquivo, forçando a
-                                # IA a "chutar" a qual passo ela pertence.
-                                # Usar a Descrição/Critérios de Aceite do
-                                # próprio Work Item já dá um sinal real de
-                                # que conteúdo essa imagem provavelmente
-                                # ilustra, mesmo sem um trecho específico.
-                                contexto_wi = f"Anexo do Work Item {wi['id']} - \"{wi['title']}\"."
-                                if wi.get('description'):
-                                    contexto_wi += f" Descrição: {wi['description'][:300]}"
-                                if wi.get('acceptance_criteria'):
-                                    contexto_wi += f" Critérios de Aceite: {wi['acceptance_criteria'][:300]}"
-                                for idx, (fname, fbytes) in enumerate(imgs):
-                                    imagens_coletadas.append({"filename": f"WI{wi['id']}_{fname}", "bytes": fbytes, "origem": f"Work Item {wi['id']}", "context": contexto_wi})
-                            except Exception:
-                                pass
+                                imgs, casos_vinculados = ado_client.get_work_item_images(wi['id'])
+                                imagens_coletadas.extend(imgs)
+                                for caso in casos_vinculados:
+                                    linhas = [f"===== CASO DE TESTE {caso['id']} - {caso['titulo']} (vinculado ao Work Item {wi['id']}) ====="]
+                                    if caso.get('pre_condicoes'):
+                                        linhas.append(f"Pré-condições: {caso['pre_condicoes']}")
+                                    for passo in caso.get('passos') or []:
+                                        linhas.append(f"Passo {passo['numero']}: {passo['acao']}\n  Resultado esperado: {passo['resultado_esperado']}")
+                                    linhas.append(f"===== FIM DO CASO DE TESTE {caso['id']} =====")
+                                    partes_casos.append("\n".join(linhas))
+                            except Exception as error:
+                                falhas_imagens.append(f"Work Item {wi['id']}: {error}")
+                        if partes_casos:
+                            texto_work_items += "\n\n" + "\n\n".join(partes_casos)
                     if imagens_coletadas:
-                        st.caption(f"✅ {len(imagens_coletadas)} imagem(ns) encontrada(s) no total (documentos + Work Items).")
+                        de_casos = sum(1 for i in imagens_coletadas if str(i.get('origem', '')).lower().startswith(('test case', 'caso de teste')))
+                        detalhe = f" — {de_casos} vinda(s) dos Casos de Teste vinculados" if de_casos else ""
+                        st.caption(f"✅ {len(imagens_coletadas)} imagem(ns) encontrada(s) no total (documentos + Work Items){detalhe}.")
+                    else:
+                        st.caption("ℹ️ Nenhuma imagem encontrada nos Work Items escolhidos nem nos Casos de Teste vinculados a eles.")
+                    if falhas_imagens:
+                        st.warning("Não consegui ler as imagens de: " + "; ".join(falhas_imagens))
 
         self.state.set('manual_collected_images', imagens_coletadas)
 

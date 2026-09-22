@@ -1,3 +1,4 @@
+import json
 import secrets as _secrets_module
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -7,7 +8,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from qa_testgen.infrastructure.access_control_client import AccessControlClient, AccessControlError
-from qa_testgen.infrastructure.document_store import AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO
+from qa_testgen.infrastructure.document_store import (
+    AppSettingsStore, CONFIG_API_TESTS_MODO_EXECUCAO, CONFIG_IDENTIDADES_AZURE,
+)
 
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 
@@ -617,6 +620,53 @@ def _render_app_settings(config, current_username: str):
                 st.error(f"❌ Não foi possível salvar: {error}")
     else:
         st.caption(f"Configuração atual: **{opcoes[atual]}**.")
+
+    st.divider()
+    _render_identidades_azure(config, store, current_username)
+
+
+def _render_identidades_azure(config, store, current_username: str):
+    """
+    Nome de cada pessoa na tag `criado-por:` do Azure DevOps. Por padrão é o
+    usuário do login; aqui o dono troca por um nome que faça sentido no board
+    (ex.: login "admin" -> "vinicius"), já que o PAT é compartilhado e o Azure
+    sempre mostra a conta do token em "Created by".
+    """
+    st.markdown("##### 🏷️ Nome de cada usuário no Azure DevOps")
+    st.caption(
+        "Vale pra tag `criado-por:` gravada em todo Test Case, Bug e Work Item criado pelo app. "
+        "Deixe em branco pra usar o próprio usuário do login."
+    )
+    try:
+        mapa = json.loads(store.get(CONFIG_IDENTIDADES_AZURE, "") or "{}")
+    except Exception as error:
+        st.error(f"❌ Não foi possível ler os nomes: {error}")
+        return
+
+    try:
+        usuarios = _get_all_known_usernames(config, AccessControlClient(config))
+    except Exception:
+        usuarios = sorted(_get_users())
+    usuarios = sorted({u for u in list(usuarios) + [getattr(config, "owner_username", "")] if u})
+    novos = {}
+    for user in usuarios:
+        novos[user] = st.text_input(
+            f"`{user}` aparece no Azure como", value=mapa.get(user, ""),
+            placeholder=user, key=f"cfg_identidade_{user}",
+        ).strip()
+
+    previa = ", ".join(f"criado-por:{(novos[u] or u).replace(' ', '-').lower()}" for u in usuarios)
+    st.caption(f"Ficará assim: {previa}")
+    if st.button("💾 Salvar nomes", type="primary", key="btn_cfg_identidades_save"):
+        limpo = {u: n for u, n in novos.items() if n and n != u}
+        try:
+            store.set(CONFIG_IDENTIDADES_AZURE, json.dumps(limpo, ensure_ascii=False), current_username)
+            st.session_state['identidades_azure_cache'] = limpo
+            log_action(config, current_username, "Alterar Configuração", "Administração",
+                       "Nomes no Azure: " + (", ".join(f"{u} -> {n}" for u, n in limpo.items()) or "todos no padrão"))
+            st.success("✅ Salvo. Vale pros próximos itens criados no Azure (o que já foi criado mantém a tag antiga).")
+        except Exception as error:
+            st.error(f"❌ Não foi possível salvar: {error}")
 
 
 def _render_active_sessions(config, client):

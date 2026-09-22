@@ -987,6 +987,155 @@ class AzureDevOpsClient:
         return images, warnings
 
     # ------------------------------------------------------------------ #
+    # Imagens de um Work Item (anexos + <img> embutidas + Casos vinculados)
+    # ------------------------------------------------------------------ #
+    _IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+    _RE_IMG_SRC = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.I)
+
+    def _baixar_imagem(self, url: str):
+        try:
+            r = self.session.get(url, headers=self.headers_json, timeout=60)
+            if r.status_code == 200 and r.content:
+                return r.content
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _nome_da_url(url: str, fallback: str) -> str:
+        m = re.search(r"[?&]fileName=([^&]+)", url, re.I)
+        if m:
+            return html.unescape(m.group(1)).split("/")[-1]
+        return fallback
+
+    def _imagens_de_um_work_item(self, wi_id: int, vistas: set) -> tuple:
+        """
+        Todas as imagens de UM Work Item, cada uma com o texto ao redor dela:
+          - anexos (AttachedFile) — contexto: comentário do anexo (ex.: "[TestStep=3]: ...") ou o título;
+          - <img> embutidas na Descrição / Critérios de Aceite / Passos de Reprodução /
+            Steps do Caso de Teste — contexto: o texto do campo ou do passo onde ela está.
+        Devolve (info_do_work_item, [imagens]) — info tem id, título, tipo, descrição,
+        critérios, passos (se for Caso de Teste) e a lista de ids vinculados.
+        """
+        url = f"{self._base_url()}/wit/workitems/{wi_id}?$expand=all&api-version={API_VERSION}"
+        data = self._handle_response(self.session.get(url, headers=self.headers_json, timeout=60), f"Buscar Work Item {wi_id}")
+        f = data.get("fields", {}) or {}
+        titulo = f.get("System.Title", "") or ""
+        tipo = f.get("System.WorkItemType", "") or ""
+        rotulo = f"{tipo or 'Work Item'} {wi_id} - \"{titulo}\""
+        imagens = []
+
+        def add(nome, conteudo, contexto):
+            # nome único: dois passos podem ter anexos com o mesmo nome de arquivo,
+            # e o nome é a chave que a IA usa pra apontar a imagem de cada passo
+            base = f"WI{wi_id}_{nome}"
+            final, n = base, 2
+            while final in vistas:
+                raiz, ponto, ext = base.rpartition(".")
+                final = f"{raiz}_{n}.{ext}" if ponto else f"{base}_{n}"
+                n += 1
+            vistas.add(final)
+            imagens.append({"filename": final, "bytes": conteudo, "origem": rotulo, "context": contexto[:600]})
+
+        # 1) <img> embutidas nos campos de texto (o que a pessoa cola direto no editor)
+        campos = [("Descrição", f.get("System.Description")), ("Critérios de Aceite", f.get("Microsoft.VSTS.Common.AcceptanceCriteria")),
+                  ("Passos de Reprodução", f.get("Microsoft.VSTS.TCM.ReproSteps"))]
+        for nome_campo, raw in campos:
+            for src in self._RE_IMG_SRC.findall(raw or ""):
+                if src in vistas:
+                    continue
+                conteudo = self._baixar_imagem(src)
+                if conteudo:
+                    vistas.add(src)
+                    add(self._nome_da_url(src, f"{nome_campo.lower().replace(' ', '_')}_{len(imagens) + 1}.png"), conteudo,
+                        f"{rotulo}, campo {nome_campo}: {self._strip_html(raw)[:400]}")
+        passos = []
+        steps_xml = f.get("Microsoft.VSTS.TCM.Steps", "") or ""
+        if steps_xml:
+            for n, match in enumerate(re.finditer(r'<step\b([^>]*)>(.*?)</step>', steps_xml, re.DOTALL), start=1):
+                id_attr = re.search(r'id="(\d+)"', match.group(1))
+                step_id = int(id_attr.group(1)) if id_attr else None
+                corpo = match.group(2)
+                params = re.findall(r'<parameterizedString[^>]*>(.*?)</parameterizedString>', corpo, re.DOTALL)
+                acao_html = saxutils.unescape(params[0]) if params else ""
+                esperado_html = saxutils.unescape(params[1]) if len(params) > 1 else ""
+                acao, esperado = self._strip_html(acao_html), self._strip_html(esperado_html)
+                # "numero" é a posição que a pessoa vê; "step_id" é o id interno do XML,
+                # que é o número usado no comentário [TestStep=N] dos anexos de passo
+                # (começa em 2) — casar pela posição jogava a evidência no passo errado.
+                passos.append({"numero": n, "step_id": step_id, "acao": acao, "resultado_esperado": esperado})
+                for src in self._RE_IMG_SRC.findall(acao_html + esperado_html):
+                    if src in vistas:
+                        continue
+                    conteudo = self._baixar_imagem(src)
+                    if conteudo:
+                        vistas.add(src)
+                        add(self._nome_da_url(src, f"passo{n}_{len(imagens) + 1}.png"), conteudo,
+                            f"{rotulo}, passo {n}: {acao} — resultado esperado: {esperado}")
+
+        # 2) anexos do Work Item (aba Anexos ou anexo de passo do Caso de Teste)
+        vinculados = []
+        for rel in data.get("relations") or []:
+            tipo_rel = rel.get("rel", "")
+            url_rel = rel.get("url", "")
+            if tipo_rel in ("Microsoft.VSTS.Common.TestedBy-Forward", "System.LinkTypes.Hierarchy-Forward"):
+                try:
+                    vinculados.append(int(url_rel.rstrip("/").split("/")[-1]))
+                except (ValueError, IndexError):
+                    pass
+                continue
+            if tipo_rel != "AttachedFile" or not url_rel or url_rel in vistas:
+                continue
+            attrs = rel.get("attributes", {}) or {}
+            nome = attrs.get("name", "") or f"anexo_{len(imagens) + 1}.png"
+            if not nome.lower().endswith(self._IMG_EXTS):
+                continue
+            conteudo = self._baixar_imagem(url_rel)
+            if not conteudo:
+                continue
+            vistas.add(url_rel)
+            comentario = (attrs.get("comment") or "").strip()
+            passo_ref = re.search(r"\[TestStep=(\d+)\]", comentario)
+            if passo_ref and passos:
+                n = int(passo_ref.group(1))
+                p = next((x for x in passos if x.get("step_id") == n), None) or next((x for x in passos if x["numero"] == n), None)
+                ctx = (f"{rotulo}, anexo do passo {p['numero']}: {p['acao']} — resultado esperado: {p['resultado_esperado']}"
+                       if p else f"{rotulo}, anexo de passo")
+            else:
+                ctx = f"{rotulo}, anexo" + (f": {comentario}" if comentario else "")
+            add(nome, conteudo, ctx)
+
+        info = {"id": wi_id, "title": titulo, "type": tipo,
+                "description": self._strip_html(f.get("System.Description", "") or ""),
+                "acceptance_criteria": self._strip_html(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", "") or ""),
+                "pre_condicoes": self._strip_html(f.get(self.PRECONDICOES_FIELD, "") or ""),
+                "passos": passos, "vinculados": vinculados}
+        return info, imagens
+
+    def get_work_item_images(self, work_item_id: int, incluir_vinculados: bool = True) -> tuple:
+        """
+        Imagens do Work Item e, se pedido, dos Casos de Teste vinculados
+        ("Tested By") e dos filhos — cada imagem com o texto ao redor
+        (campo ou passo), pra IA saber a qual passo do manual ela pertence.
+        Devolve (imagens, casos_vinculados): casos_vinculados traz id, título,
+        pré-condições e passos de cada Caso de Teste vinculado, pra entrar
+        no conteúdo de origem do manual.
+        """
+        vistas = set()
+        info, imagens = self._imagens_de_um_work_item(work_item_id, vistas)
+        casos = []
+        if incluir_vinculados:
+            for vid in info["vinculados"][:40]:
+                try:
+                    info_v, imgs_v = self._imagens_de_um_work_item(vid, vistas)
+                except Exception:
+                    continue
+                imagens.extend(imgs_v)
+                if info_v["type"].lower() in ("test case", "caso de teste") or info_v["passos"]:
+                    casos.append({"id": info_v["id"], "titulo": info_v["title"], "pre_condicoes": info_v["pre_condicoes"], "passos": info_v["passos"]})
+        return imagens, casos
+
+    # ------------------------------------------------------------------ #
     # Work Items existentes (para vincular Test Cases a eles)
     # ------------------------------------------------------------------ #
     @staticmethod
