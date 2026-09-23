@@ -20,6 +20,7 @@ from PIL import Image
 
 from qa_testgen.config import AppConfiguration, LOGO_PATH, SIMBOLO_PATH, TZ_BR
 from qa_testgen.infrastructure.csv_formatter import AzureCsvFormatter
+from qa_testgen.infrastructure.csv_importer import importar_planos_csv, resumo_importacao
 from qa_testgen.infrastructure.document_processor import DocumentProcessor
 from qa_testgen.infrastructure.pdf_report import PdfReportGenerator
 from qa_testgen.infrastructure.manual_pdf import ManualPdfGenerator
@@ -720,9 +721,12 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
             self.state.set('show_leave_api_modal', True)
             st.rerun()
         else:
-            # A página de Testes de API não está listada nos dicionários de
-            # navegação das outras áreas — desliga aqui, de forma central.
+            # As páginas de Testes de API e de Subir CSV de Planos não estão
+            # listadas nos dicionários de navegação das outras áreas — desligam
+            # aqui, de forma central.
             self.state.set('show_api_tests_page', False)
+            if not pending_state_updates.get('show_import_plans_page'):
+                self.state.set('show_import_plans_page', False)
             for key, value in pending_state_updates.items():
                 self.state.set(key, value)
             self.state.set('show_bug_confirm_modal', False)
@@ -743,6 +747,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
         ('show_wiql_generation_page', 'azure_devops', '🔎 Criar Query com IA'),
         ('show_execution_report_page', 'execution_report', '📊 Relatório de Testes'),
         ('show_api_tests_page', 'testes_api', '🔌 Testes de API'),
+        ('show_import_plans_page', 'azure_devops', '📥 Subir CSV de Planos'),
     ]
 
     def _areas_liberadas(self) -> list:
@@ -1080,6 +1085,15 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
                         'show_manual_page': False, 'show_document_store_page': False,
                         'show_mindmap_page': False, 'show_bug_page': False, 'show_work_item_page': False,
                     })
+            if self._get_permission_cached("azure_devops"):
+                if st.button("📥 Subir CSV de Planos", width="stretch", key="btn_import_plans_sidebar", disabled=self.state.get('is_processing')):
+                    self._navigate_or_confirm({
+                        'show_import_plans_page': True, 'show_about_page': False,
+                        'show_admin_page': False, 'show_execution_report_page': False,
+                        'show_wiql_generation_page': False, 'show_manual_page': False,
+                        'show_document_store_page': False, 'show_mindmap_page': False,
+                        'show_bug_page': False, 'show_work_item_page': False,
+                    })
             if self._get_permission_cached("execution_report"):
                 if st.button("📊 Relatório de Testes", width="stretch", key="btn_report_sidebar", disabled=self.state.get('is_processing')):
                     # Já estar na própria página de Relatório não conta como
@@ -1097,6 +1111,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
                     self.state.set('show_document_store_page', False)
                     self.state.set('show_mindmap_page', False)
                     self.state.set('show_api_tests_page', False)
+                    self.state.set('show_import_plans_page', False)
                     st.rerun()
             if self._get_permission_cached("testes_api"):
                 if st.button("🔌 Testes de API", width="stretch", key="btn_api_tests_sidebar", disabled=self.state.get('is_processing')):
@@ -3599,20 +3614,30 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
         st.rerun()
 
     def _render_step7_back_and_new(self, key_suffix: str, back_step: int = 6):
+        # O Passo 7 também é usado dentro de "Subir CSV de Planos" — lá não
+        # existe Passo 6 pra onde voltar nem análise nenhuma pra recomeçar:
+        # voltar é escolher outro arquivo, e recomeçar é zerar o que veio dele.
+        do_csv = bool(self.state.get('show_import_plans_page') and self.state.get('import_plans_integrar'))
         c1, c2 = st.columns(2)
         with c1:
             if st.button(
                 "← Voltar", width="stretch",
                 disabled=self.state.get('is_processing'), key=f"btn_back_step7_{key_suffix}",
             ):
-                self._set_step(back_step)
+                if do_csv:
+                    self.state.set('import_plans_integrar', False)
+                else:
+                    self._set_step(back_step)
                 st.rerun()
         with c2:
             if st.button(
-                "🔄 Nova Análise", width="stretch", type="primary",
+                "🆕 Outro CSV" if do_csv else "🔄 Nova Análise", width="stretch", type="primary",
                 disabled=self.state.get('is_processing'), key=f"btn_new_step7_{key_suffix}",
             ):
-                self.state.set('show_new_analysis_modal', True)
+                if do_csv:
+                    self._import_plans_limpar()
+                else:
+                    self.state.set('show_new_analysis_modal', True)
                 st.rerun()
 
     @staticmethod
@@ -8005,6 +8030,165 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                                 self.state.set(delete_flag_key, False)
                                 st.rerun()
 
+    def _import_plans_limpar(self):
+        """Volta a tela de importação pro começo — some o arquivo lido e tudo que veio dele."""
+        for chave in ('import_plans_resultado', 'import_plans_integrar', 'import_plans_arquivo',
+                      'test_cases', 'test_plans', 'ado_test_case_ids', 'ado_case_links',
+                      'ado_wi_case_links', 'ado_excluded_case_titles', 'ado_duplicate_case_titles',
+                      'ado_board_items', 'ado_static_push_log', 'ado_full_push_log'):
+            self.state.set(chave, None)
+        self.state.set('import_plans_versao', (self.state.get('import_plans_versao') or 0) + 1)
+
+    def _import_plans_page(self):
+        """
+        Sobe um CSV de Planos (o QA_Plans_*.csv que o próprio app exporta) e
+        entrega o conteúdo direto ao Passo 7 — onde a escolha de organização/
+        projeto, Area Path, o vínculo com Work Items e a criação de Plano/
+        Suítes/Casos já existem e continuam valendo.
+
+        Serve pra quem já tem os Casos de Teste prontos (gerados antes,
+        revisados por outra pessoa, ou vindos de outro projeto) e não quer
+        repassar pela geração por IA só pra publicar no Azure DevOps.
+
+        O Passo 7 é renderizado AQUI DENTRO (e não navegando pro assistente):
+        assim a permissão que vale é a mesma da página — 'azure_devops' — sem
+        exigir 'assistente_qa' de quem só precisa publicar um CSV.
+        """
+        st.subheader("📥 Subir CSV de Planos")
+
+        if not self._get_permission_cached("azure_devops"):
+            st.error("❌ Você não tem permissão para acessar a integração com o Azure DevOps.")
+            if st.button("← Voltar", key="btn_import_plans_back_sem_perm"):
+                self.state.set('show_import_plans_page', False)
+                st.rerun()
+            return
+
+        resultado = self.state.get('import_plans_resultado')
+
+        # Fase 2: já conferiu o arquivo, agora é o Passo 7 de sempre.
+        if self.state.get('import_plans_integrar') and resultado:
+            st.caption(
+                f"Origem: **{self.state.get('import_plans_arquivo')}** — {resumo_importacao(resultado)}"
+                + (f" · numerados como **{resultado.get('ambiente')}**" if resultado.get('ambiente') else "")
+            )
+            if st.button("↩️ Trocar arquivo", key="btn_import_plans_trocar",
+                         disabled=self.state.get('is_processing')):
+                self.state.set('import_plans_integrar', False)
+                st.rerun()
+            st.divider()
+            self.step_7()
+            return
+
+        # Fase 1: subir o arquivo e conferir o que veio dentro dele.
+        if st.button("← Voltar", key="btn_import_plans_back", disabled=self.state.get('is_processing')):
+            self.state.set('show_import_plans_page', False)
+            st.rerun()
+
+        st.caption(
+            "Para publicar no Azure DevOps Casos de Teste que já existem em planilha — sem refazer a geração "
+            "por IA. O arquivo esperado é o **QA_Plans_*.csv** que este app exporta no Passo 6 "
+            "(colunas Title, Test Step, Step Action, Step Expected, Suite, Plan)."
+        )
+
+        versao = self.state.get('import_plans_versao') or 0
+        arquivo = st.file_uploader(
+            "Arquivo de Planos (.csv ou .xlsx)", type=["csv", "xlsx"],
+            key=f"import_plans_file_{versao}", disabled=self.state.get('is_processing'),
+        )
+        if arquivo is None:
+            st.info("Escolha o arquivo pra ver o que tem dentro dele antes de enviar qualquer coisa ao Azure DevOps.")
+            return
+
+        # Só relê quando o arquivo muda — sem isso, cada clique na tela
+        # reprocessaria a planilha inteira.
+        if not resultado or self.state.get('import_plans_arquivo') != arquivo.name:
+            resultado = importar_planos_csv(arquivo.name, arquivo.getvalue())
+            self.state.set('import_plans_resultado', resultado)
+            self.state.set('import_plans_arquivo', arquivo.name)
+
+        if resultado.get('erro'):
+            st.error(f"❌ {resultado['erro']}")
+            return
+
+        st.success(
+            "✅ " + resumo_importacao(resultado)
+            + (f" · casos numerados como **{resultado['ambiente']}**" if resultado.get('ambiente') else "")
+        )
+        for aviso in resultado.get('avisos') or []:
+            st.warning(f"⚠️ {aviso}")
+
+        with st.expander("👀 Conferir o que foi lido do arquivo", expanded=False):
+            for plano in resultado['test_plans']:
+                st.markdown(f"**📋 {plano['nome']}**")
+                for suite in plano['suites']:
+                    st.markdown(f"- 📁 {suite['nome']} — {len(suite['casos'])} caso(s)")
+            st.divider()
+            for indice, caso in enumerate(resultado['test_cases'], start=1):
+                requisitos = ", ".join(caso.get('requisitos_relacionados') or []) or "—"
+                st.markdown(f"**{indice}. {caso['titulo']}** — {len(caso['passos'])} passo(s)")
+                st.caption(f"Pré-condições: {caso.get('pre_condicoes') or '—'} · Requisitos: {requisitos}")
+                for passo in caso['passos']:
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**{passo['numero']}.** {passo['acao']}")
+                    st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;↳ Esperado: {passo.get('resultado_esperado') or '—'}")
+
+        st.divider()
+        nome_projeto = st.text_input(
+            "Nome do projeto/produto",
+            value=self.state.get('import_plans_projeto')
+            or resultado.get('projeto') or self.state.get('project_name') or "",
+            key=f"import_plans_projeto_input_{versao}",
+            disabled=self.state.get('is_processing'),
+            help="Só sugere o nome do Test Plan no passo seguinte ('<projeto> - QA TestGen'). "
+                 "A organização e o projeto do Azure DevOps são escolhidos lá.",
+        )
+
+        # 'test_cases' é a mesma chave que o assistente de QA usa. Se a sessão já
+        # tem Casos vindos de lá (identidade diferente da lista deste arquivo),
+        # continuar aqui substitui aqueles Casos — melhor dizer isso ANTES do
+        # clique do que deixar a pessoa descobrir sozinha no Passo 6.
+        casos_na_sessao = self.state.get('test_cases') or []
+        if casos_na_sessao and casos_na_sessao is not resultado['test_cases']:
+            st.warning(
+                f"⚠️ Esta sessão já tem {len(casos_na_sessao)} Caso(s) de Teste do assistente de QA. "
+                "Continuar aqui troca esses Casos pelos do arquivo — se ainda não baixou o CSV/PDF "
+                "deles no Passo 6, baixe antes."
+            )
+
+        st.markdown("##### 🔗 Como os Casos vão parar nos Work Items certos")
+        com_wi = [c for c in resultado['test_cases'] if str(c.get('work_item_relacionado') or '').strip()]
+        if com_wi:
+            st.success(
+                f"O arquivo já aponta o Work Item de {len(com_wi)} caso(s) (coluna Work Item) — "
+                "esse vínculo entra pronto, sem depender de IA."
+            )
+        else:
+            st.info(
+                "Este arquivo **não traz o número do Work Item** de cada caso — o CSV de Planos não tem essa "
+                "coluna. No passo seguinte você escolhe a organização, o projeto e a(s) Area Path(s), clica em "
+                "**Buscar Work Items do Board**, e o app sugere por IA qual caso pertence a qual Work Item. "
+                "Nada é gravado antes de você revisar e confirmar essa distribuição."
+            )
+
+        st.divider()
+        with st.container(key="azure_blue_btn_import_plans_go"):
+            if st.button("➡️ Continuar pra integração com o Azure DevOps", type="primary", width="stretch",
+                         disabled=self.state.get('is_processing'), key="btn_import_plans_go"):
+                self.state.set('test_cases', resultado['test_cases'])
+                self.state.set('test_plans', resultado['test_plans'])
+                self.state.set('ambiente_testes', resultado.get('ambiente') or '')
+                self.state.set('project_name', nome_projeto.strip())
+                self.state.set('import_plans_projeto', nome_projeto.strip())
+                # Começa limpo: ids, vínculos e exclusões de um envio anterior
+                # não valem pros casos que acabaram de ser importados.
+                for chave in ('ado_test_case_ids', 'ado_case_links', 'ado_wi_case_links',
+                              'ado_excluded_case_titles', 'ado_duplicate_case_titles',
+                              'ado_static_push_log', 'ado_full_push_log', 'ado_duplicate_analysis'):
+                    self.state.set(chave, None)
+                self.state.set('import_plans_integrar', True)
+                self._log("Importar CSV de Planos", "Subir CSV de Planos",
+                          f"{arquivo.name} — {resumo_importacao(resultado)}")
+                st.rerun()
+
     def _manual_limpar(self):
         """
         Zera tudo do manual anterior — estado do app E as chaves de widget do
@@ -10464,6 +10648,10 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
 
         if self.state.get('show_wiql_generation_page'):
             self._wiql_generation_page()
+            return
+
+        if self.state.get('show_import_plans_page'):
+            self._import_plans_page()
             return
 
         if self.state.get('show_manual_page'):
