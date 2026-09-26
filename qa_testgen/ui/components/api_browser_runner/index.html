@@ -37,19 +37,89 @@ function substituir(texto, vars) {
   if (!texto) return texto || "";
   return String(texto).replace(RE_VAR, (m, nome) => (nome in vars ? vars[nome] : m));
 }
-function obterCaminho(dado, caminho) {
-  let atual = dado;
-  if (!caminho) return atual;
-  const tokens = caminho.match(/[^.\[\]]+|\[\d+\]/g) || [];
-  for (const tok of tokens) {
-    if (tok.startsWith("[")) {
-      const idx = parseInt(tok.slice(1, -1), 10);
-      if (Array.isArray(atual) && idx >= 0 && idx < atual.length) atual = atual[idx]; else return undefined;
-    } else {
-      if (atual && typeof atual === "object" && tok in atual) atual = atual[tok]; else return undefined;
+// Mesmo subconjunto de JSONPath do runner Python (ApiTestRunner.obter_caminho):
+// a[0], a[-1], a[*], a.*, a['chave'], a[?(@.campo=='x')], a.length, prefixo $.
+// Com [*]/filtro, a extração usa o primeiro valor encontrado.
+function tokensCaminho(caminho) {
+  let s = String(caminho || "").trim();
+  if (s.startsWith("$")) s = s.slice(1);
+  const tokens = [];
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === ".") { if (s[i + 1] === ".") return null; i++; continue; }
+    if (c === "[") {
+      let j = i + 1, prof = 0, aspas = null;
+      for (; j < s.length; j++) {
+        const ch = s[j];
+        if (aspas) { if (ch === aspas) aspas = null; }
+        else if (ch === "'" || ch === '"') aspas = ch;
+        else if (ch === "(" || ch === "[") prof++;
+        else if (ch === ")" || ch === "]") { if (ch === "]" && prof === 0) break; prof--; }
+      }
+      if (j >= s.length) return null;
+      const dentro = s.slice(i + 1, j).trim();
+      let m;
+      if (dentro === "*") tokens.push(["*"]);
+      else if (/^-?\d+$/.test(dentro)) tokens.push(["idx", parseInt(dentro, 10)]);
+      else if (dentro.length >= 2 && (dentro[0] === "'" || dentro[0] === '"') && dentro[dentro.length - 1] === dentro[0]) tokens.push(["key", dentro.slice(1, -1)]);
+      else if ((m = dentro.match(/^\?\(\s*@\.([\w.\-]+)\s*(?:(==|!=)\s*(.+?))?\s*\)$/))) {
+        let v = m[3] === undefined ? undefined : m[3].trim();
+        if (v !== undefined) {
+          if (v.length >= 2 && (v[0] === "'" || v[0] === '"') && v[v.length - 1] === v[0]) v = v.slice(1, -1);
+          else if (v === "true" || v === "false") v = v === "true";
+          else if (v === "null") v = null;
+          else if (!isNaN(Number(v))) v = Number(v);
+          else return null;
+        }
+        tokens.push(["filtro", m[1], m[2], v]);
+      } else return null;
+      i = j + 1;
+      continue;
     }
+    let j = i;
+    while (j < s.length && s[j] !== "." && s[j] !== "[") j++;
+    const nome = s.slice(i, j);
+    tokens.push(nome === "*" ? ["*"] : nome === "length()" ? ["len"] : ["key", nome]);
+    i = j;
   }
-  return atual;
+  return tokens;
+}
+
+function obterCaminho(dado, caminho) {
+  if (!caminho) return dado;
+  const tokens = tokensCaminho(caminho);
+  if (!tokens) return undefined;
+  let atuais = [dado], varios = false;
+  for (const tok of tokens) {
+    const prox = [];
+    for (const atual of atuais) {
+      if (tok[0] === "key") {
+        if (atual && typeof atual === "object" && !Array.isArray(atual) && tok[1] in atual) prox.push(atual[tok[1]]);
+        else if (tok[1] === "length" && (Array.isArray(atual) || typeof atual === "string")) prox.push(atual.length);
+      } else if (tok[0] === "len") {
+        if (Array.isArray(atual) || typeof atual === "string") prox.push(atual.length);
+        else if (atual && typeof atual === "object") prox.push(Object.keys(atual).length);
+      } else if (tok[0] === "idx") {
+        if (Array.isArray(atual) && tok[1] >= -atual.length && tok[1] < atual.length) prox.push(atual[tok[1] < 0 ? atual.length + tok[1] : tok[1]]);
+      } else if (tok[0] === "*") {
+        varios = true;
+        if (Array.isArray(atual)) prox.push(...atual);
+        else if (atual && typeof atual === "object") prox.push(...Object.values(atual));
+      } else if (tok[0] === "filtro") {
+        varios = true;
+        if (Array.isArray(atual)) for (const item of atual) {
+          const o = obterCaminho(item, tok[1]);
+          if (o === undefined) continue;
+          const igual = o === tok[3] || String(o) === String(tok[3]);
+          if (tok[2] === undefined ? !!o : (tok[2] === "==" ? igual : !igual)) prox.push(item);
+        }
+      }
+    }
+    atuais = prox;
+    if (!atuais.length && !varios) return undefined;
+  }
+  return atuais.length ? atuais[0] : undefined;
 }
 
 async function executarCaso(caso, vars, timeoutMs) {
@@ -92,7 +162,9 @@ async function executar(args) {
     for (const txt of [caso.url, caso.body].concat(Object.values(caso.headers || {}))) {
       for (const m of String(txt || "").matchAll(RE_VAR_G)) usadas.add(m[1]);
     }
-    const faltando = [...usadas].filter((n) => n in produtores && !String(vars[n] || "").trim());
+    // Inclui variável sem valor que nenhum caso produz (preenchimento pendente):
+    // bloqueia só os casos que a usam.
+    const faltando = [...usadas].filter((n) => !String(vars[n] || "").trim());
     let r;
     if (faltando.length) {
       r = { case_id: caso.id, status: null, status_text: "", response_headers: {}, body: "", tempo_ms: 0, erro: "",

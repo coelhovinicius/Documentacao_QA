@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 from datetime import datetime
@@ -10,7 +11,7 @@ from reportlab.lib.units import cm
 from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
 from reportlab.platypus import (
     Paragraph, Spacer, Table, TableStyle, PageBreak, HRFlowable,
-    KeepTogether, SimpleDocTemplate, Image as RLImage,
+    KeepTogether, SimpleDocTemplate, Image as RLImage, CondPageBreak,
 )
 from reportlab.pdfgen import canvas as _reportlab_canvas
 
@@ -60,6 +61,15 @@ class PdfReportGenerator:
         "[^\u0020-\u007E\u00A0-\u00FF\u2013\u2014\u2018\u2019\u201C\u201D\u2026\u2022\n\r\t]"
     )
 
+    # Equivalentes que a fonte do PDF (Helvetica, WinAnsi) consegue desenhar. Sem isso o caractere
+    # some: "1‑5" (hífen U+2011, comum em texto de IA) vira "15" e "≤ 500 ms" vira "500 ms".
+    _EQUIVALENTES = str.maketrans({
+        "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2015": "-", "\u2212": "-",
+        "\u2264": "<=", "\u2265": ">=", "\u2260": "!=", "\u2192": "->", "\u2190": "<-", "\u21D2": "=>",
+        "\u2248": "~", "\u2032": "'", "\u2033": '"', "\u2009": " ", "\u200A": " ", "\u202F": " ",
+        "\u200B": "", "\u2713": "OK", "\u2714": "OK", "\u2717": "X", "\u2718": "X",
+    })
+
     @staticmethod
     def _esc(value) -> str:
         """
@@ -73,10 +83,27 @@ class PdfReportGenerator:
         residual que sobra no lugar de um caractere removido do meio do
         texto.
         """
-        texto = "" if value is None else str(value)
+        texto = ("" if value is None else str(value)).translate(PdfReportGenerator._EQUIVALENTES)
         limpo = PdfReportGenerator._CARACTERES_NAO_PERMITIDOS.sub("", texto)
         sem_espacos_duplos = re.sub(r"[ \t]{2,}", " ", limpo).strip()
         return _xml_escape(sem_espacos_duplos)
+
+    @classmethod
+    def _esc_linhas(cls, value) -> str:
+        """Como _esc, mas mantém as quebras de linha do texto (o Paragraph trata a quebra como espaço)."""
+        linhas = [cls._esc(l) for l in str("" if value is None else value).splitlines() if l.strip()]
+        return "<br/>".join(linhas) if linhas else cls._esc(value)
+
+    @staticmethod
+    def _nova_pagina(story: list):
+        """
+        PageBreak sem página em branco: tira os Spacers do fim da seção antes de quebrar. Se a
+        seção terminou rente ao rodapé, o Spacer final não cabia, abria uma página só pra ele e o
+        PageBreak ainda abria outra — sobrava uma página vazia no meio do PDF.
+        """
+        while story and isinstance(story[-1], Spacer):
+            story.pop()
+        story.append(PageBreak())
 
     @staticmethod
     def _styles():
@@ -220,7 +247,9 @@ class PdfReportGenerator:
         if matriz:
             hcols = ["id", "funcionalidade", "requisito", "cenario", "categoria", "prioridade", "criticidade", "observacoes"]
             labels = ["ID", "Funcionalidade", "Requisito", "Cenário", "Categoria", "Prioridade", "Criticidade", "Observações"]
-            widths = [1.4 * cm, 3 * cm, 2 * cm, 4.5 * cm, 2.8 * cm, 2 * cm, 2.2 * cm, 3 * cm]
+            # soma = largura útil da A4 (17,4 cm); antes somava 20,9 cm e a tabela vazava pelas bordas
+            pesos = [1.35, 2.5, 3.1, 2.9, 1.75, 1.8, 1.9, 2.1]
+            widths = [p * pw / sum(pesos) for p in pesos]
             data = [[Paragraph(label, styles['cell_head']) for label in labels]]
             for row in matriz:
                 data.append([Paragraph(cls._esc(row.get(col, '') or ''), styles['cell']) for col in hcols])
@@ -234,6 +263,7 @@ class PdfReportGenerator:
                 ('LEFTPADDING', (0, 0), (-1, -1), 4),
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ]))
+            table.setStyle(TableStyle([('RIGHTPADDING', (0, 0), (-1, -1), 3)]))
             story.append(table)
 
             story.append(Spacer(1, 12))
@@ -260,7 +290,8 @@ class PdfReportGenerator:
                     Paragraph(cls._esc(requisito), styles['cell']),
                     Paragraph(cls._esc(cov_text), styles['cell']),
                 ])
-            cov_table = Table(cov_data, colWidths=[2 * cm, 3 * cm, pw - 5 * cm], repeatRows=1)
+            # Requisito com espaço de verdade (antes 3 cm, com a coluna de CTs quase vazia ao lado)
+            cov_table = Table(cov_data, colWidths=[2 * cm, (pw - 2 * cm) * 0.62, (pw - 2 * cm) * 0.38], repeatRows=1)
             cov_style = [
                 ('BACKGROUND', (0, 0), (-1, 0), COR_CINZA_ESC),
                 ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
@@ -278,7 +309,7 @@ class PdfReportGenerator:
         else:
             story.append(Paragraph("Nenhuma entrada na Matriz.", styles['body']))
 
-        story.append(PageBreak())
+        cls._nova_pagina(story)
 
         story.append(Paragraph("2. Planos de Teste", styles['section']))
         if test_plans:
@@ -348,7 +379,7 @@ class PdfReportGenerator:
         else:
             story.append(Paragraph("Nenhum Plano de Teste gerado.", styles['body']))
 
-        story.append(PageBreak())
+        cls._nova_pagina(story)
 
         story.append(Paragraph("3. Casos de Teste", styles['section']))
         for idx, tc in enumerate(test_cases, start=1):
@@ -367,7 +398,7 @@ class PdfReportGenerator:
             ]))
             pre_t = Table(
                 [
-                    [Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(cls._esc(pre), styles['cell'])],
+                    [Paragraph("<b>Pré-condições:</b>", styles['cell']), Paragraph(cls._esc_linhas(pre), styles['cell'])],
                     [Paragraph("<b>Rastreabilidade:</b>", styles['cell']), Paragraph(cls._esc(reqs_text), styles['cell'])],
                 ],
                 colWidths=[3 * cm, pw - 3 * cm],
@@ -387,8 +418,8 @@ class PdfReportGenerator:
             for step in passos:
                 step_data.append([
                     Paragraph(cls._esc(step.get('numero', '')), styles['cell']),
-                    Paragraph(cls._esc(step.get('acao', '')), styles['cell']),
-                    Paragraph(cls._esc(step.get('resultado_esperado', '')), styles['cell']),
+                    Paragraph(cls._esc_linhas(step.get('acao', '')), styles['cell']),
+                    Paragraph(cls._esc_linhas(step.get('resultado_esperado', '')), styles['cell']),
                 ])
             st_t = Table(step_data, colWidths=[1 * cm, (pw - 1 * cm) * 0.45, (pw - 1 * cm) * 0.55], repeatRows=1)
             st_t.setStyle(TableStyle([
@@ -518,7 +549,7 @@ class PdfReportGenerator:
         story.append(Paragraph("1. Escopo e Propósito", styles['section']))
         story.append(Paragraph(cls._esc(escopo_proposito or '—').replace(chr(10), '<br/>'), styles['body']))
 
-        story.append(PageBreak())
+        cls._nova_pagina(story)
 
         # ---- Casos de Teste (com resultado) — vem direto do Azure DevOps ----
         story.append(Paragraph("2. Casos de Teste", styles['section']))
@@ -559,7 +590,7 @@ class PdfReportGenerator:
             story.append(KeepTogether([hdr, info_row]))
             story.append(Spacer(1, 10))
 
-        story.append(PageBreak())
+        cls._nova_pagina(story)
 
         # ---- Planos e Suítes — agrupamento dos casos acima, direto do Azure DevOps ----
         story.append(Paragraph("3. Planos e Suítes de Teste", styles['section']))
@@ -593,7 +624,7 @@ class PdfReportGenerator:
             story.append(table)
             story.append(Spacer(1, 10))
 
-        story.append(PageBreak())
+        cls._nova_pagina(story)
 
         # ---- Evidências ----
         story.append(Paragraph("4. Evidências dos Cenários de Teste", styles['section']))
@@ -622,7 +653,7 @@ class PdfReportGenerator:
         if not any_evidence:
             story.append(Paragraph("Nenhuma evidência (anexo) encontrada nos resultados de execução no Azure DevOps.", styles['body']))
 
-        story.append(PageBreak())
+        cls._nova_pagina(story)
 
         # ---- Matriz de Cobertura — só aparece se houver dado de verdade ----
         proxima_secao = 5
@@ -645,7 +676,7 @@ class PdfReportGenerator:
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ]))
             story.append(table)
-            story.append(PageBreak())
+            cls._nova_pagina(story)
             proxima_secao += 1
 
         # ---- Conclusão e Governança ----
@@ -687,21 +718,39 @@ class PdfReportGenerator:
 
     @classmethod
     def _bloco_codigo(cls, styles, texto: str, largura, max_linhas: int = 60):
-        """Request/response em fonte mono, truncado pra não explodir o PDF."""
-        linhas = (texto or '').splitlines()
-        if len(linhas) > max_linhas:
-            linhas = linhas[:max_linhas] + [f"... ({len(linhas) - max_linhas} linhas omitidas - integra no .zip)"]
+        """
+        Request/response em fonte mono, truncado pra não explodir o PDF.
+
+        As linhas longas são quebradas aqui, na largura do bloco, e o limite vale
+        pras linhas VISUAIS; o conteúdo vai em linhas de tabela de até 30 linhas
+        cada, pra poder continuar na página seguinte. Antes era uma célula única:
+        um corpo grande (ex.: HTTP 500 com o trace inteiro numa linha só) passava
+        da altura da página e o ReportLab derrubava o PDF inteiro ("Flowable ...
+        too large on page").
+        """
         estilo = ParagraphStyle(
             'ApiCode', parent=styles['cell'], fontName='Courier', fontSize=7, leading=9,
             alignment=TA_LEFT,   # request/response é código: justificar embaralharia
         )
-        corpo = "<br/>".join(cls._esc(l).replace(" ", "&nbsp;") for l in linhas) or "&nbsp;"
-        t = Table([[Paragraph(corpo, estilo)]], colWidths=[largura])
+        colunas = max(20, int((largura - 14) / (0.6 * estilo.fontSize)) - 1)   # Courier: 0,6 em por caractere
+        visuais = []
+        for linha in (texto or '').splitlines() or [""]:
+            visuais.extend([linha[i:i + colunas] for i in range(0, len(linha), colunas)] or [""])
+        if len(visuais) > max_linhas:
+            visuais = visuais[:max_linhas] + [f"... ({len(visuais) - max_linhas} linhas omitidas - integra no .zip)"]
+        partes = [visuais[i:i + 30] for i in range(0, len(visuais), 30)]
+        linhas_tabela = [[Paragraph("<br/>".join(cls._esc(l).replace(" ", "&nbsp;") or "&nbsp;" for l in p), estilo)]
+                         for p in partes]
+        # sem splitInRow: no ReportLab 5.0 ele entra em loop infinito com Paragraph — e nem é preciso,
+        # cada linha da tabela tem no máximo 30 linhas visuais (~270 pt) e sempre cabe numa página
+        t = Table(linhas_tabela, colWidths=[largura])
         t.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), COR_CINZA_LIN),
             ('BOX', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
-            ('TOPPADDING', (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, 0), 5),
+            ('BOTTOMPADDING', (0, -1), (-1, -1), 5),
             ('LEFTPADDING', (0, 0), (-1, -1), 6),
             ('RIGHTPADDING', (0, 0), (-1, -1), 6),
         ]))
@@ -721,8 +770,10 @@ class PdfReportGenerator:
         observacoes: str = "",
         imagens_por_caso: dict = None,
         author_name: str = "",
+        analise: dict = None,
     ) -> bytes:
         """
+        analise: api_triage.linhas_relatorio() — seção "Análise automática" (opcional).
         resultados: lista de ApiCaseResult (domain/models/api_test.py).
         resumo: dict de ApiEvidenceBuilder.resumo().
         textos_por_caso: {case_id: {"request": str, "response": str}} — já
@@ -834,7 +885,99 @@ class PdfReportGenerator:
             estilo.append(('TEXTCOLOR', (6, idx), (6, idx), cor))
         t.setStyle(TableStyle(estilo))
         story.append(t)
-        story.append(PageBreak())
+
+        # ---- Análise automática (triagem) ----
+        if analise and (analise.get("contagem") or analise.get("achados") or analise.get("rascunhos") or analise.get("correcoes")):
+            # a fonte do PDF não tem a seta; e o título não pode ficar sozinho no pé da página
+            analise = json.loads(json.dumps(analise, ensure_ascii=False).replace("→", "->").replace("→", "->"))
+            story.append(CondPageBreak(7 * cm))
+            story.append(Paragraph(f"{secao}. Análise Automática do Resultado", styles['section']))
+            secao += 1
+            story.append(Paragraph(
+                "Classificação feita pelo QA TestGen: separa possível bug da API de problema da própria bateria, "
+                "de perfil do usuário de teste e do que precisa ser confirmado com o PO.", styles['body']))
+            if analise.get("contagem"):
+                data = [[Paragraph("<b>Classificação</b>", styles['cell_head']), Paragraph("<b>Casos</b>", styles['cell_head'])]]
+                for rot, n in analise["contagem"]:
+                    data.append([Paragraph(cls._esc(rot), styles['cell']), Paragraph(str(n), styles['cell'])])
+                tc = Table(data, colWidths=[pw - 2.5 * cm, 2.5 * cm], repeatRows=1)
+                tc.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), COR_LARANJA),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [COR_BRANCO, COR_CINZA_LIN]),
+                    ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#DDDDDD')),
+                    ('TOPPADDING', (0, 0), (-1, -1), 3), ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ]))
+                story.append(Spacer(1, 6))
+                story.append(tc)
+            for a in analise.get("achados") or []:
+                story.append(Paragraph(cls._esc(f"{a['titulo']} — gravidade {a['gravidade']}, {a['confianca'].lower()}"), styles['subsection']))
+                casos_txt = ", ".join(str(n) for n in a.get("casos") or [])
+                story.append(Paragraph("<b>Casos:</b> " + cls._esc(casos_txt), styles['body']))
+                story.append(Paragraph("<b>Evidência:</b> " + cls._esc(a.get("evidencia", "")[:400]), styles['body']))
+                story.append(Paragraph("<b>É bug?</b> " + cls._esc(a.get("analise", "")), styles['body']))
+                if a.get("como_confirmar"):
+                    story.append(Paragraph("<b>Como confirmar:</b> " + cls._esc(" ".join(a["como_confirmar"])), styles['body']))
+                story.append(Paragraph("<b>O que fazer:</b> " + cls._esc(" ".join(a.get("o_que_fazer") or [])), styles['body']))
+                story.append(Paragraph("<b>Com quem falar:</b> " + cls._esc("; ".join(f"{q['quem']} ({q['por_que']})" for q in a.get("com_quem_falar") or [])), styles['body']))
+                for msg in a.get("mensagens") or []:
+                    story.append(Paragraph(f"<b>O que dizer</b> (para {cls._esc(msg['para'])}):", styles['body']))
+                    story.append(cls._bloco_codigo(styles, msg["texto"], pw, max_linhas=30))
+            if analise.get("confirmar"):
+                story.append(Paragraph("A confirmar com o PO", styles['subsection']))
+                for l in analise["confirmar"]:
+                    story.append(Paragraph("• " + cls._esc(l), styles['body']))
+            if analise.get("orientacoes"):
+                story.append(Paragraph("Demais pontos", styles['subsection']))
+                for titulo, resumo_txt in analise["orientacoes"]:
+                    story.append(Paragraph(f"• <b>{cls._esc(titulo)}</b> — {cls._esc(resumo_txt)}", styles['body']))
+            if analise.get("correcoes"):
+                story.append(Paragraph("Correções aplicadas na bateria (só formato)", styles['subsection']))
+                for c in analise["correcoes"]:
+                    story.append(Paragraph("• " + cls._esc(c), styles['body']))
+            rascunhos = analise.get("rascunhos") or []
+            if rascunhos:
+                pend = sum(1 for b in rascunhos if not b.get("enviado"))
+                story.append(CondPageBreak(6 * cm))
+                story.append(Paragraph("Bugs — rascunhos e enviados", styles['subsection']))
+                story.append(Paragraph(cls._esc(f"{len(rascunhos)} Bug(s): {pend} rascunho(s) ainda não enviado(s) ao Azure DevOps, "
+                                                f"{len(rascunhos) - pend} enviado(s)."), styles['body']))
+                for i, b in enumerate(rascunhos, 1):
+                    hdr = Table([[Paragraph(cls._esc(f"Bug {i}. {b['titulo']}"), styles['tc_title'])]], colWidths=[pw])
+                    hdr.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA),
+                        ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                    ]))
+                    linhas = [
+                        ["Situação", b["status"] + (f" — {b['url']}" if b.get("url") else "")],
+                        ["Gravidade / Severidade / Prioridade", f"{b['gravidade']} / {b['severidade']} / {b['prioridade']}"],
+                        ["Evidência", b["casos"] + (f" — anexos: {b['anexos']}" if b.get("anexos") else "")],
+                    ]
+                    info = Table([[Paragraph(f"<b>{cls._esc(k)}</b>", styles['cell']), Paragraph(cls._esc(v), styles['cell'])] for k, v in linhas],
+                                 colWidths=[5.2 * cm, pw - 5.2 * cm])
+                    info.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, -1), COR_LARANJA_CLARO),
+                        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#EAD9CE')),
+                        ('TOPPADDING', (0, 0), (-1, -1), 3), ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 5), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ]))
+                    story.append(Spacer(1, 8))
+                    story.append(KeepTogether([hdr, info]))
+                    story.append(Spacer(1, 6))
+                    story.append(Paragraph("<b>Descrição:</b> " + cls._esc(b["descricao"]).replace(chr(10), '<br/>'), styles['body']))
+                    story.append(Paragraph("<b>Passos de reprodução:</b>", styles['body']))
+                    for k, p in enumerate(b["passos"], 1):
+                        story.append(Paragraph(cls._esc(f"{k}. {p}"), styles['body']))
+                    if b.get("esperado"):
+                        story.append(Paragraph("<b>Resultado esperado:</b> " + cls._esc(b["esperado"]), styles['body']))
+                    if b.get("obtido"):
+                        story.append(Paragraph("<b>Resultado obtido:</b> " + cls._esc(b["obtido"]), styles['body']))
+                    if b.get("discussion"):
+                        story.append(Paragraph("<b>Primeiro comentário (Discussion):</b> " + cls._esc(b["discussion"]), styles['body']))
+                    if b.get("mensagem"):
+                        story.append(Paragraph("<b>Texto pronto pro chat</b> (não vai pro Azure):", styles['body']))
+                        story.append(cls._bloco_codigo(styles, b["mensagem"], pw, max_linhas=30))
+        cls._nova_pagina(story)
 
         # ---- Detalhes e evidências ----
         story.append(Paragraph(f"{secao}. Detalhes e Evidências", styles['section']))
@@ -906,7 +1049,7 @@ class PdfReportGenerator:
             story.append(Spacer(1, 14))
 
         if observacoes and observacoes.strip():
-            story.append(PageBreak())
+            cls._nova_pagina(story)
             story.append(Paragraph(f"{secao}. Observações e Próximos Passos", styles['section']))
             story.append(Paragraph(cls._esc(observacoes).replace(chr(10), '<br/>'), styles['body']))
 

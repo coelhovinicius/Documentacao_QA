@@ -53,6 +53,7 @@ from qa_testgen.ui.dialogs import (
     aviso_pat_compartilhado_modal,
 )
 from qa_testgen.ui.api_tests_page import ApiTestsPageMixin
+from qa_testgen.ui.api_bugs_page import ApiAnaliseBugsMixin
 from qa_testgen.ui.ia_retry import IaRetryMixin
 from qa_testgen.ui.work_item_batch_page import WorkItemBatchMixin
 from qa_testgen.ui.auth import (
@@ -201,7 +202,7 @@ DOCUMENT_UPLOAD_DISABLED_MSG = (
 )
 
 
-class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
+class UserInterface(ApiTestsPageMixin, ApiAnaliseBugsMixin, WorkItemBatchMixin, IaRetryMixin):
     def __init__(self):
         page_icon = "🧪"
         if Path(SIMBOLO_PATH).exists():
@@ -402,7 +403,7 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
     # pra anunciar — quem dispensou uma versão anterior volta a ver o modal
     # uma vez. O arquivo guarda {"dispensado": {usuario: versao}}; o formato
     # antigo ({"usuarios": [...]}) conta como "dispensou só a versão do PAT".
-    _NOTICE_VERSION = "2026-09-18-fila-testrun"
+    _NOTICE_VERSION = "2026-09-25-api-analise-bugs"
 
     @classmethod
     def _pat_notice_ja_dispensado(cls, username: str) -> bool:
@@ -821,10 +822,23 @@ class UserInterface(ApiTestsPageMixin, WorkItemBatchMixin, IaRetryMixin):
             height=0,
         )
 
+    # Áreas abertas pelo menu lateral (uma flag por tela, fora do assistente de 7 passos).
+    _FLAGS_DE_TELA = (
+        'show_about_page', 'show_admin_page', 'show_api_tests_page', 'show_bug_page', 'show_document_store_page',
+        'show_execution_report_page', 'show_import_plans_page', 'show_manual_page', 'show_mindmap_page',
+        'show_wiql_generation_page', 'show_work_item_page',
+    )
+
+    def _tela_atual(self) -> str:
+        """Passo do assistente + área aberta pelo menu: muda sempre que a pessoa troca de tela."""
+        areas = ",".join(f for f in self._FLAGS_DE_TELA if self.state.get(f))
+        return f"{self.state.get('step')}|{areas}"
+
     def _force_sidebar_collapsed(self):
         """
-        Recolhe a sidebar automaticamente quando o PASSO muda (navegação
-        entre telas), não em toda interação — isso evita injetar um iframe
+        Recolhe a sidebar automaticamente quando a TELA muda (passo do
+        assistente ou área escolhida no menu — ver _tela_atual), não em toda
+        interação — isso evita injetar um iframe
         com JS (componente caro: cria/destrói um documento HTML próprio) em
         toda troca de dropdown, clique de botão etc., que era a causa real
         da lentidão sentida nas transições do app inteiro.
@@ -10377,9 +10391,33 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             "protegida). Evidências: RELATORIO.md, RELATORIO.pdf no padrão QA TestGen e .zip com uma "
             "pasta por caso (request, response, resultado e prints), com opção de guardar em "
             "Documentos Armazenados. As chamadas saem do navegador de quem usa o app (padrão, contorna WAF) "
-            "ou do servidor — configuração global do administrador. Ao final, \"Levar para o assistente\" "
+            "ou do servidor — configuração global do administrador. Depois de executar, a etapa **Análise e Bugs** "
+            "separa o que é possível bug da API do que é problema da bateria, de perfil do usuário de teste ou regra a "
+            "confirmar com o PO — com o que fazer, com quem falar e o texto pronto — e abre os Bugs no Azure DevOps "
+            "(rascunho → confirmação → link), com request/response anexados. Ao final, \"Levar para o assistente\" "
             "transforma a bateria em Matriz, Casos e Plano pro Passo 7, e depois dá pra registrar a execução "
             "como Test Run oficial no Azure DevOps"
+        )
+
+        st.divider()
+
+        st.markdown("#### 🔌 Testes de API — do card ao Bug no Azure")
+        st.caption(
+            "As 4 etapas da área, o que sai de cada uma e o que o app aprende sozinho (setas tracejadas). "
+            "A etapa 3 é onde o \"Reprovado\" vira decisão: bug da API, problema da bateria, perfil do usuário "
+            "de teste ou regra a confirmar com o PO."
+        )
+        st.markdown(self._flatten_html(self._svg_api_tests_diagram()), unsafe_allow_html=True)
+        st.markdown(
+            "- **1. Definição**: a IA gera a bateria a partir dos Work Items (em lotes, filtrando por tag/coluna), "
+            "usando só rotas do catálogo e o **formato real** já aprendido; ou Postman / definição salva / manual\n"
+            "- **2. Execução**: tokens e ids passam de um caso pro outro; variável sem valor bloqueia só quem a usa\n"
+            "- **3. Análise e Bugs**: achados com *é bug mesmo? · o que fazer · com quem falar · o que dizer*; "
+            "rascunhos de Bug (ver, alterar, excluir) e envio ao Azure DevOps com confirmação e link; "
+            "correção da bateria pelas respostas reais — **só formato**, o esperado do card nunca muda\n"
+            "- **4. Evidências**: RELATORIO.pdf/.md com a análise e os Bugs abertos, .zip por caso, definição .json\n"
+            "- **📙 Manual para desenvolvedores**: botão na própria tela de Testes de API — como as chamadas saem, "
+            "formato dos casos, regras de classificação, o que chega num Bug e como reproduzir uma chamada fora do app"
         )
         st.caption(
             "⚠️ \"🔎 Query com IA\" aqui é diferente do modo \"Gerar a partir de uma Query\" do "
@@ -10522,6 +10560,56 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
         """
 
     @staticmethod
+    def _svg_api_tests_diagram() -> str:
+        """Fluxograma do módulo Testes de API: 4 etapas, saídas pro Azure e o laço de aprendizado."""
+        box = "fill='#ffffff' stroke='#d8d8d8' stroke-width='1'"
+        destaque = "fill='#fff4ee' stroke='#F15A24' stroke-width='1.2'"
+        title_style = "font-family:sans-serif;font-size:13px;font-weight:600;fill:#2d2d2d"
+        sub_style = "font-family:sans-serif;font-size:10.5px;fill:#7a7a7a"
+        arrow = "stroke='#F15A24' stroke-width='2' fill='none' marker-end='url(#api_arrow)'"
+        volta = "stroke='#9aa5b1' stroke-width='1.6' fill='none' stroke-dasharray='5 4' marker-end='url(#api_arrow_cinza)'"
+
+        def node(x, y, w, title, sub, estilo=box):
+            cx = x + w / 2
+            return f"""
+            <rect x="{x}" y="{y}" width="{w}" height="60" rx="8" {estilo} />
+            <text x="{cx}" y="{y+25}" text-anchor="middle" style="{title_style}">{title}</text>
+            <text x="{cx}" y="{y+44}" text-anchor="middle" style="{sub_style}">{sub}</text>
+            """
+
+        return f"""
+        <div style="width:100%;overflow-x:auto;background:#fdfcf8;border-radius:8px;padding:8px 0;">
+        <svg width="100%" viewBox="0 0 690 345" style="max-width:690px;display:block;margin:0 auto;">
+            <defs>
+                <marker id="api_arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M2 1L8 5L2 9" fill="none" stroke="#F15A24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </marker>
+                <marker id="api_arrow_cinza" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M2 1L8 5L2 9" fill="none" stroke="#9aa5b1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </marker>
+            </defs>
+            {node(20, 40, 140, "1. Definição", "IA · Postman · manual")}
+            {node(190, 40, 140, "2. Execução", "navegador ou servidor")}
+            {node(360, 40, 140, "3. Análise e Bugs", "bug × bateria × perfil", destaque)}
+            {node(530, 40, 140, "4. Evidências", "PDF · MD · .zip")}
+            <line x1="160" y1="70" x2="190" y2="70" {arrow} />
+            <line x1="330" y1="70" x2="360" y2="70" {arrow} />
+            <line x1="500" y1="70" x2="530" y2="70" {arrow} />
+            {node(100, 170, 170, "📐 Formato real aprendido", "vai na próxima geração")}
+            {node(360, 170, 140, "🐞 Bug no Azure", "confirmação + link", destaque)}
+            {node(530, 170, 140, "🧱 Test Cases", "+ Test Run (Passo 7)")}
+            <path d="M260 100 L220 170" {arrow} />
+            <line x1="430" y1="100" x2="430" y2="170" {arrow} />
+            <line x1="600" y1="100" x2="600" y2="170" {arrow} />
+            {node(190, 262, 170, "🔧 Correção da bateria", "só formato, nunca o card")}
+            <path d="M372 100 L372 145 L300 145 L300 262" {arrow} />
+            <path d="M150 170 L115 102" {volta} />
+            <path d="M190 292 L55 292 L55 102" {volta} />
+        </svg>
+        </div>
+        """
+
+    @staticmethod
     def _svg_extras_diagram() -> str:
         box = "fill='#ffffff' stroke='#d8d8d8' stroke-width='1'"
         title_style = "font-family:sans-serif;font-size:13px;font-weight:600;fill:#2d2d2d"
@@ -10545,7 +10633,7 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
             {node(20, 165, 200, "📊 Relatório de Testes", "Status real do board")}
             {node(240, 165, 200, "🐛 Criar Bug", "Com evidências em imagem")}
             {node(20, 240, 200, "🧱 Criar Work Item", "Qualquer tipo, campos dinâmicos")}
-            {node(240, 240, 200, "🔌 Testes de API", "IA/Postman → execução → evidências")}
+            {node(240, 240, 200, "🔌 Testes de API", "IA → execução → análise → Bugs")}
             {node(130, 315, 200, "🛡️ Administração", "Permissões e Logs")}
         </svg>
         </div>
@@ -10579,10 +10667,13 @@ document.getElementById("btn-baixar").addEventListener("click", baixarMapaComple
                 tem_testes_api=self._get_permission_cached("testes_api"),
             )
 
-        # Scroll Viewport to Top Tracking System
-        current_step = self.state.get('step')
-        if current_step != self.state.get('last_viewed_step'):
-            self.state.set('last_viewed_step', current_step)
+        # Scroll Viewport to Top Tracking System — ao trocar de TELA (passo do
+        # assistente ou área escolhida no menu lateral) a sidebar se recolhe e a
+        # página volta ao topo. Antes só o passo contava: escolher Testes de API,
+        # Criar Bug etc. no menu deixava a sidebar aberta por cima da área.
+        current_screen = self._tela_atual()
+        if current_screen != self.state.get('last_viewed_screen'):
+            self.state.set('last_viewed_screen', current_screen)
             self._force_sidebar_collapsed()
             st.markdown(
                 """

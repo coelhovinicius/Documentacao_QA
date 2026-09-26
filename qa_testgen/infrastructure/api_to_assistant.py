@@ -5,10 +5,9 @@ formato do assistente de QA — Matriz de Cobertura, Casos de Teste e Planos
 a Work Items, suítes estáticas, reconciliar).
 """
 import re
-from datetime import datetime
 from urllib.parse import urlparse
 
-from qa_testgen.config import TZ_BR
+from qa_testgen.infrastructure.api_discovery import normalizar_caminho
 
 _MASCARA = "***"
 
@@ -28,6 +27,21 @@ def _endpoint(caso: dict, base_url: str, valores: dict = None) -> str:
     if base_url and url.startswith(base_url):
         url = url[len(base_url):] or "/"
     return f"{(caso.get('metodo') or 'GET').upper()} {url or '/'}"
+
+
+def _rota(caso: dict, base_url: str) -> str:
+    """
+    Rota canônica do caso ('GET /api/v1/surveys/{id}/dashboard') — sem query string e com todo id
+    ({{variavel}}, número, uuid) como {id}. É ela que agrupa as suítes: o mesmo endpoint chamado com um
+    id válido, um id inexistente e com filtro na query continua sendo UMA suíte.
+    """
+    return f"{(caso.get('metodo') or 'GET').upper()} {normalizar_caminho(caso.get('url') or '', base_url)}"
+
+
+# Cenário negativo mesmo quando o status esperado é 2xx (ex.: "Gestor tenta filtrar setor fora do escopo
+# (200 sem dados)" é teste de acesso indevido — não é caminho feliz).
+_NOME_NEGATIVO = re.compile(r"\b(falha|erro|n[aã]o (pode|permite|aceita|recebe|autoriza)|sem (token|autentica|autoriza|permiss)|"
+                            r"inv[aá]lid|inexistente|fora do (escopo|intervalo)|bloquei|negad|indevid|proibid)", re.IGNORECASE)
 
 
 def _status_esperado(caso: dict):
@@ -54,7 +68,7 @@ def _descrever_assercao(a: dict) -> str:
         "header_contains": f"header '{alvo}' contém '{valor}'",
         "body_contains": f"corpo contém '{valor}'",
         "body_not_contains": f"corpo não contém '{valor}'",
-        "response_time_max": f"tempo de resposta ≤ {valor} ms",
+        "response_time_max": f"tempo de resposta até {valor} ms",
     }.get(tipo, a.get("descricao") or tipo)
 
 
@@ -67,7 +81,7 @@ def _mascarar_body(body: str, secretas: set) -> str:
 
 def converter_bateria(projeto: str, ambiente: str, base_url: str, casos: list, resultados: list = None,
                       variaveis: list = None, work_items: list = None, incluir_resultado: bool = True,
-                      mc_inicio: int = 1) -> dict:
+                      mc_inicio: int = 1, executado_em: str = "") -> dict:
     """
     Devolve {"matriz": [...], "test_cases": [...], "test_plans": [...]} no
     formato exato que o assistente guarda em sessão.
@@ -78,27 +92,29 @@ def converter_bateria(projeto: str, ambiente: str, base_url: str, casos: list, r
                 pré-vínculo (work_item_relacionado) de todos os casos.
     mc_inicio: número da primeira linha da Matriz (pra acrescentar a uma
                sessão que já tem linhas).
+    executado_em: "dd/mm/aaaa hh:mm" da execução — vai no "Última execução" do
+               caso. Sem ele, sai sem horário (nunca a hora da conversão).
     """
     sigla = _sigla(ambiente)
     secretas = {v["nome"] for v in (variaveis or []) if v.get("secreto")}
     valores_publicos = {v["nome"]: v.get("valor") for v in (variaveis or []) if v.get("nome") and not v.get("secreto")}
     res_por_id = {r.case_id: r for r in (resultados or [])}
     wi_id = str(work_items[0]["id"]) if work_items else ""
-    agora = datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M")
 
     matriz, test_cases, suites = [], [], {}
     n = mc_inicio
     for caso in casos:
         if not caso.get("habilitado", True):
             continue
-        endpoint = _endpoint(caso, base_url, valores_publicos)
+        endpoint = _endpoint(caso, base_url, valores_publicos)   # URL concreta (pro passo, reproduzível)
+        rota = _rota(caso, base_url)                                # rota canônica (suíte e Matriz)
         status = _status_esperado(caso)
         mc_id = f"MC-{n:03d}" + (f" {sigla}" if sigla else "")
         n += 1
-        negativo = status is not None and status >= 400
+        negativo = (status is not None and status >= 400) or bool(_NOME_NEGATIVO.search(caso.get("nome") or ""))
         prioridade = "Alta" if (status in (200, 201, 401, 403) or status is None) else "Média"
         matriz.append({
-            "id": mc_id, "funcionalidade": endpoint, "requisito": caso.get("descricao") or f"Contrato de {endpoint}",
+            "id": mc_id, "funcionalidade": rota, "requisito": caso.get("descricao") or f"Contrato de {rota}",
             "cenario": caso.get("nome", ""), "categoria": "Negativo" if negativo else "Positivo",
             "prioridade": prioridade, "criticidade": prioridade, "observacoes": "Origem: Testes de API",
         })
@@ -124,7 +140,8 @@ def converter_bateria(projeto: str, ambiente: str, base_url: str, casos: list, r
         r = res_por_id.get(caso.get("id"))
         if incluir_resultado and r is not None and not r.pulado:
             ok = sum(1 for a in r.assercoes if a.passou)
-            pre.append(f"Última execução ({sigla or ambiente or '—'}, {agora}): {r.resultado_label} — {ok}/{len(r.assercoes)} asserções"
+            quando = ", ".join(x for x in [sigla or ambiente or "", executado_em or ""] if x)
+            pre.append(f"Última execução" + (f" ({quando})" if quando else "") + f": {r.resultado_label} — {ok}/{len(r.assercoes)} asserções"
                        + (f", HTTP {r.status_code}" if r.status_code is not None else ""))
 
         tc = {
@@ -134,7 +151,7 @@ def converter_bateria(projeto: str, ambiente: str, base_url: str, casos: list, r
         if wi_id:
             tc["work_item_relacionado"] = wi_id
         test_cases.append(tc)
-        suites.setdefault(endpoint, []).append(tc["titulo"])
+        suites.setdefault(rota, []).append(tc["titulo"])
 
     plano = {
         "nome": f"Testes de API — {projeto or 'bateria'}",

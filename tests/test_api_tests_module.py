@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from qa_testgen.domain.models.api_test import ApiAssertion, ApiTestCase
 from qa_testgen.infrastructure.api_evidence import ApiEvidenceBuilder, MASCARA
-from qa_testgen.infrastructure.api_test_runner import ApiTestRunner
+from qa_testgen.infrastructure.api_test_runner import ApiTestRunner, CaminhoInvalido
 from qa_testgen.infrastructure.postman_importer import PostmanImporter, PostmanImportError
 
 
@@ -161,10 +161,16 @@ class ApiTestRunnerTests(unittest.TestCase):
         res2 = runner2.executar(self._casos())
         self.assertFalse(res2[1].bloqueado)
         self.assertEqual(res2[1].status_code, 401)
-        # variável que ninguém extrai (só faltou definir) -> não bloqueia, roda com o aviso de sempre
+        # variável que ninguém extrai e ficou sem valor (preenchimento pendente) -> bloqueia só este caso,
+        # sem mandar a requisição, com o motivo apontando a seção Variáveis
         caso = ApiTestCase(id="z", nome="sem produtor", metodo="GET", url=self.base + "/me",
                            headers={"Authorization": "Bearer {{outra}}"}, assercoes=[ApiAssertion(tipo="status", valor="401")])
-        self.assertFalse(ApiTestRunner({"base_url": self.base}).executar([caso])[0].bloqueado)
+        res3 = ApiTestRunner({"base_url": self.base}).executar([caso])[0]
+        self.assertTrue(res3.bloqueado)
+        self.assertIn("'outra' está sem valor", res3.motivo_pulo)
+        self.assertEqual(res3.status_code, None)
+        # com valor -> roda normalmente
+        self.assertFalse(ApiTestRunner({"base_url": self.base, "outra": "x"}).executar([caso])[0].bloqueado)
 
     def test_external_blocked_case_is_evaluated_like_python(self):
         casos = self._casos()
@@ -181,6 +187,40 @@ class ApiTestRunnerTests(unittest.TestCase):
         self.assertEqual(ApiTestRunner.obter_caminho(dado, "errors.email[0]"), "req")
         self.assertEqual(ApiTestRunner.obter_caminho(dado, "items[0].id"), 7)
         self.assertIs(ApiTestRunner.obter_caminho(dado, "items[3].id"), ApiTestRunner._AUSENTE)
+
+    def test_jsonpath_subset_used_by_ai_generated_batteries(self):
+        # caminhos reais que a IA gerou na bateria de 25/09 e que antes davam "campo ausente"
+        dado = {"data": [{"id": 1, "name": "Demandas", "dimension": {"id": 9}}, {"id": 2, "name": "Cargo"}],
+                "meta": {"total": 2}, "a b": {"c": 3}}
+        oc = ApiTestRunner.obter_caminho
+        self.assertEqual(oc(dado, "data.length"), 2)
+        self.assertEqual(oc(dado, "$.meta.total"), 2)
+        self.assertEqual(oc(dado, "data[-1].name"), "Cargo")
+        self.assertEqual(oc(dado, "['a b'].c"), 3)
+        self.assertEqual(list(oc(dado, "data[*].id")), [1, 2])
+        self.assertEqual(list(oc(dado, "data[?(@.name=='Demandas')].name")), ["Demandas"])
+        self.assertEqual(list(oc(dado, "data[?(@.dimension.id == 9)].id")), [1])
+        self.assertEqual(list(oc(dado, "data[?(@.name=='Nada')].id")), [])
+        for invalido in ("data..id", "data[?(@.id == )].x", "data[abc]"):
+            with self.assertRaises(CaminhoInvalido, msg=invalido):
+                oc(dado, invalido)
+
+    def test_assertions_with_many_values_and_unsupported_syntax(self):
+        runner = ApiTestRunner({"base_url": "http://x", "plan_id": "2"})
+
+        class R:
+            status_code, reason, headers, text = 200, "OK", {}, ""
+        corpo = {"data": [{"id": 1, "email": None}, {"id": 2}]}
+        a = lambda tipo, alvo, valor="": runner._avaliar(ApiAssertion(tipo=tipo, alvo=alvo, valor=valor), R(), corpo, 10)
+        self.assertTrue(a("json_equals", "data.length", "2").passou)
+        self.assertTrue(a("json_contains", "data[*].id", "{{plan_id}}").passou)
+        self.assertTrue(a("json_type", "data[*].id", "number").passou)
+        self.assertTrue(a("json_absent", "data[?(@.id==3)]").passou)
+        self.assertFalse(a("json_exists", "data[?(@.id==3)]").passou)
+        erro = a("json_exists", "data[?(@.id == )].riskClassification")
+        self.assertFalse(erro.passou)
+        self.assertIn("sintaxe de caminho não suportada", erro.detalhe)
+        self.assertNotIn("ausente", erro.detalhe)
 
 
 class ApiEvidenceTests(unittest.TestCase):
@@ -243,7 +283,7 @@ class ExternalExecutionTests(unittest.TestCase):
         col = PostmanImporter.parse_collection(json.dumps(COLLECTION).encode())
         casos = col["casos"]
         casos[1].habilitado = False
-        res = ApiTestRunner({"base_url": "http://x"}).avaliar_execucao_externa(
+        res = ApiTestRunner({"base_url": "http://x", "valid_email": "qa@x.com", "valid_password": "s3cr3t"}).avaliar_execucao_externa(
             casos, [{"status": None, "erro": "Failed to fetch", "tempo_ms": 5}])
         self.assertEqual(res[0].resultado_label, "Erro")
         self.assertIn("Failed to fetch", res[0].erro)
@@ -310,6 +350,48 @@ class ApiToAssistantTests(unittest.TestCase):
         # sem resultado no texto
         out2 = converter_bateria("Login", "Homologação", "http://x", casos, res, incluir_resultado=False)
         self.assertNotIn("Última execução", out2["test_cases"][0]["pre_condicoes"])
+
+    def test_same_endpoint_with_other_ids_or_query_is_one_suite(self):
+        # bateria de 25/09: /dashboard com {{survey_id}}, com {{invalid_survey_id}} = "kjdafakjhfadksj" e com
+        # ?tenant_department_id=... virava 3 suítes diferentes
+        from qa_testgen.infrastructure.api_to_assistant import converter_bateria
+        base = "https://api.x"
+
+        def caso(cid, url):
+            return {"id": cid, "nome": f"caso {cid}", "metodo": "GET", "url": "{{base_url}}" + url, "headers": {},
+                    "body": "", "habilitado": True, "assercoes": [{"tipo": "status", "valor": "200"}], "extrair": []}
+        casos = [caso("a", "/api/v1/surveys/{{survey_id}}/dashboard"),
+                 caso("b", "/api/v1/surveys/{{invalid_survey_id}}/dashboard"),
+                 caso("c", "/api/v1/surveys/{{survey_id}}/dashboard?tenant_department_id={{department_id}}"),
+                 caso("d", "/api/v1/action-plans/999999999/close")]
+        out = converter_bateria("X", "Homologação", base, casos, [],
+                                variaveis=[{"nome": "invalid_survey_id", "valor": "kjdafakjhfadksj", "secreto": False}])
+        suites = out["test_plans"][0]["suites"]
+        self.assertEqual([s["nome"] for s in suites], ["GET /api/v1/surveys/{id}/dashboard", "GET /api/v1/action-plans/{id}/close"])
+        self.assertEqual(suites[0]["casos"], ["caso a", "caso b", "caso c"])
+        self.assertEqual(out["matriz"][1]["funcionalidade"], "GET /api/v1/surveys/{id}/dashboard")
+        # o passo continua com a URL concreta (reproduzível)
+        self.assertIn("/surveys/kjdafakjhfadksj/dashboard", out["test_cases"][1]["passos"][0]["acao"])
+        self.assertIn("?tenant_department_id=", out["test_cases"][2]["passos"][0]["acao"])
+
+    def test_last_run_uses_execution_time_and_negative_by_name(self):
+        from qa_testgen.domain.models.api_test import ApiCaseResult
+        from qa_testgen.infrastructure.api_to_assistant import converter_bateria
+        casos = [{"id": "a", "nome": "3. Gestor tenta filtrar setor fora do escopo (200 sem dados)", "metodo": "GET",
+                  "url": "{{base_url}}/x", "headers": {}, "body": "", "habilitado": True, "extrair": [],
+                  "assercoes": [{"tipo": "status", "valor": "200"}, {"tipo": "response_time_max", "valor": "500"}]},
+                 {"id": "b", "nome": "1. Sucesso - listar", "metodo": "GET", "url": "{{base_url}}/x", "headers": {},
+                  "body": "", "habilitado": True, "extrair": [], "assercoes": [{"tipo": "status", "valor": "200"}]}]
+        res = [ApiCaseResult(case_id="a", nome=casos[0]["nome"], metodo="GET", url_final="https://api.x/x", request_headers={},
+                             request_body="", status_code=200, status_text="OK", response_headers={}, response_body="{}",
+                             tempo_ms=120)]
+        out = converter_bateria("X", "Homologação", "https://api.x", casos, res, executado_em="25/09/2026 17:31")
+        self.assertIn("Última execução (HML, 25/09/2026 17:31)", out["test_cases"][0]["pre_condicoes"])
+        self.assertIn("tempo de resposta até 500 ms", out["test_cases"][0]["passos"][0]["resultado_esperado"])
+        self.assertEqual([m["categoria"] for m in out["matriz"]], ["Negativo", "Positivo"])
+        # sem o horário da execução, não inventa (antes saía a hora da conversão)
+        out2 = converter_bateria("X", "Homologação", "https://api.x", casos, res)
+        self.assertIn("Última execução (HML): ", out2["test_cases"][0]["pre_condicoes"])
 
     def test_results_for_test_run(self):
         from qa_testgen.infrastructure.api_to_assistant import resultados_para_test_run

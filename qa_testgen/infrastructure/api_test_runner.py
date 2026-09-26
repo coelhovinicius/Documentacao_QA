@@ -71,6 +71,14 @@ class _SystemTrustAdapter(HTTPAdapter):
         super().cert_verify(conn, url, verify, cert)
 
 
+class CaminhoInvalido(ValueError):
+    """Caminho JSON com sintaxe que o executor não entende."""
+
+
+class Varios(list):
+    """Resultado de caminho com [*] ou filtro: todos os valores encontrados."""
+
+
 class ApiTestRunner:
     _RE_VAR = re.compile(r"\{\{\s*([\w.-]+)\s*\}\}")
 
@@ -99,32 +107,150 @@ class ApiTestRunner:
     def variaveis_nao_resolvidas(self, texto: str) -> list:
         return [m for m in self._RE_VAR.findall(texto or "") if m not in self.variaveis]
 
-    # ---- Caminho JSON simples ---------------------------------------------
+    # ---- Caminho JSON (subconjunto de JSONPath) -----------------------------
     _AUSENTE = object()
+    _RE_FILTRO = re.compile(r"^\?\(\s*@\.([\w.\-]+)\s*(?:(==|!=)\s*(.+?))?\s*\)$")
+    AJUDA_CAMINHO = ("use data.campo, lista[0], lista[*].campo, lista[?(@.campo=='valor')].campo, "
+                     "lista.length ou ['campo com espaço']")
+
+    @classmethod
+    def _tokens_caminho(cls, caminho: str) -> list:
+        """
+        Quebra o caminho em passos. Aceita o que a IA e o Postman costumam
+        escrever: `$.data.x`, `a[0]`, `a[-1]`, `a[*]`, `a.*`, `a['chave']`,
+        `a[?(@.nome=='X')]`, `a[?(@.id==7)]`, `a[?(@.ativo)]`, `a.length`.
+        Sintaxe fora disso levanta CaminhoInvalido (vira mensagem clara na
+        asserção, em vez de "campo ausente").
+        """
+        s = (caminho or "").strip()
+        if s.startswith("$"):
+            s = s[1:]
+        tokens, i = [], 0
+        while i < len(s):
+            c = s[i]
+            if c == ".":
+                if s[i:i + 2] == "..":
+                    raise CaminhoInvalido("busca recursiva '..' não é suportada")
+                i += 1
+                continue
+            if c == "[":
+                j, prof, aspas = i + 1, 0, None
+                while j < len(s):
+                    ch = s[j]
+                    if aspas:
+                        aspas = None if ch == aspas else aspas
+                    elif ch in "'\"":
+                        aspas = ch
+                    elif ch in "([":
+                        prof += 1
+                    elif ch in ")]":
+                        if ch == "]" and prof == 0:
+                            break
+                        prof -= 1
+                    j += 1
+                if j >= len(s):
+                    raise CaminhoInvalido("colchete '[' sem fechar")
+                dentro = s[i + 1:j].strip()
+                if dentro == "*":
+                    tokens.append(("*",))
+                elif re.fullmatch(r"-?\d+", dentro):
+                    tokens.append(("idx", int(dentro)))
+                elif len(dentro) >= 2 and dentro[0] in "'\"" and dentro[-1] == dentro[0]:
+                    tokens.append(("key", dentro[1:-1]))
+                elif dentro.startswith("?"):
+                    m = cls._RE_FILTRO.match(dentro)
+                    if not m:
+                        raise CaminhoInvalido(f"filtro '[{dentro}]' fora do formato [?(@.campo=='valor')]")
+                    tokens.append(("filtro", m.group(1), m.group(2), cls._valor_filtro(m.group(3))))
+                else:
+                    raise CaminhoInvalido(f"'[{dentro}]' não é índice, [*], ['chave'] nem filtro")
+                i = j + 1
+                continue
+            j = i
+            while j < len(s) and s[j] not in ".[":
+                j += 1
+            nome = s[i:j]
+            if nome == "*":
+                tokens.append(("*",))
+            elif nome == "length()":
+                tokens.append(("len",))
+            else:
+                tokens.append(("key", nome))
+            i = j
+        return tokens
+
+    @staticmethod
+    def _valor_filtro(bruto):
+        if bruto is None:
+            return None
+        v = bruto.strip()
+        if len(v) >= 2 and v[0] in "'\"" and v[-1] == v[0]:
+            return v[1:-1]
+        if v.lower() in ("true", "false"):
+            return v.lower() == "true"
+        if v.lower() == "null":
+            return None
+        try:
+            return int(v)
+        except ValueError:
+            try:
+                return float(v)
+            except ValueError:
+                raise CaminhoInvalido(f"valor '{v}' do filtro precisa estar entre aspas (ou ser número)")
+
+    @classmethod
+    def _filtro_ok(cls, item, campo: str, op, valor) -> bool:
+        obtido = cls.obter_caminho(item, campo)
+        if obtido is cls._AUSENTE:
+            return False
+        if op is None:
+            return bool(obtido)
+        igual = obtido == valor or (isinstance(obtido, (int, float)) and isinstance(valor, (int, float)) and float(obtido) == float(valor)) \
+            or str(obtido) == str(valor)
+        return igual if op == "==" else not igual
 
     @classmethod
     def obter_caminho(cls, dado, caminho: str):
         """
-        `data.user.email`, `errors.email[0]`, `items[2].id`. Retorna
-        cls._AUSENTE quando qualquer trecho não existe.
+        `data.user.email`, `errors.email[0]`, `items[2].id`, e também
+        `items[*].id`, `items[?(@.nome=='X')].id` e `items.length`.
+        Retorna cls._AUSENTE quando o caminho não existe; com `[*]` ou
+        filtro devolve Varios (lista dos valores encontrados, podendo ser
+        vazia). Sintaxe não suportada levanta CaminhoInvalido.
         """
-        atual = dado
         if not caminho:
-            return atual
-        tokens = re.findall(r"[^.\[\]]+|\[\d+\]", caminho)
-        for tok in tokens:
-            if tok.startswith("["):
-                idx = int(tok[1:-1])
-                if isinstance(atual, list) and 0 <= idx < len(atual):
-                    atual = atual[idx]
-                else:
-                    return cls._AUSENTE
-            else:
-                if isinstance(atual, dict) and tok in atual:
-                    atual = atual[tok]
-                else:
-                    return cls._AUSENTE
-        return atual
+            return dado
+        atuais, varios = [dado], False
+        for tok in cls._tokens_caminho(caminho):
+            prox = []
+            for atual in atuais:
+                if tok[0] == "key":
+                    if isinstance(atual, dict) and tok[1] in atual:
+                        prox.append(atual[tok[1]])
+                    elif tok[1] == "length" and isinstance(atual, (list, str)):
+                        prox.append(len(atual))
+                elif tok[0] == "len":
+                    if isinstance(atual, (list, str, dict)):
+                        prox.append(len(atual))
+                elif tok[0] == "idx":
+                    if isinstance(atual, list) and -len(atual) <= tok[1] < len(atual):
+                        prox.append(atual[tok[1]])
+                elif tok[0] == "*":
+                    varios = True
+                    if isinstance(atual, list):
+                        prox.extend(atual)
+                    elif isinstance(atual, dict):
+                        prox.extend(atual.values())
+                elif tok[0] == "filtro":
+                    varios = True
+                    if isinstance(atual, list):
+                        prox.extend(item for item in atual if cls._filtro_ok(item, tok[1], tok[2], tok[3]))
+            atuais = prox
+            if not atuais and not varios:
+                return cls._AUSENTE
+        if varios:
+            return Varios(atuais)
+        return atuais[0] if atuais else cls._AUSENTE
 
     # ---- Execução ----------------------------------------------------------
     def executar(self, casos: list, on_progress: Optional[Callable[[int, int, ApiCaseResult], None]] = None) -> list:
@@ -173,12 +299,17 @@ class ApiTestRunner:
         for v in (caso.headers or {}).values():
             usadas.update(self._RE_VAR.findall(v or ""))
         usadas.update(self._RE_VAR.findall(caso.body or ""))
-        faltando = sorted(n for n in usadas if n in produtores and not (self.variaveis.get(n) or "").strip())
-        if not faltando:
+        vazias = sorted(n for n in usadas if not (self.variaveis.get(n) or "").strip())
+        if not vazias:
             return ""
+        # Variável sem valor que nenhum caso anterior produz (preenchimento
+        # manual pendente) também bloqueia só os casos que a usam — o resto da
+        # bateria roda, em vez de a execução inteira esperar por ela.
         return "Bloqueado: " + "; ".join(
-            f"a variável '{n}' está vazia — o caso \"{produtores[n]}\" deveria extraí-la e não conseguiu" for n in faltando
-        ) + ". Corrija o caso anterior (ou preencha a variável) e execute de novo."
+            f"a variável '{n}' está vazia — o caso \"{produtores[n]}\" deveria extraí-la e não conseguiu" if n in produtores
+            else f"a variável '{n}' está sem valor (preencha na seção Variáveis, ou um caso anterior precisa extraí-la)"
+            for n in vazias
+        ) + ". Corrija e execute de novo."
 
     def executar_caso(self, caso: ApiTestCase) -> ApiCaseResult:
         url = self.substituir(caso.url)
@@ -249,7 +380,12 @@ class ApiTestRunner:
         for ext in caso.extrair:
             if json_body is None:
                 continue
-            valor = self.obter_caminho(json_body, self.substituir(ext.caminho))
+            try:
+                valor = self.obter_caminho(json_body, self.substituir(ext.caminho))
+            except CaminhoInvalido:
+                continue
+            if isinstance(valor, Varios):
+                valor = valor[0] if valor else self._AUSENTE
             if valor is not self._AUSENTE:
                 self.variaveis[ext.nome] = valor if isinstance(valor, str) else json.dumps(valor, ensure_ascii=False)
 
@@ -351,8 +487,15 @@ class ApiTestRunner:
             if json_body is None:
                 return ApiAssertionResult(desc, False, "resposta não é JSON válido")
 
-            obtido = self.obter_caminho(json_body, alvo)
-            ausente = obtido is self._AUSENTE
+            try:
+                obtido = self.obter_caminho(json_body, alvo)
+            except CaminhoInvalido as error:
+                # Não é "campo ausente": o executor não entendeu o caminho —
+                # dizer "ausente" aqui faria a evidência mentir sobre a API.
+                return ApiAssertionResult(desc, False, f"sintaxe de caminho não suportada em '{alvo}' ({error}) — {self.AJUDA_CAMINHO}")
+            # Com [*]/filtro vêm vários valores: basta UM atender (tipo: todos).
+            valores = list(obtido) if isinstance(obtido, Varios) else ([] if obtido is self._AUSENTE else [obtido])
+            ausente = not valores
 
             if tipo == "json_exists":
                 return ApiAssertionResult(desc, not ausente, "" if not ausente else f"campo '{alvo}' ausente")
@@ -362,22 +505,21 @@ class ApiTestRunner:
                 return ApiAssertionResult(desc, False, f"campo '{alvo}' ausente")
 
             if tipo == "json_not_empty":
-                ok = obtido not in ("", None, [], {})
+                ok = any(v not in ("", None, [], {}) for v in valores)
                 return ApiAssertionResult(desc, ok, "" if ok else f"campo '{alvo}' vazio")
             if tipo == "json_type":
-                ok = self._checar_tipo(obtido, valor)
-                return ApiAssertionResult(desc, ok, "" if ok else f"tipo obtido: {type(obtido).__name__}")
+                ok = all(self._checar_tipo(v, valor) for v in valores)
+                return ApiAssertionResult(desc, ok, "" if ok else f"tipo obtido: {', '.join(sorted({type(v).__name__ for v in valores}))}")
             if tipo == "json_contains":
-                texto = obtido if isinstance(obtido, str) else json.dumps(obtido, ensure_ascii=False)
-                ok = valor in texto
+                ok = any(valor in (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)) for v in valores)
                 return ApiAssertionResult(desc, ok, "" if ok else f"obtido: {self._resumo(obtido)}")
             if tipo == "json_equals":
-                ok = self._igual(obtido, valor)
+                ok = any(self._igual(v, valor) for v in valores)
                 return ApiAssertionResult(desc, ok, "" if ok else f"esperado '{valor}', obtido {self._resumo(obtido)}")
             if tipo == "json_equals_var":
                 if valor not in self.variaveis:
                     return ApiAssertionResult(desc, False, f"variável '{a.valor}' não definida (o caso que a salva rodou?)")
-                ok = self._igual(obtido, self.variaveis[valor] if valor in self.variaveis else valor)
+                ok = any(self._igual(v, self.variaveis[valor]) for v in valores)
                 return ApiAssertionResult(desc, ok, "" if ok else f"variável = '{self.variaveis.get(valor)}', obtido {self._resumo(obtido)}")
 
             return ApiAssertionResult(desc, False, f"tipo de asserção desconhecido: {tipo}")

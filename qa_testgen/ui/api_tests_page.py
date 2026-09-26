@@ -19,6 +19,10 @@ from qa_testgen.domain.models.api_test import (
     ASSERTION_TYPES, ASSERTION_LABELS, HTTP_METHODS, ApiTestCase,
 )
 from qa_testgen.infrastructure import api_discovery as disc
+from qa_testgen.infrastructure import api_autofill as autofill
+from qa_testgen.infrastructure import api_contracts as ct
+from qa_testgen.infrastructure import api_triage as tri
+from qa_testgen.infrastructure import api_generation_batches as lotes_ia
 from qa_testgen.infrastructure.api_discovery import montar_sondas, analisar as analisar_sondas
 from qa_testgen.infrastructure.api_evidence import ApiEvidenceBuilder
 from qa_testgen.infrastructure.api_to_assistant import converter_bateria, resultados_para_test_run
@@ -72,9 +76,29 @@ API_TESTS_STATE_DEFAULTS = {
     'api_verificacao': None,    # último resultado da verificação {existem, inexistentes, sem_resposta}
     'show_new_api_run_modal': False,
     'show_leave_api_modal': False,
+    # --- 3. Análise e Bugs (ui/api_bugs_page.py) ---
+    'api_execucao_id': None,        # muda a cada execução (chaves de widget da análise)
+    'api_executado_em': None,       # dd/mm/aaaa hh:mm da última execução (System Info dos Bugs)
+    'api_casos_executados': None,   # a bateria como estava NA execução (a triagem compara com isso)
+    'api_bateria_alterada': False,  # correções aplicadas depois da execução → pedir nova execução
+    'api_contratos': None,          # cache do catálogo de formatos reais do host {host, rotas{}}
+    'api_responsaveis': None,       # [{id, titulo, responsavel}] dos Work Items testados (com quem falar)
+    'api_correcoes_confirmar': None,  # chaves das correções escolhidas, aguardando confirmação
+    'api_bug_rascunhos': [],        # rascunhos de Bug (ver/editar/excluir → enviar ao Azure)
+    'api_bug_editando': None,
+    'api_bug_vendo': None,
+    'api_bug_excluir': None,
+    'api_bug_envio_confirmar': False,
+    'api_bug_envio_snapshot': None,
+    'api_bug_envio_resultado': None,  # tela de resultado do envio {itens, quando}
+    'api_correcoes_aplicadas': [],   # frases das correções de formato aplicadas (entram no relatório)
+    'api_relatorio_fp': None,        # o que estava na análise/rascunhos quando o relatório foi gerado
+    'api_relatorio_gerado_em': None,
+    'api_relatorio_erro': None,     # motivo da última falha ao gerar o PDF (mostrado junto do botão)
 }
 
-_ETAPAS = ['1. Definição', '2. Execução', '3. Evidências']
+_ETAPAS = ['1. Definição', '2. Execução', '3. Análise e Bugs', '4. Evidências']
+_ROTULOS_ETAPAS = ["🧾 1. Definição", "▶️ 2. Execução", "🔍 3. Análise e Bugs", "📦 4. Evidências"]
 
 # Componente que executa as requisições NO NAVEGADOR do usuário (HTML puro em
 # ui/components/api_browser_runner). Motivo: WAFs como o CloudFront do HML
@@ -393,6 +417,24 @@ class ApiTestsPageMixin:
         self.state.set('api_md', None)
         self.state.set('api_pdf', None)
         self.state.set('api_zip', None)
+        self.state.set('api_relatorio_erro', None)
+
+    def _api_relatorio_fp(self) -> str:
+        """Impressão digital do que entra no relatório além da execução (rascunhos e correções)."""
+        return json.dumps([self.state.get('api_execucao_id'), self.state.get('api_bug_rascunhos') or [],
+                           self.state.get('api_correcoes_aplicadas') or [], self.state.get('api_responsaveis') or []],
+                          sort_keys=True, ensure_ascii=False, default=str)
+
+    def _api_mostrar_erro_relatorio(self):
+        erro = self.state.get('api_relatorio_erro')
+        if erro:
+            st.error("❌ **Não foi possível gerar o PDF.** Nada foi enviado a lugar nenhum — clique de novo depois de "
+                     "resolver; se repetir, mande esta mensagem pro suporte do app.")
+            with st.expander("🔍 Detalhe técnico"):
+                st.code(erro, wrap_lines=True)
+
+    def _api_relatorio_desatualizado(self) -> bool:
+        return bool(self.state.get('api_pdf')) and self.state.get('api_relatorio_fp') != self._api_relatorio_fp()
 
     # ------------------------------------------------------------------ page
     def _api_tests_page(self):
@@ -406,12 +448,12 @@ class ApiTestsPageMixin:
             return
 
         st.caption(
-            "Executa testes de API (importados do Postman ou criados aqui) direto do app, "
-            "sem Node/Newman, e gera evidências organizadas — request, response e asserções por caso, "
-            "relatório em Markdown e PDF no padrão QA TestGen, e pacote .zip pra arquivar. "
-            "Integração com o Azure DevOps (vincular a Test Cases e registrar resultado) vem na próxima fase."
+            "Executa testes de API (gerados por IA a partir dos Work Items, importados do Postman ou criados aqui) direto "
+            "do app, sem Node/Newman; separa o que é bug da API do que é problema da bateria, de perfil ou regra a "
+            "confirmar; abre os Bugs no Azure DevOps com a evidência; e gera relatório (Markdown/PDF) e pacote .zip."
         )
         self._api_render_ajuda()
+        self._api_botao_manual()
 
         if self.state.get('show_new_api_run_modal'):
             confirm_new_api_run_modal(self._api_reset)
@@ -429,10 +471,15 @@ class ApiTestsPageMixin:
 
         st.divider()
         etapa = self.state.get('api_etapa') or _ETAPAS[0]
+        if etapa not in _ETAPAS:   # sessão aberta antes da etapa "Análise e Bugs" existir
+            etapa = _ETAPAS[3] if "Evid" in etapa else _ETAPAS[0]
+            self.state.set('api_etapa', etapa)
         if etapa == _ETAPAS[0]:
             self._api_render_definicao()
         elif etapa == _ETAPAS[1]:
             self._api_render_execucao()
+        elif etapa == _ETAPAS[2]:
+            self._api_render_analise()
         else:
             self._api_render_evidencias()
 
@@ -443,7 +490,7 @@ class ApiTestsPageMixin:
         """
         atual = self.state.get('api_etapa') or _ETAPAS[0]
         cols = st.columns(len(_ETAPAS))
-        for col, (rotulo, etapa) in zip(cols, zip(["🧾 1. Definição", "▶️ 2. Execução", "📦 3. Evidências"], _ETAPAS)):
+        for col, (rotulo, etapa) in zip(cols, zip(_ROTULOS_ETAPAS, _ETAPAS)):
             with col:
                 if etapa == atual:
                     st.markdown(
@@ -469,10 +516,10 @@ class ApiTestsPageMixin:
             if self.state.get('api_browser_job'):
                 pend.append("Há uma execução em andamento no navegador — aguarde terminar ou cancele.")
             return pend
-        if etapa == _ETAPAS[2]:
+        if etapa in (_ETAPAS[2], _ETAPAS[3]):
             pend = []
             if not self.state.get('api_resultados'):
-                pend.append("Execute os testes na etapa 2. Execução (as evidências são geradas a partir do resultado).")
+                pend.append("Execute os testes na etapa 2. Execução (a análise e as evidências partem do resultado).")
             return pend
         return []
 
@@ -484,9 +531,30 @@ class ApiTestsPageMixin:
         pend = self._api_pendencias_para(destino)
         if pend:
             st.warning("**Antes de seguir para " + destino + ", falta:**\n\n" + "\n".join(f"- {p}" for p in pend))
+        avisos = self._api_avisos_variaveis() if destino == _ETAPAS[1] else []
+        if avisos:
+            st.info("**Pode seguir — o resto da bateria roda normalmente.** Estes casos vão ficar de fora até a variável ter valor "
+                    "(preencha em 🔤 Variáveis, ou desabilite o caso):\n\n" + "\n".join(f"- {a}" for a in avisos))
         if st.button(rotulo, key=key, type="primary", width="stretch", disabled=bool(pend)):
             self.state.set('api_etapa', destino)
             st.rerun()
+
+    def _api_botao_manual(self):
+        """
+        Manual técnico da área, escrito pra desenvolvedores (docs/Guia_Testes_API.pdf,
+        copiado em qa_testgen/assets). O arquivo tem ~4 MB: vai como callable, pra ser
+        lido só no clique — e não reenviado ao navegador a cada rerun desta tela.
+        """
+        caminho = Path(__file__).resolve().parent.parent / "assets" / "Guia_Testes_API.pdf"
+        if not caminho.exists():
+            st.caption("⚠️ Guia_Testes_API.pdf ainda não foi colocado em `qa_testgen/assets/`.")
+            return
+        st.download_button(
+            "📙 Baixar o manual de Testes de API (para desenvolvedores)", data=caminho.read_bytes,
+            file_name="Guia_Testes_API.pdf", mime="application/pdf", key="btn_download_manual_api",
+            help="Manual técnico pra compartilhar com devs: como a ferramenta chama a API, formato dos casos, regras de "
+                 "classificação, o que chega num Bug e como reproduzir uma chamada fora do app.",
+        )
 
     def _api_render_ajuda(self):
         with st.expander("ℹ️ O que é e como usar esta área"):
@@ -495,24 +563,34 @@ class ApiTestsPageMixin:
                 "(método, URL, headers, body) e o que a resposta precisa ter (status, campos, valores), o app "
                 "chama a API de verdade, confere cada regra e monta a evidência — sem precisar do Postman "
                 "aberto nem de Node/Newman.\n\n"
-                "**As 3 etapas** (seletor logo abaixo):\n"
+                "**As 4 etapas** (seletor logo abaixo):\n"
                 "1. **Definição** — nome, ambiente, Base URL, de onde vêm os casos, variáveis e (opcional) contexto.\n"
                 "2. **Execução** — roda os casos habilitados, na ordem, e mostra o resultado de cada asserção.\n"
-                "3. **Evidências** — é aqui que ficam os **botões de download**: `RELATORIO.md`, `RELATORIO.pdf` "
-                "(padrão QA TestGen), `.zip` com uma pasta por caso (request, response, resultado e seus prints) e "
-                "a definição `.json` para repetir a bateria depois.\n\n"
+                "3. **Análise e Bugs** — o app separa o que é **possível bug da API** do que é problema da própria bateria, "
+                "perfil do usuário de teste ou regra a **confirmar com o PO**. Pra cada suspeita diz se é bug mesmo, como "
+                "confirmar, o que fazer, **com quem falar** e o **texto pronto** do que dizer. Daqui você cria **rascunhos de "
+                "Bug** (ver 👁️, alterar ✏️, excluir 🗑️) e envia ao **Azure DevOps** — o app mostra tudo o que vai ser criado, "
+                "pede confirmação e termina com o link de cada Bug (com request/response anexados e vínculo aos Work Items). "
+                "Antes de enviar, **📄 Gerar relatório completo** baixa o PDF/MD com tudo — análise, correções aplicadas e "
+                "cada rascunho de Bug — pra revisar ou compartilhar. "
+                "Também sugere **correções da bateria** a partir das respostas reais (só formato — nunca o esperado do card).\n"
+                "4. **Evidências** — é aqui que ficam os **botões de download**: `RELATORIO.md`, `RELATORIO.pdf` "
+                "(padrão QA TestGen, já com a análise e os Bugs abertos), `.zip` com uma pasta por caso (request, response, "
+                "resultado e seus prints) e a definição `.json` para repetir a bateria depois.\n\n"
                 "**De onde vêm os casos** (etapa 1, \"Origem dos testes\"):\n"
                 "- 🤖 **Gerar com IA** — escolha o(s) **Work Item(s) do Azure DevOps** (a Descrição e os Critérios de Aceite "
                 "viram a especificação) ou cole o texto / anexe documentos em Contexto, "
                 "informe a Base URL e clique em *Gerar casos com IA*: a bateria inteira (sucesso, validações, credenciais "
                 "inválidas, regras de negócio, token) aparece pronta no editor. Senhas nunca vão pra IA — ela só declara "
-                "as variáveis e você preenche.\n"
+                "as variáveis e você preenche. Depois de buscar os Work Items dá pra filtrar por **Tag** e **Coluna do Board** "
+                "e marcar todos os filtrados de uma vez; com vários itens, o app gera **em lotes** (uma chamada à IA por lote, "
+                "até 10 casos cada) e junta tudo sem repetir o login.\n"
                 "- 📮 **Collection do Postman** — no Postman: clique nos três pontos da collection → **Export** → "
                 "formato *Collection v2.1* → salva um `*.postman_collection.json`. O **environment** é opcional: "
                 "aba *Environments* → três pontos → **Export** → `*.postman_environment.json` (traz as variáveis). "
                 "Os `pm.test` mais comuns são convertidos em asserções automaticamente; o que não der vira um aviso "
                 "amarelo no caso, pra você completar na tela.\n"
-                "- 🧩 **Definição salva** — o `.json` que a etapa 3 exporta. Serve pra repetir a mesma bateria "
+                "- 🧩 **Definição salva** — o `.json` que a etapa 4 exporta. Serve pra repetir a mesma bateria "
                 "amanhã sem depender do Postman.\n"
                 "- ✍️ **Criar manualmente** — monta cada caso do zero na própria tela.\n\n"
                 "**Variáveis:** qualquer `{{nome}}` em URL, headers ou body é substituído pelo valor da tabela. "
@@ -526,6 +604,9 @@ class ApiTestsPageMixin:
                 "todo caso com rota fora dele é desabilitado com aviso, e **🔎 Verificar rotas dos casos** pergunta à API se cada rota "
                 "existe. Rotas que respondem nas execuções entram no catálogo sozinhas. Antes de gerar, o painel de prontidão diz "
                 "exatamente o que ainda falta.\n\n"
+                "**📐 Formato real da API (aprende sozinho):** cada execução ensina ao app o que a API realmente valida "
+                "(ex.: `start_date`, não `startDate`), onde cada campo está na resposta e como são as mensagens de erro. "
+                "Isso vai junto na próxima geração com IA — ela para de presumir nome de campo.\n\n"
                 "**🔎 Reconhecer a API** (dentro de Gerar com IA): antes de gerar, o app faz chamadas sem credencial "
                 "nas rotas citadas na especificação e descobre a rota real (ex.: /api/v1/...), o formato dos erros "
                 "(chave i18n, errors.<campo>) e quais rotas exigem token — e escreve isso nas Observações pra IA não "
@@ -535,7 +616,7 @@ class ApiTestsPageMixin:
                 "se espera. Não altera a execução; é só documentação.\n\n"
                 "**De onde saem as chamadas:** conforme configuração do administrador — do **seu navegador** (padrão; "
                 "mesmo IP do Postman, contorna bloqueios de WAF que barram servidores em nuvem) ou do servidor do app.\n\n"
-                "**Levar para o Azure DevOps** (etapa 3, \"Levar para o assistente\"): cada caso vira um Caso de Teste, "
+                "**Levar para o Azure DevOps** (etapa 4, \"Levar para o assistente\"): cada caso vira um Caso de Teste, "
                 "com Matriz e um Plano (uma suíte por endpoint); você cai no Passo 5 e usa o Passo 7 como sempre — "
                 "vinculando a Work Items (o Work Item escolhido na geração já vem sugerido), sem Work Items ou "
                 "reconciliando. Depois do Passo 7, o app oferece registrar a execução como **Test Run** oficial "
@@ -543,7 +624,10 @@ class ApiTestsPageMixin:
                 "**Regras:** um caso sem asserção é reprovado (o mínimo é o status HTTP esperado); casos "
                 "desabilitados não rodam e aparecem como \"Não Executado\"; um caso que depende de uma variável que um caso "
                 "anterior deveria extrair (ex.: `{{survey_id}}`) e ficou vazia aparece como **Bloqueado**, com o motivo, em vez "
-                "de rodar com a URL quebrada."
+                "de rodar com a URL quebrada.\n\n"
+                "**📙 Manual para desenvolvedores:** o botão logo abaixo desta ajuda baixa um manual técnico desta área "
+                "(como as chamadas saem, formato dos casos, regras de classificação, o que chega num Bug e como reproduzir "
+                "uma chamada fora do app) — pra compartilhar com quem desenvolve a API."
             )
 
     # ------------------------------------------------------------ 1. Definição
@@ -597,7 +681,7 @@ class ApiTestsPageMixin:
                 self._api_importar_postman(col_file, env_file, substituir)
                 st.rerun()
         elif origem.startswith("🧩"):
-            def_file = st.file_uploader("Definição (.json exportado na etapa Evidências)", type=["json"], key="apiw_def_file")
+            def_file = st.file_uploader("Definição (.json exportado na etapa 4. Evidências)", type=["json"], key="apiw_def_file")
             if st.button("📥 Carregar definição", key="azure_blue_btn_api_import_def", disabled=def_file is None, width="stretch"):
                 self._api_importar_definicao(def_file)
                 st.rerun()
@@ -672,6 +756,7 @@ class ApiTestsPageMixin:
             st.caption(f"📄 {len(self.state.get('api_docs_nomes') or [])} documento(s) de contexto também serão enviados à IA ({len(docs_txt)} caracteres).")
         substituir = st.checkbox("Começar do zero: apagar os casos já listados e ficar só com os gerados", value=True,
                                  key="apiw_ia_replace", disabled=not (self.state.get('api_casos') or []))
+        self._api_render_tamanho_lote()
         espec_base = self._api_especificacao_efetiva()
         pronto = bool(espec_base.strip() or docs_txt) and \
             (self.state.get('api_base_url') or '').startswith(('http://', 'https://'))
@@ -693,6 +778,10 @@ class ApiTestsPageMixin:
                 st.code(erro_ia, language="text")
         if self.state.get('current_action') == 'api_generate_ai' and not self.state.get('show_interrupt_modal'):
             self.state.set('api_ia_ultimo_erro', None)
+            lotes = self._api_lotes_de_work_items()
+            if len(lotes) > 1:
+                self._api_gerar_em_lotes(lotes, docs_txt, substituir)
+                return
 
             def montar_payload():
                 especificacao = self._api_especificacao_efetiva().strip()
@@ -701,9 +790,10 @@ class ApiTestsPageMixin:
                     # cota por minuto dos provedores — documento inteiro derruba a geração.
                     especificacao += "\n\n=== DOCUMENTOS DE CONTEXTO (trecho) ===\n" + docs_txt[:6000]
                 observacoes = self.state.get('api_ia_observacoes') or ''
-                bloco_rotas = disc.rotas_para_prompt(self._api_catalogo(), especificacao)
-                if bloco_rotas:
-                    observacoes = (observacoes.strip() + "\n\n" if observacoes.strip() else "") + bloco_rotas
+                # rotas reais + formato real aprendido nas execuções (campos que a API valida, caminhos da resposta, erros)
+                for bloco in (disc.rotas_para_prompt(self._api_catalogo(), especificacao), ct.para_prompt(self._api_contratos(), especificacao)):
+                    if bloco:
+                        observacoes = (observacoes.strip() + "\n\n" if observacoes.strip() else "") + bloco
                 return {"especificacao": especificacao, "base_url": self.state.get('api_base_url'),
                         "ambiente": self.state.get('api_ambiente'), "observacoes": observacoes,
                         "variaveis": self.state.get('api_variaveis') or []}
@@ -730,6 +820,92 @@ class ApiTestsPageMixin:
                 self._flash_error(f"Não foi possível gerar os casos com IA: {error}")
             self.clear_action()
             st.rerun()
+
+    def _api_lotes_de_work_items(self) -> list:
+        """Lotes de Work Items da geração ([] = chamada única: texto colado ou poucos itens)."""
+        if not (self.state.get('api_ia_fonte') or '').startswith("🎯"):
+            return []
+        partes = self.state.get('api_ia_especificacao_wi_partes') or []
+        tamanho = int(self.state.get('api_ia_lote_tamanho') or lotes_ia.TAMANHO_LOTE_PADRAO)
+        return lotes_ia.dividir_em_lotes(partes, tamanho) if len(partes) > tamanho else []
+
+    def _api_render_tamanho_lote(self):
+        partes = self.state.get('api_ia_especificacao_wi_partes') or []
+        if not (self.state.get('api_ia_fonte') or '').startswith("🎯") or len(partes) < 2:
+            return
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            tamanho = int(st.number_input(
+                "Work Items por lote", min_value=1, max_value=5,
+                value=int(self.state.get('api_ia_lote_tamanho') or lotes_ia.TAMANHO_LOTE_PADRAO),
+                key="apiw_wi_lote_tamanho", disabled=self.state.get('is_processing'),
+                help="Cada lote é uma chamada à IA (até 10 casos cada). Menos itens por lote = mais casos por item e menos risco de estourar a cota por minuto."))
+            self.state.set('api_ia_lote_tamanho', tamanho)
+        with c2:
+            lotes = self._api_lotes_de_work_items()
+            if lotes:
+                st.info(
+                    f"**{len(partes)} Work Items → {len(lotes)} lotes** de até {tamanho}, na ordem em que foram escolhidos "
+                    f"(uma chamada à IA por lote, até 10 casos cada). Cada lote sabe o que os anteriores geraram — reaproveita "
+                    f"o token do login em vez de repetir — e, no fim, os casos entram juntos na lista, sem repetição. "
+                    f"Escolha os itens que usam as mesmas rotas em sequência."
+                )
+            else:
+                st.caption(f"{len(partes)} Work Item(s) cabem numa chamada só.")
+
+    def _api_gerar_em_lotes(self, lotes: list, docs_txt: str, substituir: bool):
+        """
+        Uma chamada à IA por lote de Work Items, com a mesma regra de espera e
+        retentativa da Matriz (1 lote por execução do script). O lote N recebe,
+        nas Observações, o resumo dos casos dos lotes 1..N-1.
+        """
+        observacoes_base = (self.state.get('api_ia_observacoes') or '').strip()
+        catalogo = self._api_catalogo()
+        contratos = self._api_contratos()
+
+        def processar(lote):
+            anteriores = [i['resp'] for i in (self.state.get('_api_geracao_ia_acumulado') or [])]
+            especificacao = "\n\n".join(p['texto'] for p in lote)
+            if docs_txt:
+                especificacao += "\n\n=== DOCUMENTOS DE CONTEXTO (trecho) ===\n" + docs_txt[:6000]
+            blocos = [observacoes_base, disc.rotas_para_prompt(catalogo, especificacao), ct.para_prompt(contratos, especificacao),
+                      lotes_ia.contexto_lotes_anteriores(anteriores)]
+            observacoes = "\n\n".join(b for b in blocos if b and b.strip())
+            variaveis = lotes_ia.juntar_variaveis(self.state.get('api_variaveis') or [], anteriores)
+            try:
+                resp = self.client.trigger_api_test_generation(especificacao, self.state.get('api_base_url'),
+                                                               self.state.get('api_ambiente'), observacoes, variaveis)
+            except Exception as error:
+                return [], self._erro_lote_amigavel(error)
+            return [{"ids": [p['id'] for p in lote], "resp": resp}], None
+
+        with st.status(f"A IA está montando a bateria em {len(lotes)} lotes (cerca de 1 minuto por lote)...",
+                       expanded=True) as status:
+            resultado = self._processar_um_lote_por_execucao("api_geracao_ia", lambda: lotes, processar, status)
+            if resultado is None:
+                return  # rerun() já disparado (próximo lote ou espera)
+            itens, erros = resultado
+            status.update(label="Falha na geração." if not itens else f"Bateria gerada ({len(itens)} de {len(lotes)} lotes).",
+                          state="error" if not itens else "complete")
+
+        falhas = "; ".join(
+            f"lote {n} (Work Item {', '.join(str(p['id']) for p in lotes[n - 1])}): {erro}" for n, erro in erros
+        )
+        if not itens:
+            self.state.set('api_ia_ultimo_erro', falhas)
+            self._flash_error(f"Não foi possível gerar os casos com IA: nenhum lote deu certo — {falhas}")
+        else:
+            aviso = ""
+            if erros:
+                aviso = (f" ⚠️ {len(erros)} de {len(lotes)} lote(s) falharam mesmo após tentar de novo — {falhas}. "
+                         "Pra completar: deixe marcados só esses Work Items, desmarque **Começar do zero** e gere de novo.")
+            try:
+                self._api_aplicar_geracao_ia(lotes_ia.juntar_respostas([i['resp'] for i in itens]), substituir, aviso)
+            except Exception as error:
+                self.state.set('api_ia_ultimo_erro', str(error))
+                self._flash_error(f"Não foi possível gerar os casos com IA: {error}")
+        self.clear_action()
+        st.rerun()
 
     def _api_render_reconhecimento(self, docs_txt_disponivel: bool = False):
         """
@@ -856,17 +1032,35 @@ class ApiTestsPageMixin:
             st.caption("Busque os Work Items do board pra escolher qual(is) viram a especificação.")
             return
         rotulos = {f"{i['id']} - {i['title']} ({i['type']}, {i['state']})": i for i in board_items}
-        escolhidos = st.multiselect("Work Item(s) que descrevem a API a testar *", options=list(rotulos.keys()),
+        # Filtro por Coluna do Board / Tag (mesmo das outras telas), liberado
+        # também pro projeto inteiro: aqui o que importa é achar as US de uma
+        # funcionalidade (ex.: tag "Pesquisa Psicossocial"), não um board só.
+        filtrados = {i['id'] for i in self._filtrar_por_coluna_e_tag(board_items, True, "apiw_wi")}
+        ja_escolhidos = set(st.session_state.get('apiw_wi_select') or [])
+        # Itens já escolhidos continuam na lista mesmo fora do filtro — trocar
+        # o filtro não pode desmarcar o que a pessoa já tinha escolhido.
+        opcoes = [r for r, i in rotulos.items() if i['id'] in filtrados or r in ja_escolhidos]
+        rotulos_filtrados = [r for r, i in rotulos.items() if i['id'] in filtrados]
+        if len(rotulos_filtrados) > 1 and any(r not in ja_escolhidos for r in rotulos_filtrados):
+            def _marcar_filtrados():
+                atuais = st.session_state.get('apiw_wi_select') or []
+                st.session_state['apiw_wi_select'] = atuais + [r for r in rotulos_filtrados if r not in atuais]
+            rotulo_btn = (f"☑️ Marcar os {len(rotulos_filtrados)} Work Item(s) do filtro" if len(rotulos_filtrados) < len(rotulos)
+                          else f"☑️ Marcar todos os {len(rotulos_filtrados)} Work Items")
+            st.button(rotulo_btn, key="btn_api_wi_marcar_filtrados",
+                      on_click=_marcar_filtrados, disabled=self.state.get('is_processing'))
+        escolhidos = st.multiselect("Work Item(s) que descrevem a API a testar *", options=opcoes,
                                     key="apiw_wi_select", disabled=self.state.get('is_processing'))
         selecionados = [rotulos[r] for r in escolhidos]
         ids = [wi['id'] for wi in selecionados]
         if ids != [wi['id'] for wi in (self.state.get('api_work_items') or [])]:
-            texto = ""
+            texto, partes = "", []
             if selecionados:
                 try:
                     with st.spinner(f"Lendo {len(selecionados)} Work Item(s)..."):
                         detalhes = ado_client.get_work_items_full_details(ids)
-                    partes = []
+                    # na ordem da seleção — é ela que define os lotes da geração
+                    detalhes = sorted(detalhes, key=lambda wi: ids.index(wi['id']) if wi['id'] in ids else len(ids))
                     for wi in detalhes:
                         parte = f"===== WORK ITEM {wi['id']} - {wi['title']} ({wi['type']}) =====\n"
                         if wi.get('description'):
@@ -874,12 +1068,13 @@ class ApiTestsPageMixin:
                         if wi.get('acceptance_criteria'):
                             parte += f"\nCritérios de Aceite:\n{wi['acceptance_criteria']}\n"
                         parte += f"===== FIM DO WORK ITEM {wi['id']} ====="
-                        partes.append(parte)
-                    texto = "\n\n".join(partes)
+                        partes.append({"id": wi['id'], "titulo": wi['title'], "texto": parte})
+                    texto = "\n\n".join(p['texto'] for p in partes)
                 except Exception as error:
                     self._flash_error(f"Não foi possível ler os Work Items: {error}")
             self.state.set('api_work_items', [{"id": wi['id'], "title": wi['title'], "type": wi.get('type', '')} for wi in selecionados])
             self.state.set('api_ia_especificacao_wi', texto)
+            self.state.set('api_ia_especificacao_wi_partes', partes)
             if selecionados and not self.state.get('api_projeto'):
                 self.state.set('api_projeto', selecionados[0]['title'][:80])
                 st.session_state.pop('apiw_projeto', None)
@@ -887,8 +1082,9 @@ class ApiTestsPageMixin:
             with st.expander(f"👁️ Ver a especificação lida ({len(self.state.get('api_ia_especificacao_wi'))} caracteres)"):
                 st.text(self.state.get('api_ia_especificacao_wi')[:6000])
 
-    def _api_aplicar_geracao_ia(self, resp: dict, substituir: bool):
-        """Converte a resposta da IA em casos do módulo e mescla variáveis."""
+    def _api_aplicar_geracao_ia(self, resp: dict, substituir: bool, aviso: str = ""):
+        """Converte a resposta da IA em casos do módulo e mescla variáveis.
+        `aviso` (ex.: lotes que falharam) vai no fim da mensagem, que passa a ser de alerta."""
         novos, invalidos = [], 0
         for c in resp.get('casos') or []:
             metodo = str(c.get('metodo', 'GET')).upper()
@@ -956,9 +1152,12 @@ class ApiTestsPageMixin:
             st.session_state.pop('apiw_projeto', None)
         fora = self._api_aplicar_catalogo(novos)
         self.state.set('api_casos', novos if substituir else (self.state.get('api_casos') or []) + novos)
+        feito = self._api_completar_automaticamente()
         self.state.set('api_resultados', None)
         self._api_invalidar_evidencias()
         msg = f"{len(novos)} caso(s) gerado(s) pela IA. Revise as asserções e preencha as variáveis secretas."
+        if feito:
+            msg += " 🤖 " + " ".join(feito)
         if invalidos:
             msg += f" {invalidos} caso(s) vieram inválidos e foram descartados."
         if fora is None:
@@ -966,17 +1165,44 @@ class ApiTestsPageMixin:
         elif fora:
             msg += (f" ⛔ {len(fora)} caso(s) usam rota que NÃO existe no catálogo e foram desabilitados: "
                     + "; ".join(fora[:6]) + ("…" if len(fora) > 6 else "") + ". Corrija a URL ou importe a rota no catálogo.")
+        if resp.get('nota_app'):
+            msg += f" {resp['nota_app']}"
         if resp.get('observacoes'):
             msg += f" Observações da IA: {resp['observacoes']}"
-        self._flash_success(msg)
+        if aviso:
+            self._flash_warning(msg + aviso)
+        else:
+            self._flash_success(msg)
         for k in list(st.session_state.keys()):
-            if isinstance(k, str) and k.startswith('apiw_') and k not in ('apiw_projeto', 'apiw_base_url', 'apiw_ambiente', 'apiw_timeout', 'apiw_origem', 'apiw_ia_spec', 'apiw_ia_obs', 'apiw_ia_replace', 'apiw_docs'):
+            # apiw_wi_*: escolha de Work Items, filtros e tamanho do lote — apagar
+            # o multiselect esvaziava a seleção (e o pré-vínculo com o Azure DevOps)
+            if isinstance(k, str) and k.startswith('apiw_') and not k.startswith('apiw_wi_') and k not in ('apiw_projeto', 'apiw_base_url', 'apiw_ambiente', 'apiw_timeout', 'apiw_origem', 'apiw_ia_spec', 'apiw_ia_obs', 'apiw_ia_replace', 'apiw_docs'):
                 del st.session_state[k]
 
     def _api_render_variaveis(self):
         st.markdown("##### 🔤 Variáveis (`{{nome}}` em URL, headers e body)")
+        pendente = self._api_completar_automaticamente(aplicar=False)
+        if pendente:
+            st.warning("**🤖 O app consegue preencher parte disto sozinho:**\n\n" + "\n".join(f"- {p}" for p in pendente))
+            if st.button("🤖 Completar automaticamente", key="azure_blue_btn_api_autofill", width="stretch",
+                         disabled=self.state.get('is_processing')):
+                feito = self._api_completar_automaticamente()
+                self._api_invalidar_evidencias()
+                st.session_state.pop('apiw_vars_editor', None)
+                self._flash_success("🤖 " + " ".join(feito))
+                st.rerun()
         variaveis = self.state.get('api_variaveis') or []
         origem = st.session_state.get('apiw_origem') or ''
+        # Variável digitada num caso (ex.: {{gestor_email}} num login novo) entra
+        # na tabela sozinha — nas origens IA/Postman/definição a tabela não aceita
+        # linha nova, então sem isso não haveria onde criá-la.
+        usos, extracoes = self._api_uso_por_variavel()
+        faltantes = [n for n in usos if n != 'base_url' and n not in extracoes and n not in {v['nome'] for v in variaveis}]
+        if faltantes:
+            variaveis = variaveis + [{"nome": n, "valor": "", "secreto": any(t in n.lower() for t in ('password', 'senha', 'token', 'secret'))}
+                                     for n in faltantes]
+            self.state.set('api_variaveis', variaveis)
+            st.info("Variável(is) nova(s) usada(s) nos casos, incluída(s) na tabela: " + ", ".join(f"`{n}`" for n in faltantes) + ".")
         if not variaveis:
             # Quem chega aqui antes de ter casos não sabe se precisa digitar
             # algo. Diz de onde as variáveis vão vir, conforme a origem escolhida.
@@ -1017,6 +1243,8 @@ class ApiTestsPageMixin:
             return
         df = pd.DataFrame(variaveis or [{"nome": "", "valor": "", "secreto": False}], columns=["nome", "valor", "secreto"])
         df["valor"] = df.apply(lambda r: "" if r["secreto"] else r["valor"], axis=1)
+        df["uso"] = df["nome"].map(lambda n: ("extraída do " + self._api_rotulo_casos(extracoes[n])) if n in extracoes
+                                   else self._api_rotulo_casos(usos.get(n, [])) or "nenhum caso habilitado")
         # Tudo dentro de um formulário: a tabela e os campos de senha só são
         # enviados ao clicar em "Salvar variáveis". Sem isso, a tabela grava
         # ao perder o foco e dispara um rerun no meio da digitação da senha
@@ -1026,11 +1254,12 @@ class ApiTestsPageMixin:
         with form:
             edit = st.data_editor(
                 df, num_rows="dynamic" if manual else "fixed", width="stretch", hide_index=True, key="apiw_vars_editor",
-                disabled=[] if manual else ["nome", "secreto"],
+                disabled=["uso"] if manual else ["nome", "secreto", "uso"],
                 column_config={
                     "nome": st.column_config.TextColumn("Nome", required=True),
                     "valor": st.column_config.TextColumn("Valor (vazio se secreto)"),
                     "secreto": st.column_config.CheckboxColumn("Secreto", default=False),
+                    "uso": st.column_config.TextColumn("Usada em", help="Número dos casos habilitados (na lista de Casos de teste) que usam a variável."),
                 },
             )
             novas = []
@@ -1063,6 +1292,11 @@ class ApiTestsPageMixin:
                     with cols[i % len(cols)]:
                         segredos[nome] = st.text_input(rotulo, value=segredos.get(nome, ""), type="password",
                                                        key=f"apiw_secret_{nome}", help=ajuda)
+                        # fora do rótulo de propósito: rótulo que muda recria o campo e perde o que foi digitado
+                        if nome in extracoes:
+                            st.caption("Vem da resposta do " + self._api_rotulo_casos(extracoes[nome]))
+                        elif nome in usos:
+                            st.caption("Usada no(s) " + self._api_rotulo_casos(usos[nome]))
             salvar = st.form_submit_button("💾 Salvar variáveis", type="primary", width="stretch")
         if salvar:
             self.state.set('api_variaveis', novas)
@@ -1072,10 +1306,49 @@ class ApiTestsPageMixin:
             self._flash_success("Variáveis salvas.")
             st.rerun()
         else:
-            faltam = [v['nome'] for v in variaveis if not v['secreto'] and not (v.get('valor') or '').strip()]
-            faltam += [n for n in [v['nome'] for v in variaveis if v['secreto']] if not (self.state.get('api_segredos') or {}).get(n)]
+            # mesma regra do bloqueio da Execução: só cobra o que um caso habilitado
+            # usa e nenhum caso extrai (auth_token/gestor_token vêm do login)
+            cobradas = [v for v in variaveis if v['nome'] in usos and v['nome'] not in extracoes]
+            faltam = [v['nome'] for v in cobradas if not v['secreto'] and not (v.get('valor') or '').strip()]
+            faltam += [v['nome'] for v in cobradas if v['secreto'] and not (self.state.get('api_segredos') or {}).get(v['nome'])]
             if faltam:
                 st.caption("⚠️ Preencha e clique em **Salvar variáveis** antes de seguir — valores ainda não salvos: " + ", ".join(faltam))
+
+    def _api_completar_automaticamente(self, aplicar: bool = True):
+        """
+        Logins de outros perfis + dados de teste negativo (infrastructure/api_autofill).
+        Devolve o relatório do que foi (ou seria, com aplicar=False) feito; [] = nada a fazer.
+        """
+        casos = self.state.get('api_casos') or []
+        variaveis = self.state.get('api_variaveis') or []
+        novos_casos, novas_vars, relatorio = autofill.completar_bateria(casos, variaveis, self.state.get('api_segredos') or {})
+        if novos_casos == casos and novas_vars == variaveis:
+            return []   # só avisos do que não deu pra fazer não contam como pendência
+        if aplicar:
+            self.state.set('api_casos', novos_casos)
+            self.state.set('api_variaveis', novas_vars)
+        return relatorio
+
+    def _api_uso_por_variavel(self):
+        """({nome: [nº dos casos habilitados que usam]}, {nome: [nº dos casos que extraem]}) — numeração da lista."""
+        usos, extracoes = {}, {}
+        for n, c in enumerate(self.state.get('api_casos') or [], 1):
+            if not c.get('habilitado', True):
+                continue
+            texto = " ".join([c.get('url') or '', c.get('body') or ''] + list((c.get('headers') or {}).values()))
+            for nome in dict.fromkeys(ApiTestRunner._RE_VAR.findall(texto)):
+                usos.setdefault(nome, []).append(n)
+            for e in c.get('extrair') or []:
+                if e.get('nome'):
+                    extracoes.setdefault(e['nome'], []).append(n)
+        return usos, extracoes
+
+    @staticmethod
+    def _api_rotulo_casos(numeros: list, limite: int = 12) -> str:
+        if not numeros:
+            return ""
+        txt = ", ".join(str(n) for n in numeros[:limite]) + ("…" if len(numeros) > limite else "")
+        return ("caso " if len(numeros) == 1 else "casos ") + txt
 
     def _api_uso_de_variaveis(self):
         """(variáveis usadas por casos habilitados, variáveis produzidas por extração)."""
@@ -1403,30 +1676,21 @@ class ApiTestsPageMixin:
                 erros.append(f"O caso '{c.get('nome')}' está sem URL — preencha ou desabilite o caso.")
             if not c.get('assercoes'):
                 erros.append(f"O caso '{c.get('nome')}' não tem nenhuma asserção — adicione ao menos o status esperado, ou desabilite o caso.")
-        # Só cobra segredo que algum caso habilitado realmente usa e que
-        # nenhum caso produz por extração (ex.: auth_token vem do login).
-        usados, extraidos = self._api_uso_de_variaveis()
-        secretas_vazias = [
-            v['nome'] for v in (self.state.get('api_variaveis') or [])
-            if v['secreto'] and v['nome'] in usados and v['nome'] not in extraidos
-            and not (self.state.get('api_segredos') or {}).get(v['nome'])
-        ]
-        if secretas_vazias:
-            erros.append("Senhas/segredos sem valor: " + ", ".join(secretas_vazias) + " — preencha os campos 🔒 na seção Variáveis e clique em Salvar variáveis.")
-        # Variáveis normais usadas por casos habilitados e sem valor: o request
-        # sairia com "" no lugar (ex.: "email": "") e todo caso falharia.
-        normais_vazias = [
-            v['nome'] for v in (self.state.get('api_variaveis') or [])
-            if not v['secreto'] and v['nome'] in usados and v['nome'] not in extraidos and not (v.get('valor') or '').strip()
-        ]
-        if normais_vazias:
-            erros.append("Variáveis sem valor: " + ", ".join(normais_vazias) + " — preencha a coluna Valor na seção 🔤 Variáveis e clique em Salvar variáveis.")
-        # Variável usada por algum caso mas que não existe na tabela nem é extraída
-        conhecidas = {v['nome'] for v in (self.state.get('api_variaveis') or [])} | extraidos | {'base_url'}
-        desconhecidas = sorted(usados - conhecidas)
-        if desconhecidas:
-            erros.append("Os casos usam variáveis que não existem na tabela: " + ", ".join(desconhecidas) + " — corrija o nome no caso ou crie a variável.")
+        # Variável sem valor NÃO trava mais a execução: só os casos que a usam
+        # saem como Bloqueado (os dois executores pulam o caso, com o motivo).
+        # O aviso do que vai ficar de fora é _api_avisos_variaveis.
         return erros
+
+    def _api_avisos_variaveis(self) -> list:
+        """Casos que vão sair como Bloqueado por variável sem valor — aviso, não trava."""
+        usos, extracoes = self._api_uso_por_variavel()
+        valores = self._api_variaveis_resolvidas()
+        avisos = []
+        for nome, casos_n in usos.items():
+            if nome in extracoes or (valores.get(nome) or '').strip():
+                continue
+            avisos.append(f"`{nome}` sem valor → **Bloqueado** (sem executar): {self._api_rotulo_casos(casos_n)}, e o que depender deles")
+        return avisos
 
     def _api_render_execucao(self):
         casos = self.state.get('api_casos') or []
@@ -1437,6 +1701,9 @@ class ApiTestsPageMixin:
         erros = self._api_validar_definicao()
         for e in erros:
             st.warning(f"⚠️ {e}")
+        avisos = self._api_avisos_variaveis()
+        if avisos:
+            st.info("**Vão sair como Bloqueado (sem executar):**\n\n" + "\n".join(f"- {a}" for a in avisos))
 
         modo = self._api_modo_execucao()
         if modo == "navegador":
@@ -1468,6 +1735,7 @@ class ApiTestsPageMixin:
             + f" · asserções **{resumo['assercoes_ok']}/{resumo['assercoes']}** · tempo médio **{resumo['tempo_medio_ms']} ms**"
         )
         self._api_render_diagnostico_execucao(resultados)
+        self._api_render_descobertas(resultados)
 
         segredos = self._api_lista_segredos()
         for idx, r in enumerate(resultados, start=1):
@@ -1485,7 +1753,44 @@ class ApiTestsPageMixin:
                         st.code(ApiEvidenceBuilder.texto_request(r, segredos), language="http")
                     with st.expander("📥 Response recebido"):
                         st.code(ApiEvidenceBuilder.texto_response(r, segredos), language="http")
-        self._api_botao_proxima_etapa(_ETAPAS[2], "➡️ Próxima etapa: 3. Evidências (gerar e baixar relatórios)", "btn_api_next_2")
+        self._api_botao_proxima_etapa(_ETAPAS[2], "➡️ Próxima etapa: 3. Análise e Bugs (o que é bug, com quem falar, abrir no Azure)", "btn_api_next_2")
+
+    def _api_variaveis_pendentes(self) -> list:
+        """Variáveis usadas por casos habilitados, sem valor e que nenhum caso extrai."""
+        usos, extracoes = self._api_uso_por_variavel()
+        valores = self._api_variaveis_resolvidas()
+        return [n for n in usos if n not in extracoes and not (valores.get(n) or '').strip()]
+
+    def _api_render_descobertas(self, resultados: list):
+        """
+        Depois de uma execução: procura, nas respostas reais, o valor das
+        variáveis que ficaram sem valor (IDs) — e aplica com um clique.
+        """
+        pendentes = self._api_variaveis_pendentes()
+        if not pendentes:
+            return
+        achados, nao_achados = autofill.descobrir_valores(self.state.get('api_casos') or [], resultados, pendentes)
+        linhas = [f"- `{a['var']}` = `{a['valor']}` — do caso {a['caso_n']} ({a['caso_nome']}), campo `{a['caminho']}`"
+                  + (" → vira extração automática" if a['modo'] == 'extrair' else " → valor vai pra tabela (o caso roda depois de quem usa)")
+                  for a in achados]
+        faltam = [f"- `{v}` — {motivo}" for v, motivo in nao_achados]
+        with st.container(border=True):
+            st.markdown("**🔎 Variáveis sem valor × respostas desta execução**")
+            if linhas:
+                st.markdown("Encontrado nas respostas reais:\n\n" + "\n".join(linhas))
+                if st.button("🤖 Aplicar e deixar pronto pra executar de novo", key="azure_blue_btn_api_descobertas", width="stretch",
+                             disabled=self.state.get('is_processing') or bool(self.state.get('api_browser_job'))):
+                    casos, variaveis = autofill.aplicar_descobertas(self.state.get('api_casos') or [],
+                                                                    self.state.get('api_variaveis') or [], achados)
+                    self.state.set('api_casos', casos)
+                    self.state.set('api_variaveis', variaveis)
+                    st.session_state.pop('apiw_vars_editor', None)
+                    for a in achados:   # o editor do caso guarda a tabela de extração antiga
+                        st.session_state.pop(f"apiw_ext_{a['caso_id']}", None)
+                    self._flash_success(f"{len(achados)} variável(is) resolvida(s) a partir das respostas reais. Clique em ▶️ Executar testes de novo.")
+                    st.rerun()
+            if faltam:
+                st.markdown("Não dá pra preencher sozinho — só você sabe, ou a API não devolveu:\n\n" + "\n".join(faltam))
 
     def _api_iniciar_execucao_navegador(self):
         casos = [c for c in (self.state.get('api_casos') or []) if c.get('habilitado', True)]
@@ -1523,8 +1828,19 @@ class ApiTestsPageMixin:
 
     def _api_concluir_execucao(self, resultados: list):
         self.state.set('api_resultados', resultados)
+        # foto da bateria executada (a análise compara o resultado com o que foi pedido NESTA execução)
+        self.state.set('api_casos_executados', json.loads(json.dumps(self.state.get('api_casos') or [])))
+        self.state.set('api_execucao_id', str(uuid.uuid4()))
+        self.state.set('api_executado_em', datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M"))
+        self.state.set('api_bateria_alterada', False)
+        self.state.set('api_correcoes_confirmar', None)
         self._api_invalidar_evidencias()
         resumo = ApiEvidenceBuilder.resumo(resultados)
+        # formato real (campos validados, caminhos da resposta, mensagens de erro) vira catálogo do host
+        try:
+            self._api_contratos_aprender(self.state.get('api_casos_executados'), resultados)
+        except Exception:
+            pass
         # rotas que responderam como API entram no catálogo (aprendizado por execução)
         try:
             base = self.state.get('api_base_url') or ''
@@ -1545,25 +1861,24 @@ class ApiTestsPageMixin:
         Separa o que é comportamento REAL da API do que é erro de definição
         do teste — pra ninguém ler "Reprovado" e achar que a API quebrou.
         """
-        rota_inexistente = [r for r in resultados if r.erro and r.erro.startswith("Rota inexistente")]
-        bloqueados = [r for r in resultados if r.bloqueado]
-        sem_resposta = [r for r in resultados if r.erro and not r.erro.startswith("Rota inexistente")]
-        reprovados = [r for r in resultados if not r.passou and not r.pulado and not r.erro]
-        if not (rota_inexistente or bloqueados or sem_resposta or reprovados):
+        an = self._api_analise()
+        if not an or not an.get("itens"):
             return
+        cont = an["contagem"]
         linhas = []
-        if rota_inexistente:
-            linhas.append(f"⛔ **{len(rota_inexistente)} caso(s) com rota que NÃO existe na API** (erro do teste, não da API): "
-                          + "; ".join(r.nome for r in rota_inexistente[:6]) + ". Corrija a URL ou importe o catálogo de rotas na etapa 1.")
-        if bloqueados:
-            linhas.append(f"⏸️ **{len(bloqueados)} bloqueado(s)** porque dependem de variável que um caso anterior não conseguiu extrair: "
-                          + "; ".join(r.nome for r in bloqueados[:6]) + ".")
-        if sem_resposta:
-            linhas.append(f"🔌 **{len(sem_resposta)} sem resposta** (rede/timeout/CORS): " + "; ".join(r.nome for r in sem_resposta[:6]) + ".")
-        if reprovados:
-            linhas.append(f"❌ **{len(reprovados)} reprovado(s) de verdade** — a rota existe e a API respondeu diferente do esperado: "
-                          + "; ".join(r.nome for r in reprovados[:6]) + ". Abra cada um: o detalhe de cada asserção diz o que veio.")
+        if an["achados"]:
+            linhas.append(f"🐞 **{len(an['achados'])} possível(is) bug(s) da API**: " + "; ".join(
+                f"{a['titulo']} ({a['gravidade'].lower()})" for a in an["achados"][:4]) + ".")
+        rotulos = [(k, n) for k, n in cont.items() if n and k != "bug_api"]
+        if rotulos:
+            linhas.append("Os demais **não são bug** (ou ainda dependem de confirmação): " + " · ".join(
+                f"{tri.CATEGORIAS[k][0]} {n} {tri.CATEGORIAS[k][1].lower()}" for k, n in rotulos) + ".")
+        linhas.append("A etapa **🔍 3. Análise e Bugs** diz, pra cada um, se é bug mesmo, o que fazer, com quem falar e o que dizer — "
+                      "e abre o Bug no Azure DevOps com a evidência.")
         st.warning("**Leitura do resultado**\n\n" + "\n\n".join(linhas))
+        if st.button("🔍 Ir para a análise e abrir bugs", key="btn_api_goto_analise", type="primary", width="stretch"):
+            self.state.set('api_etapa', _ETAPAS[2])
+            st.rerun()
 
     def _api_executar(self):
         casos = [ApiTestCase.from_dict(c) for c in (self.state.get('api_casos') or [])]
@@ -1578,7 +1893,7 @@ class ApiTestsPageMixin:
         barra.empty()
         self._api_concluir_execucao(resultados)
 
-    # ---------------------------------------------------------- 3. Evidências
+    # ---------------------------------------------------------- 4. Evidências
     def _api_render_evidencias(self):
         resultados = self.state.get('api_resultados')
         if not resultados:
@@ -1602,11 +1917,17 @@ class ApiTestsPageMixin:
             value=self.state.get('api_observacoes') or '', height=120, key="apiw_obs"))
 
         if st.button("📝 Gerar relatórios (.md + .pdf + .zip)", key="azure_blue_btn_api_gen", width="stretch"):
-            self._api_gerar_relatorios()
+            with st.spinner("Gerando os relatórios..."):
+                self._api_gerar_relatorios()
             st.rerun()
+        self._api_mostrar_erro_relatorio()
 
         if self.state.get('api_md'):
-            st.success("Relatórios gerados. Senhas, tokens e headers sensíveis saem mascarados.")
+            st.success("Relatórios gerados — com a análise, as correções aplicadas e os Bugs (rascunhos e enviados). "
+                       "Senhas, tokens e headers sensíveis saem mascarados.")
+            if self._api_relatorio_desatualizado():
+                st.warning("Os rascunhos de Bug, as correções ou os responsáveis mudaram depois destes relatórios — "
+                           "clique em **Gerar relatórios** de novo pra incluir.")
             slug = ApiEvidenceBuilder.slug(self.state.get('api_projeto') or 'testes-api', 40)
             d1, d2, d3, d4 = st.columns(4)
             with d1:
@@ -1683,6 +2004,7 @@ class ApiTestsPageMixin:
             self.state.get('api_projeto') or 'API', self.state.get('api_ambiente'), self.state.get('api_base_url'),
             casos, resultados, variaveis=self.state.get('api_variaveis') or [], work_items=self.state.get('api_work_items') or [],
             incluir_resultado=incluir_resultado, mc_inicio=len(matriz_atual) + 1,
+            executado_em=self.state.get('api_executado_em') or '',
         )
         if not out["test_cases"]:
             self._flash_error("Nenhum caso habilitado pra levar ao assistente.")
@@ -1789,21 +2111,38 @@ class ApiTestsPageMixin:
             contexto=self.state.get('api_contexto') or '', documentos=self.state.get('api_docs_nomes') or [],
             observacoes=self.state.get('api_observacoes') or '', imagens_por_caso=imagens,
         )
+        try:
+            analise = self._api_analise()
+        except Exception:
+            analise = {}
+        # tudo o que foi decidido até aqui entra no relatório — inclusive os rascunhos de Bug ainda NÃO enviados,
+        # pra dar pra revisar/compartilhar o PDF antes de qualquer integração com o Azure DevOps
+        bugs = self.state.get('api_bug_rascunhos') or []
+        casos_exec = self.state.get('api_casos_executados') or self.state.get('api_casos') or []
+        correcoes = self.state.get('api_correcoes_aplicadas') or []
         md = E.gerar_markdown(projeto, self.state.get('api_ambiente'), self.state.get('api_base_url'), resultados,
-                              autor=autor, segredos=segredos, **comuns)
+                              autor=autor, segredos=segredos,
+                              analise_md=tri.markdown_da_analise(analise, bugs, casos=casos_exec, correcoes=correcoes, segredos=segredos),
+                              **comuns)
         textos = {r.case_id: {"request": E.texto_request(r, segredos), "response": E.texto_response(r, segredos)} for r in resultados}
         try:
             pdf = PdfReportGenerator.generate_api_test_report(
                 projeto, self.state.get('api_ambiente'), self.state.get('api_base_url'), resultados,
-                E.resumo(resultados), textos, author_name=autor, **comuns)
+                E.resumo(resultados), textos, author_name=autor,
+                analise=tri.linhas_relatorio(analise, bugs, casos=casos_exec, correcoes=correcoes, segredos=segredos), **comuns)
         except Exception as error:
-            self._flash_error(f"Falha ao gerar o PDF: {error}")
+            # mostrado logo abaixo do botão que a pessoa clicou (etapa 3 ou 4) — o aviso no topo da página
+            # passava despercebido e parecia que o botão "não fazia nada"
+            self.state.set('api_relatorio_erro', str(error))
             return
         z = E.gerar_zip(projeto, resultados, md, pdf, segredos=segredos, imagens_por_caso=imagens,
                         definicao_json=self._api_exportar_definicao())
         self.state.set('api_md', md)
         self.state.set('api_pdf', pdf)
         self.state.set('api_zip', z)
+        self.state.set('api_relatorio_fp', self._api_relatorio_fp())
+        self.state.set('api_relatorio_gerado_em', datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M"))
+        self.state.set('api_relatorio_erro', None)
         try:
             log_action(self.config, autor, "Gerar evidências de Testes de API", "Testes de API", projeto)
         except Exception:

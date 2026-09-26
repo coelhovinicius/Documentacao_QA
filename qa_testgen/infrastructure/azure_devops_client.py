@@ -1247,6 +1247,35 @@ class AzureDevOpsClient:
         text = html.unescape(text)
         return "\n".join(line.strip() for line in text.split("\n")).strip()
 
+    def get_work_items_status(self, ids: list) -> list:
+        """
+        Estado atual de uma lista de Work Items — Título, Tipo, State, Coluna
+        do Board e Responsável (AssignedTo, nome de exibição). Usado pra
+        "verificar no Azure" os Bugs criados pelo app e pra saber quem é o
+        responsável pelos Work Items testados (com quem falar).
+        """
+        if not ids:
+            return []
+        results = []
+        for i in range(0, len(ids), 200):
+            ids_str = ",".join(str(x) for x in ids[i:i + 200])
+            fields = "System.Id,System.Title,System.WorkItemType,System.State,System.BoardColumn,System.AssignedTo"
+            url = f"{self._base_url()}/wit/workitems?ids={ids_str}&fields={fields}&errorPolicy=omit&api-version={API_VERSION}"
+            response = self.session.get(url, headers=self.headers_json, timeout=60)
+            data = self._handle_response(response, "Consultar o estado dos Work Items")
+            for wi in data.get("value", []) or []:
+                if not wi:
+                    continue   # errorPolicy=omit devolve null pra item excluído/sem acesso
+                f = wi.get("fields", {})
+                resp = f.get("System.AssignedTo") or {}
+                results.append({
+                    "id": wi.get("id"), "title": f.get("System.Title", ""), "type": f.get("System.WorkItemType", ""),
+                    "state": f.get("System.State", ""), "board_column": f.get("System.BoardColumn", "") or "",
+                    "assigned_to": resp.get("displayName", "") if isinstance(resp, dict) else str(resp or ""),
+                    "url": self.work_item_url(wi.get("id")),
+                })
+        return results
+
     def get_work_items_full_details(self, ids: list) -> list:
         """
         Busca Descrição e Critérios de Aceite completos de uma lista

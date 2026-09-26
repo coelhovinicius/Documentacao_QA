@@ -365,7 +365,7 @@ def confirm_new_api_run_modal(reset_fn):
     st.markdown(
         "Isso vai limpar os casos, as variáveis, os resultados e os relatórios gerados na tela de "
         "Testes de API. Essas informações serão **perdidas permanentemente** (baixe a definição "
-        ".json na etapa 3 se quiser repetir a bateria depois). Tem certeza?"
+        ".json na etapa 4 se quiser repetir a bateria depois). Tem certeza?"
     )
     c1, c2 = st.columns(2)
     with c1:
@@ -453,40 +453,43 @@ def aviso_pat_compartilhado_modal(marcar_nao_mostrar_fn, tem_testes_api: bool = 
     tem_testes_api: se a pessoa tem a permissão da área — muda só a
     última frase (onde clicar vs. a quem pedir acesso).
     """
-    st.markdown("#### 🔌 Nova área: Testes de API")
+    st.markdown("#### 🐞 Testes de API: o app diz o que é bug — e abre no Azure DevOps")
     st.markdown(
-        "Agora dá pra **executar testes de API por dentro do app** e sair com a evidência "
-        "pronta — sem Newman, sem montar pasta de print na mão.\n\n"
-        "**Como funciona, em 3 etapas:**\n"
-        "1. **Definição** — informa a URL base da API, escolhe o **Work Item** do Azure DevOps "
-        "(ou cola a descrição), clica em *🔎 Reconhecer a API* (o app descobre as rotas reais e o "
-        "formato das respostas) e em *🤖 Gerar casos com IA*: a bateria aparece pronta pra revisar. "
-        "Também dá pra importar uma *collection* do Postman ou montar os casos na tela. As senhas "
-        "vão num campo protegido e nunca aparecem nas evidências.\n"
-        "2. **Execução** — clica em *Executar testes*: as chamadas saem **do seu navegador** (mesmo "
-        "IP do Postman), na ordem, e o app mostra o que passou e o que falhou em cada caso.\n"
-        "3. **Evidências** — clica em *Gerar relatórios* e baixa o **PDF** (no padrão dos outros "
-        "relatórios do app), o **.md** e um **.zip** com uma pasta por caso (o que foi enviado, "
-        "o que voltou e o resultado). Dá pra anexar seus prints e guardar tudo em "
-        "*Documentos Armazenados*.\n\n"
-        "💡 Cada tela tem, no topo, um expansível **\"ℹ️ O que é e como usar esta área\"** — "
-        "inclusive com o passo a passo de como exportar a collection no Postman."
+        "Depois de executar uma bateria, não precisa mais abrir caso por caso pra entender o \"Reprovado\". "
+        "A área agora tem **4 etapas** e a nova **3. Análise e Bugs**:\n\n"
+        "- **O que é bug da API e o que não é** — separa possível bug (erro 500, resposta que expõe detalhe interno "
+        "do sistema, acesso sem senha aceito, dado inválido aceito) de problema do próprio teste, de usuário de teste "
+        "sem o perfil certo e de regra a **confirmar com o PO**.\n"
+        "- **O que fazer e com quem falar** — cada suspeita vem com *é bug mesmo?*, *como confirmar*, *o que fazer*, "
+        "*com quem falar* (com o nome de quem está com o Work Item, se você pedir) e o **texto pronto** pra mandar.\n"
+        "- **Bug direto no Azure DevOps** — o rascunho já vem preenchido (título, passos, esperado × obtido, "
+        "severidade); você vê 👁️, altera ✏️ ou exclui 🗑️, confirma e recebe o **link** de cada Bug. O request e a "
+        "response de cada caso vão anexados, com as senhas mascaradas.\n"
+        "- **A bateria se corrige pelas respostas reais** — nome de campo, caminho da resposta, token esquecido: você "
+        "revisa e aplica. O esperado do card nunca é alterado.\n"
+        "- **O app aprende o formato da API** a cada execução e usa isso na próxima geração com IA.\n\n"
+        "💡 Cada tela tem, no topo, o expansível **\"ℹ️ O que é e como usar esta área\"**."
     )
     if tem_testes_api:
-        st.markdown("**Onde:** botão **🔌 Testes de API** na barra lateral (menu à esquerda).")
+        st.markdown("**Onde:** botão **🔌 Testes de API** na barra lateral → etapa **🔍 3. Análise e Bugs**. "
+                    "Criar o Bug no Azure usa a permissão *Criar Bug*.")
     else:
         st.markdown(
             "**Onde:** botão **🔌 Testes de API** na barra lateral — se ele não aparecer pra você, "
-            "peça ao administrador a permissão *Testes de API*."
+            "peça ao administrador a permissão *Testes de API* (e *Criar Bug*, pra abrir os Bugs no Azure)."
         )
-    st.markdown("#### 🆕 Também novo")
+    st.markdown("#### 🆕 Também novo nos Testes de API")
     st.markdown(
-        "- **Testes de API → Azure DevOps**: no fim da etapa Evidências, *Levar para o assistente* transforma a "
-        "bateria em Matriz, Casos e Plano; você segue pelo Passo 7 como sempre e, depois, registra a execução "
-        "como **Test Run** (Passed/Failed por caso, com o PDF anexado).\n"
-        "- **Criar Work Item → Fila / planilha**: crie vários Work Items de uma vez — pelo botão *Adicionar à fila* "
-        "do formulário ou subindo uma planilha (o modelo é baixado na própria tela, já com os tipos, Area Paths e "
-        "pessoas do projeto). O app valida linha a linha antes de enviar."
+        "- **Geração com IA a partir de várias User Stories**: filtre os Work Items por **Tag** ou **Coluna do Board**, "
+        "marque todos de uma vez; o app gera em lotes e junta tudo sem repetir o login.\n"
+        "- **Menos coisa pra digitar**: o app cria sozinho o login de outros perfis (ex.: gestor), preenche os dados "
+        "de teste negativo e descobre ids nas respostas reais; variável sem valor bloqueia só os casos que a usam.\n"
+        "- **PDF com tudo antes de subir pro Azure**: na própria etapa 3, *Gerar relatório completo* baixa o PDF/.md com "
+        "a análise, as correções aplicadas e cada rascunho de Bug (e avisa se você mudar algo depois de gerar).\n"
+        "- **📙 Manual para desenvolvedores**: na tela de Testes de API, um botão baixa o manual técnico da área — pra "
+        "compartilhar com quem desenvolve a API e quer conferir o que a ferramenta testou.\n"
+        "- **Menu lateral se recolhe sozinho**: escolheu uma área no menu (Testes de API, Criar Bug, Sobre…), ele se "
+        "fecha e a tela volta ao topo. Pra abrir de novo, a setinha no canto superior esquerdo."
     )
     st.divider()
     st.markdown("#### 🔑 PAT compartilhado do Azure DevOps")

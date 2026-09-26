@@ -153,7 +153,9 @@ class ApiEvidenceBuilder:
     @classmethod
     def gerar_markdown(cls, projeto: str, ambiente: str, base_url: str, resultados: list,
                        contexto: str = "", documentos: list = None, observacoes: str = "",
-                       autor: str = "", segredos: list = None, imagens_por_caso: dict = None) -> str:
+                       autor: str = "", segredos: list = None, imagens_por_caso: dict = None,
+                       analise_md: list = None) -> str:
+        """analise_md: linhas da seção "Análise automática" (api_triage.markdown_da_analise), opcional."""
         res = cls.resumo(resultados)
         agora = datetime.now(TZ_BR).strftime("%d/%m/%Y %H:%M")
         md = [f"# Relatório de Testes de API — {projeto}", ""]
@@ -185,6 +187,9 @@ class ApiEvidenceBuilder:
             md.append(f"| {idx} | {r.nome} | `{r.metodo}` | {r.status_code if r.status_code is not None else '—'} | {r.tempo_ms} ms | {ok}/{len(r.assercoes)} | {icone} {r.resultado_label} |")
 
         sec = 4 if (contexto or documentos) else 3
+        if analise_md:
+            md += ["", f"## {sec}. " + analise_md[0].lstrip("# ").split(". ", 1)[-1]] + [cls.mascarar(l, segredos) for l in analise_md[1:]]
+            sec += 1
         md += ["", f"## {sec}. Detalhes e evidências", ""]
         for idx, r in enumerate(resultados, start=1):
             md.append(f"### {idx}. {r.nome} — {r.resultado_label}")

@@ -207,6 +207,20 @@ O app funciona em 7 etapas, uma de cada vez:
   Swagger ou uma collection do Postman) e a IA só pode usar essas
   rotas; caso com rota que não existe é desabilitado com aviso, e
   um painel diz exatamente o que falta pra testar com precisão.
+  Depois de executar, a etapa "Análise e Bugs" separa o que é
+  possível bug da API (erro 500, resposta que expõe detalhe
+  interno do sistema, acesso sem senha aceito, dado inválido
+  aceito) do que é problema da própria bateria, de perfil do
+  usuário de teste ou regra a confirmar com o PO — e, pra cada
+  suspeita, diz se é bug mesmo, como confirmar, o que fazer, com
+  quem falar e o texto pronto do que dizer. Dali você cria os
+  rascunhos de Bug (ver, alterar, excluir) e manda pro Azure
+  DevOps com a evidência anexada: o app mostra tudo o que vai ser
+  criado, pede confirmação e termina com o link de cada Bug. O
+  app também aprende com cada execução o formato real da API
+  (nome dos campos, onde fica cada informação na resposta) — usa
+  isso na próxima geração com IA e sugere a correção dos casos
+  que presumiram errado, sem nunca mudar o que o card exige.
   No fim, "Levar para o assistente"
   transforma a bateria em Matriz, Casos e Plano — daí vai pro
   Azure DevOps pelo Passo 7 como qualquer outra documentação, e
